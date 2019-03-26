@@ -27,7 +27,7 @@
 #   endif
 
 #elif defined(__GNUC__)
-#   pragma GCC diagnostic push
+//#   pragma GCC diagnostic push
 #   pragma GCC diagnostic ignored "-Wredundant-decls" // expected when using forward Slice declarations
 #   pragma GCC diagnostic ignored "-Wshadow" // expected in some generated header files
 #endif

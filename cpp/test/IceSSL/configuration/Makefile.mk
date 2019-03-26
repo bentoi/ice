@@ -7,9 +7,9 @@ $(test)_dependencies = TestCommon IceSSL Ice
 #
 # Disable var tracking assignments for Linux with this test
 #
-ifneq ($(linux_id),)
-    $(test)_cppflags += $(if $(filter yes,$(OPTIMIZE)),-fno-var-tracking-assignments)
-endif
+#ifneq ($(linux_id),)
+#    $(test)_cppflags += $(if $(filter yes,$(OPTIMIZE)),-fno-var-tracking-assignments)
+#endif
 
 # Need to load certificates with functions from src/IceSSL/Util.h
 $(test)[iphoneos]_cppflags              := -Isrc
