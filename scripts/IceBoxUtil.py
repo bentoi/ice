@@ -46,8 +46,8 @@ class IceBox(ProcessFromBinDir, Server):
                current.config.buildPlatform == "x86":
                 name += "32" # Multilib platform
             if isinstance(platform, AIX) and \
-               current.config.buildPlatform == "ppc64":
-                name += "_64"
+               current.config.buildPlatform == "ppc":
+                name += "_32"
             if current.config.cpp11:
                 name += "++11"
             return name
@@ -79,7 +79,7 @@ class IceBoxAdmin(ProcessFromBinDir, ProcessIsReleaseOnly, Client):
         elif isinstance(mapping, JavaMapping):
             return "com.zeroc.IceBox.Admin"
         elif isinstance(platform, AIX) and \
-             current.config.buildPlatform == "ppc64":
-            return "iceboxadmin_64"
+             current.config.buildPlatform == "ppc":
+            return "iceboxadmin_32"
         else:
             return "iceboxadmin"

@@ -1367,7 +1367,7 @@ class ProcessFromBinDir:
         return True
 
     def getExe(self, current):
-        return self.exe + "_64" if current.config.buildPlatform == "ppc64" else self.exe
+        return self.exe + "_32" if current.config.buildPlatform == "ppc" else self.exe
 
 #
 # Executables for processes inheriting this marker class are only provided
