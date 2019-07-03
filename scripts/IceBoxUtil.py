@@ -45,6 +45,9 @@ class IceBox(ProcessFromBinDir, Server):
                platform.getLinuxId() in ["centos", "rhel", "fedora"] and \
                current.config.buildPlatform == "x86":
                 name += "32" # Multilib platform
+            if isinstance(platform, AIX) and \
+               current.config.buildPlatform == "ppc64":
+                name += "_64"
             if current.config.cpp11:
                 name += "++11"
             return name
@@ -75,5 +78,8 @@ class IceBoxAdmin(ProcessFromBinDir, ProcessIsReleaseOnly, Client):
             return "IceBox.Admin"
         elif isinstance(mapping, JavaMapping):
             return "com.zeroc.IceBox.Admin"
+        elif isinstance(platform, AIX) and \
+             current.config.buildPlatform == "ppc64":
+            return "iceboxadmin_64"
         else:
             return "iceboxadmin"

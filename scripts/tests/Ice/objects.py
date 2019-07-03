@@ -25,6 +25,8 @@ class ObjectClientServerTestCase(ClientServerTestCase):
             # The AIX ppc default stack size is too small
             #
             props["Ice.ThreadPool.Server.StackSize"] = 256 * 1024
+        elif current.config.buildPlatform == "ppc64":
+            props["Ice.ThreadPool.Server.StackSize"] = 512 * 1024
         return props
 
 testcases = [

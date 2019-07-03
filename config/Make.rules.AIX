@@ -4,12 +4,14 @@
 
 supported-platforms = ppc ppc64
 
-ppc_cppflags        = -q32 -D_LARGE_FILES
-ppc_ldflags         = $(ppc_cppflags)
+# We prefer header files and libraries in /usr/{include, lib} to those in /opt/freeware
+
+ppc_cppflags        = -q32 -D_LARGE_FILES -I/usr/include -I/opt/freeware/include
+ppc_ldflags         = $(ppc_cppflags) -L /usr/lib -L/opt/freeware/lib
 ppc_targetdir       = $(if $(filter %/build,$5),/ppc)
 
-ppc64_cppflags      = -q64
-ppc64_ldflags       = $(ppc64_cppflags)
+ppc64_cppflags      = -q64 -I/usr/include -I/opt/freeware/include
+ppc64_ldflags       = $(ppc64_cppflags) -L /usr/lib -L/opt/freeware/lib
 ppc64_targetdir     = $(if $(filter %/build,$5),/ppc64,$(if $(filter-out $($1_target),program),64))
 ppc64_targetname    = $(if $(and $(filter $(bindir)%,$($4_targetdir)),$(filter $($1_target),program)),_64)
 
@@ -23,7 +25,7 @@ platform_ar         = $(AR)
 # Used to suppress warnings in generated code
 xlc_compiler        = yes
 
-cppflags            = -qrtti -qstaticinline -qhalt=i $(if $(filter yes,$(OPTIMIZE)),-O2 -DNDEBUG,-g)
+cppflags            = -qrtti -qstaticinline -qhalt=i $(if $(filter yes,$(OPTIMIZE)),-O2 -qmaxmem=-1 -DNDEBUG,-g)
 
 ifeq ($(embedded_runpath),yes)
     #
@@ -35,7 +37,7 @@ ifeq ($(embedded_runpath),yes)
 endif
 
 depend-cppflags = -qmakedep=gcc -MF $1
-rpath-ldflag    = -Wl,-blibpath:$1:/opt/freeware/lib:/usr/lib
+rpath-ldflag    = -Wl,-blibpath:$1:/usr/lib:/opt/freeware/lib
 
 # $(call mklib,$1=target,$2=objects,$3=libname,$4=version,$5=soversion,$6=ldflags,$7=platform)
 mklib           = $(or $($7_ar),$(AR)) -X32_64 cr $1 $2
@@ -56,3 +58,4 @@ mkpymodulename  = $(1).so
 Ice_system_libs         = -lcrypto
 IceSSL_system_libs      = -lssl -lcrypto
 Glacier2CryptPermissionsVerifier_system_libs = -lcrypt
+
