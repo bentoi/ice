@@ -78,8 +78,5 @@ class IceBoxAdmin(ProcessFromBinDir, ProcessIsReleaseOnly, Client):
             return "IceBox.Admin"
         elif isinstance(mapping, JavaMapping):
             return "com.zeroc.IceBox.Admin"
-        elif isinstance(platform, AIX) and \
-             current.config.buildPlatform == "ppc":
-            return "iceboxadmin_32"
         else:
             return "iceboxadmin"

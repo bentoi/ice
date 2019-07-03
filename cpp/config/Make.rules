@@ -87,6 +87,12 @@ x86_components          = $(coreandstub_components) IceDB IceStormService icebox
 x86_projects            = test/%
 endif
 
+# Same for AIX on ppc
+#ifeq ($(os),AIX)
+ppc_components          = $(coreandstub_components) IceDB IceStormService icebox
+ppc_projects            = test/%
+#endif
+
 #
 # C++11 configuration to build the C++11 mapping.
 #
