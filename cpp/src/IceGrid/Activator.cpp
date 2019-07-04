@@ -642,8 +642,26 @@ Activator::activate(const string& name,
 
     vector<gid_t> groups;
 #ifdef _AIX
-    int ngroups = 0;
+    char* grouplist = getgrset(pw->pw_name);
+    if(grouplist == 0)
+    {
+        throw SyscallException(__FILE__, __LINE__, getSystemErrno());
+    }
+    vector<string> grps;
+    if(IceUtilInternal::splitString(grouplist, ",", grps))
+    {
+        for(vector<string>::const_iterator p = grps.begin(); p != grps.end(); ++p)
+	{
+  	    gid_t group;
+	    istringstream is(*p);
+	    if(is >> group)
+	    {
+	        groups.push_back(group);
+	    }
+	}
+    }	
 #else
+    int ngroups = 0;
     groups.resize(20);
     int ngroups = static_cast<int>(groups.size());    
     #if defined(__APPLE__)
