@@ -307,8 +307,12 @@ class AIX(Platform):
     def hasOpenSSL(self):
         return True
 
+    def _getLibDir(self, component, process, mapping, current):
+        installDir = component.getInstallDir(mapping, current)
+        return os.path.join(installDir, "lib32") if current.config.buildPlatform == "ppc" else os.path.join(installDir, "lib")
+
     def getDefaultBuildPlatform(self):
-        return "ppc64"    
+        return "ppc64"
 
 class Linux(Platform):
 
@@ -1359,6 +1363,9 @@ class ProcessFromBinDir:
 
     def isFromBinDir(self):
         return True
+
+    def getExe(self, current):
+        return self.exe + "_32" if current.config.buildPlatform == "ppc" else self.exe
 
 #
 # Executables for processes inheriting this marker class are only provided
