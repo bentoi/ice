@@ -26,7 +26,7 @@ class ObjectClientServerTestCase(ClientServerTestCase):
             #
             props["Ice.ThreadPool.Server.StackSize"] = 256 * 1024
         elif current.config.buildPlatform == "ppc64":
-            props["Ice.ThreadPool.Server.StackSize"] = 512 * 1024
+            props["Ice.ThreadPool.Server.StackSize"] = 768 * 1024
         return props
 
 testcases = [

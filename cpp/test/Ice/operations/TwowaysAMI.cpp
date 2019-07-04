@@ -22,7 +22,7 @@
 #endif
 
 using namespace std;
-using namespace Test;
+
 namespace
 {
 
@@ -1237,8 +1237,8 @@ twowaysAMI(const Ice::CommunicatorPtr& communicator, const Test::MyClassPrxPtr& 
     {
         CallbackPtr cb = ICE_MAKE_SHARED(Callback);
 #ifdef ICE_CPP11_MAPPING
-        p->opMyEnumAsync(MyEnum::enum2,
-            [&](MyEnum e1, MyEnum e2)
+        p->opMyEnumAsync(Test::MyEnum::enum2,
+			 [&](Test::MyEnum e1, Test::MyEnum e2)
             {
                 cb->opMyEnum(e1, e2);
             },
@@ -1256,7 +1256,7 @@ twowaysAMI(const Ice::CommunicatorPtr& communicator, const Test::MyClassPrxPtr& 
         CallbackPtr cb = ICE_MAKE_SHARED(Callback, communicator);
 #ifdef ICE_CPP11_MAPPING
         p->opMyClassAsync(p,
-            [&](shared_ptr<MyClassPrx> c1, shared_ptr<MyClassPrx> c2, shared_ptr<MyClassPrx> c3)
+			  [&](shared_ptr<Test::MyClassPrx> c1, shared_ptr<Test::MyClassPrx> c2, shared_ptr<Test::MyClassPrx> c3)
             {
                 cb->opMyClass(move(c1), move(c2), move(c3));
             },
@@ -1998,7 +1998,7 @@ twowaysAMI(const Ice::CommunicatorPtr& communicator, const Test::MyClassPrxPtr& 
         CallbackPtr cb = ICE_MAKE_SHARED(Callback);
 #ifdef ICE_CPP11_MAPPING
         p->opMyStructMyEnumDSAsync(dsi1, dsi2,
-            [&](Test::MyStructMyEnumDS dsi3, MyStructMyEnumDS dsi4)
+				   [&](Test::MyStructMyEnumDS dsi3, Test::MyStructMyEnumDS dsi4)
             {
                 cb->opMyStructMyEnumDS(move(dsi3), move(dsi4));
             },
@@ -2475,7 +2475,7 @@ twowaysAMI(const Ice::CommunicatorPtr& communicator, const Test::MyClassPrxPtr& 
                 Ice::PropertiesPtr properties = ic->getProperties();
                 Test::MyClassPrxPtr q =
                     ICE_UNCHECKED_CAST(Test::MyClassPrx,
-                                       ic->stringToProxy("test:" + TestHelper::getTestEndpoint(properties)));
+                                       ic->stringToProxy("test:" + Test::TestHelper::getTestEndpoint(properties)));
                 ic->getImplicitContext()->setContext(ctx);
                 test(ic->getImplicitContext()->getContext() == ctx);
                 {
