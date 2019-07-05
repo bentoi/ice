@@ -15,6 +15,7 @@ endif
 ppc_cppflags        = -q32 -D_LARGE_FILES -I/opt/freeware/include
 ppc_ldflags         = $(ppc_cppflags) -L/opt/freeware/lib
 ppc_targetdir       = $(if $(filter %/build,$5),/ppc,$(if $(filter-out $($1_target),program),32))
+ppc_installdir      = $(if $(and $(filter-out $($1_target),program),$(if $5,$(filter-out %32,$5),true)),32)
 
 # All 32-bit programs in "bin" get the _32 suffix
 ppc_targetname    = $(if $(and $(filter $(bindir)%,$($4_targetdir)),$(filter $($1_target),program)),_32)
@@ -29,6 +30,8 @@ static_targetdir    = $(if $(and $(filter-out %/build,$5),$(filter $($1_target),
 platform_cxx        = $(COMPILER)
 platform_ld         = $(COMPILER)
 platform_ar         = $(AR)
+
+INSTALL		    = installbsd -c
 
 ifeq ($(COMPILER),xlC_r)
     # Used to suppress warnings in generated code
