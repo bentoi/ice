@@ -3125,6 +3125,11 @@ class CppMapping(Mapping):
         if not isinstance(platform, Darwin):
             libPaths.append(self.component.getLibDir(process, self, current))
 
+        # On AIX we also need to add the lib directory for the TestCommon library
+        # when testing against a binary distribution
+        if isinstance(platform, AIX) and self.component.useBinDist(self, current):
+            libPaths.append(os.path.join(self.path, "lib32" if current.config.buildPlatform == "ppc" else "lib"))
+            
         #
         # Add the test suite library directories to the platform library path environment variable.
         #
