@@ -18,7 +18,16 @@
 #include <IceUtil/UndefSysMacros.h>
 
 #include <algorithm>
-#include <iconv.h>
+
+#ifdef _AIX
+    // Make sure we include the system iconv.h
+    extern "C"
+    {
+        #include </usr/include/iconv.h>
+    }
+#else
+    #include <iconv.h>
+#endif
 #include <langinfo.h>
 
 #if (defined(__APPLE__) && _LIBICONV_VERSION < 0x010B)
