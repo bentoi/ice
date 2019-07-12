@@ -172,7 +172,9 @@ mkshlibfilename = lib$(1).so$(if $2,.$2)
 mkshlibname     = lib$(1).so
 
 # Clear the iconv ldflags, iconv is part of libc on Linux
+ifeq ($(iconv_home),)
 iconv_ldflags   :=
+endif
 
 #
 # With GCC < 6.1, libbacktrace crash with a SEGV for -pie exes linked with debug-stripped libs
