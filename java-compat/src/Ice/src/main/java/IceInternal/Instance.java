@@ -398,6 +398,12 @@ public final class Instance implements Ice.ClassResolver
         return _cacheMessageBuffers;
     }
 
+    public boolean
+    useDirectBuffers()
+    {
+        return _useDirectBuffers;
+    }
+
     public ACMConfig
     clientACM()
     {
@@ -1120,6 +1126,9 @@ public final class Instance implements Ice.ClassResolver
             {
                 _cacheMessageBuffers = _initData.properties.getPropertyAsIntWithDefault("Ice.CacheMessageBuffers", 2);
             }
+
+            _useDirectBuffers = _cacheMessageBuffers > 1 ||
+                _initData.properties.getPropertyAsIntWithDefault("Ice.UseDirectBuffers", 0) > 0;
         }
         catch(Ice.LocalException ex)
         {
@@ -1853,6 +1862,7 @@ public final class Instance implements Ice.ClassResolver
     private final int _batchAutoFlushSize; // Immutable, not reset by destroy().
     private final Ice.ToStringMode _toStringMode; // Immutable, not reset by destroy().
     private final int _cacheMessageBuffers; // Immutable, not reset by destroy().
+    private final boolean _useDirectBuffers; // Immutable, not reset by destroy().
     private final ACMConfig _clientACM; // Immutable, not reset by destroy().
     private final ACMConfig _serverACM; // Immutable, not reset by destroy().
     private final Ice.ImplicitContextI _implicitContext;

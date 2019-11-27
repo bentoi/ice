@@ -403,6 +403,7 @@ generated from the section label.
         <property name="Warn.UnusedProperties" />
         <property name="CacheMessageBuffers" />
         <property name="ThreadInterruptSafe" />
+        <property name="UseDirectBuffers" />
         <property name="Voip" deprecated="true" />
     </section>
 

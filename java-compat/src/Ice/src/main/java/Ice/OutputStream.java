@@ -41,7 +41,7 @@ public class OutputStream
     {
         assert(communicator != null);
         final IceInternal.Instance instance = IceInternal.Util.getInstance(communicator);
-        initialize(instance, instance.defaultsAndOverrides().defaultEncoding, instance.cacheMessageBuffers() > 1);
+        initialize(instance, instance.defaultsAndOverrides().defaultEncoding, instance.useDirectBuffers());
     }
 
     /**
@@ -67,7 +67,7 @@ public class OutputStream
     {
         assert(communicator != null);
         final IceInternal.Instance instance = IceInternal.Util.getInstance(communicator);
-        initialize(instance, encoding, instance.cacheMessageBuffers() > 1);
+        initialize(instance, encoding, instance.useDirectBuffers());
     }
 
     /**
@@ -86,7 +86,7 @@ public class OutputStream
 
     public OutputStream(IceInternal.Instance instance, EncodingVersion encoding)
     {
-        initialize(instance, encoding, instance.cacheMessageBuffers() > 1);
+        initialize(instance, encoding, instance.useDirectBuffers());
     }
 
     public OutputStream(IceInternal.Instance instance, EncodingVersion encoding, boolean direct)
@@ -109,7 +109,7 @@ public class OutputStream
     {
         assert(communicator != null);
         final IceInternal.Instance instance = IceInternal.Util.getInstance(communicator);
-        initialize(instance, instance.defaultsAndOverrides().defaultEncoding, instance.cacheMessageBuffers() > 1);
+        initialize(instance, instance.defaultsAndOverrides().defaultEncoding, instance.useDirectBuffers());
     }
 
     /**
@@ -123,7 +123,7 @@ public class OutputStream
     {
         assert(communicator != null);
         final IceInternal.Instance instance = IceInternal.Util.getInstance(communicator);
-        initialize(instance, encoding, instance.cacheMessageBuffers() > 1);
+        initialize(instance, encoding, instance.useDirectBuffers());
     }
 
     private void initialize(IceInternal.Instance instance, EncodingVersion encoding, boolean direct)

@@ -75,7 +75,7 @@ public class InputStream
     {
         Instance instance = com.zeroc.IceInternal.Util.getInstance(communicator);
         initialize(instance, instance.defaultsAndOverrides().defaultEncoding);
-        _buf = new Buffer(instance.cacheMessageBuffers() > 1);
+        _buf = new Buffer(instance.useDirectBuffers());
     }
 
     /**
@@ -169,7 +169,7 @@ public class InputStream
     {
         Instance instance = com.zeroc.IceInternal.Util.getInstance(communicator);
         initialize(instance, encoding);
-        _buf = new Buffer(instance.cacheMessageBuffers() > 1);
+        _buf = new Buffer(instance.useDirectBuffers());
     }
 
     /**
@@ -211,7 +211,7 @@ public class InputStream
 
     public InputStream(Instance instance, EncodingVersion encoding)
     {
-        this(instance, encoding, instance.cacheMessageBuffers() > 1);
+        this(instance, encoding, instance.useDirectBuffers());
     }
 
     public InputStream(Instance instance, EncodingVersion encoding, boolean direct)

@@ -71,7 +71,7 @@ public class InputStream
     {
         IceInternal.Instance instance = IceInternal.Util.getInstance(communicator);
         initialize(instance, instance.defaultsAndOverrides().defaultEncoding);
-        _buf = new IceInternal.Buffer(instance.cacheMessageBuffers() > 1);
+        _buf = new IceInternal.Buffer(instance.useDirectBuffers());
     }
 
     /**
@@ -165,7 +165,7 @@ public class InputStream
     {
         IceInternal.Instance instance = IceInternal.Util.getInstance(communicator);
         initialize(instance, encoding);
-        _buf = new IceInternal.Buffer(instance.cacheMessageBuffers() > 1);
+        _buf = new IceInternal.Buffer(instance.useDirectBuffers());
     }
 
     /**
@@ -207,7 +207,7 @@ public class InputStream
 
     public InputStream(IceInternal.Instance instance, EncodingVersion encoding)
     {
-        this(instance, encoding, instance.cacheMessageBuffers() > 1);
+        this(instance, encoding, instance.useDirectBuffers());
     }
 
     public InputStream(IceInternal.Instance instance, EncodingVersion encoding, boolean direct)
