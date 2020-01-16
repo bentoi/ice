@@ -125,6 +125,8 @@ namespace Ice
             _encapsCache = null;
             _closure = null;
             _sliceValues = true;
+            _startSeq = -1;
+            _minSeqSize = 0;
         }
 
         /// <summary>
@@ -151,6 +153,7 @@ namespace Ice
                 _encapsCache.reset();
             }
 
+            _startSeq = -1;
             _sliceValues = true;
         }
 
@@ -270,6 +273,14 @@ namespace Ice
             //
             ResetEncapsulation();
             other.ResetEncapsulation();
+
+            int tmpStartSeq = other._startSeq;
+            other._startSeq = _startSeq;
+            _startSeq = tmpStartSeq;
+
+            int tmpMinSeqSize = other._minSeqSize;
+            other._minSeqSize = _minSeqSize;
+            _minSeqSize = tmpMinSeqSize;
 
             Logger tmpLogger = other._logger;
             other._logger = _logger;
@@ -617,8 +628,8 @@ namespace Ice
         }
 
         /// <summary>
-        /// Reads a sequence size and make sure there are least size * minElementSize bytes left in the underlying
-        /// buffer. This validation is performed in part to make sure we do not allocate a large container based on an
+        /// Reads a sequence size and make sure there's enough space in the underlying buffer to read the sequence.
+        /// This validation is performed in part to make sure we do not allocate a large container based on an
         /// invalid encoded size.
         /// </summary>
         /// <param name="minElementSize">The minimum encoded size of an element of the sequence, in bytes.</param>
@@ -632,7 +643,53 @@ namespace Ice
                 return 0;
             }
 
-            if (_buf.b.position() + sz * minElementSize > _buf.size())
+            //
+            // The goal of this check is to ensure that when we start unmarshalling a new
+            // sequence, we check the minimal size of this new sequence against the estimated
+            // remaining buffer space. This estimatation takes into account the minimum size
+            // of potential parent recursive sequences.
+            //
+            // The _startSeq variable points to the start of the parent sequence being
+            // unmarshaled (if any) and _minSeqSize is the minimum size required on the
+            // stream to read the parent sequences.
+            //
+            if (_startSeq == -1 || _buf.b.position() > _startSeq + _minSeqSize)
+            {
+                //
+                // If not initialized or if we already reached the theoric end of the parent
+                // sequence, we set a new _startSeq based on the stream position and the
+                // minimum size of the new sequence that we are going to read.
+                //
+                _startSeq = _buf.b.position();
+                _minSeqSize = sz * minElementSize;
+            }
+            else
+            {
+                //
+                // If we didn't reach the end of the parent sequence, we just bump _minSeqSize
+                // to take into account the minimum size of the new sequence that we are about
+                // to read.
+                //
+                // If the stream position is before the start of the parent sequence (which is
+                // possible because of indirection tables in the 1.1 encoding), we reset the
+                // start sequence position to the current position of the buffer, _minSeqSize
+                // takes into account in the size of the sequences read from the indirection
+                // table but it's not an issue since the buffer remaining space must be large
+                // enough for these sequences as well.
+                //
+                if (_startSeq > _buf.b.position())
+                {
+                    _startSeq = _buf.b.position();
+                }
+                _minSeqSize += sz * minElementSize;
+            }
+
+            //
+            // If there isn't enough data to read on the stream for the sequence (and
+            // possibly enclosed sequences), something is wrong with the marshalled
+            // data: it's claiming having more data than what is possible to read.
+            //
+            if (_startSeq + _minSeqSize > _buf.size())
             {
                 throw new UnmarshalOutOfBoundsException();
             }
@@ -2714,7 +2771,13 @@ namespace Ice
             {
                 // we should never skip an exception's indirection table
                 Debug.Assert(_current.sliceType == SliceType.ValueSlice);
-                var tableSize = _stream.ReadAndCheckSeqSize(1);
+
+                //
+                // NOTE: we don't use ReadAndCheckSeqSize(1), it's safe because we don't allocate any memory
+                // and we shouldn't update _startSeq/_minSeqSize twice for the validation of the sequence
+                // size in ReadAndCheckSize.
+                //
+                var tableSize = _stream.ReadSize();
                 for (int i = 0; i < tableSize; ++i)
                 {
                     var index = _stream.ReadSize();
@@ -3166,6 +3229,9 @@ namespace Ice
         private bool _sliceValues;
         private bool _traceSlicing;
         private int _classGraphDepthMax;
+
+        private int _startSeq;
+        private int _minSeqSize;
 
         private Logger _logger;
         private Func<int, string> _compactIdResolver;
