@@ -68,7 +68,7 @@ namespace Ice
         GracefullyWithWait
     }
 
-    public sealed class Connection : IceInternal.EventHandler, ICancellationHandler
+    public sealed class Connection : ICancellationHandler
     {
         public interface IStartCallback
         {
@@ -87,103 +87,119 @@ namespace Ice
 
         public void Start(IStartCallback? callback)
         {
-            try
+            var task = StartAsync();
+            if (callback != null)
             {
-                lock (this)
-                {
-                    //
-                    // The connection might already be closed if the communicator was destroyed.
-                    //
-                    if (_state >= StateClosed)
+                task.ContinueWith(t => {
+                    try
                     {
-                        Debug.Assert(_exception != null);
-                        throw _exception;
+                        t.Wait();
+                        callback!.ConnectionStartCompleted(this);
                     }
-
-                    if (!Initialize(SocketOperation.None) || !Validate(SocketOperation.None))
+                    catch (Exception ex)
                     {
-                        _startCallback = callback;
-                        return;
+                        callback!.ConnectionStartFailed(this, ex);
                     }
-
-                    SetState(StateActive);
-                }
+                }, _taskFactory.Scheduler!);
             }
-            catch (System.Exception ex)
-            {
-                lock (this)
-                {
-                    SetState(StateClosed, ex);
-                }
-                Debug.Assert(_exception != null);
-                callback?.ConnectionStartFailed(this, _exception);
-                return;
-            }
-
-            callback?.ConnectionStartCompleted(this);
         }
 
         internal void StartAndWait()
         {
-            try
-            {
-                lock (this)
-                {
-                    //
-                    // The connection might already be closed if the communicator was destroyed.
-                    //
-                    if (_state >= StateClosed)
-                    {
-                        Debug.Assert(_exception != null);
-                        throw _exception;
-                    }
-
-                    if (!Initialize(SocketOperation.None) || !Validate(SocketOperation.None))
-                    {
-                        //
-                        // Wait for the connection to be validated.
-                        //
-                        while (_state <= StateNotValidated)
-                        {
-                            System.Threading.Monitor.Wait(this);
-                        }
-
-                        if (_state >= StateClosing)
-                        {
-                            Debug.Assert(_exception != null);
-                            throw _exception;
-                        }
-                    }
-
-                    SetState(StateActive);
-                }
-            }
-            catch (System.Exception ex)
-            {
-                lock (this)
-                {
-                    SetState(StateClosed, ex);
-                }
-                WaitUntilFinished();
-                return;
-            }
+            StartAsync().Wait();
         }
 
-        internal void Activate()
+        internal async Task StartAsync()
         {
-            lock (this)
-            {
-                if (_state <= StateNotValidated)
-                {
-                    return;
-                }
+            await _transceiver.InitializeAsync().ConfigureAwait(false);
 
-                if (_acmLastActivity > -1)
+            //
+            // Update the connection description once the transceiver is initialized.
+            //
+            _desc = _transceiver.ToString()!;
+            _initialized = true;
+            SetState(StateNotValidated);
+
+            if (!_endpoint.Datagram()) // Datagram connections are always implicitly validated.
+            {
+                if (_adapter != null) // The server side has the active role for connection validation.
                 {
-                    _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                    _writeBuffer = _validateConnectionMessage;
+
+                    // TODO we need a better API for tracing
+                    TraceUtil.TraceSend(_communicator,
+                        _writeBuffer.GetSegment(0, _writeBufferSize).ToArray(), _logger, _traceLevels);
+
+                    await _transceiver.WriteAsync(_writeBuffer).ConfigureAwait(false);
+
+                    TraceSentAndUpdateObserver(_writeBuffer.GetByteCount());
                 }
-                SetState(StateActive);
+                else // The client side has the passive role for connection validation.
+                {
+                    _readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
+
+                    await _transceiver.ReadAsync(_readBuffer).ConfigureAwait(false);
+
+                    TraceReceivedAndUpdateObserver(_readBuffer.Count);
+
+                    _validated = true;
+
+                    Debug.Assert(_readBufferOffset == Ice1Definitions.HeaderSize);
+                    Ice1Definitions.CheckHeader(_readBuffer.AsSpan(0, 8));
+                    var messageType = (Ice1Definitions.MessageType)_readBuffer[8];
+                    if (messageType != Ice1Definitions.MessageType.ValidateConnectionMessage)
+                    {
+                        throw new InvalidDataException(@$"received ice1 frame with message type `{messageType
+                            }' before receiving the validate connection message");
+                    }
+
+                    int size = InputStream.ReadInt(_readBuffer.AsSpan(10, 4));
+                    if (size != Ice1Definitions.HeaderSize)
+                    {
+                        throw new InvalidDataException(
+                            $"received an ice1 frame with validate connection type and a size of `{size}' bytes");
+                    }
+                }
             }
+
+            _writeBuffer = _emptyBuffer;
+            _writeBufferSize = 0;
+
+            // For datagram connections the buffer is allocated by the datagram transport
+            if (!_endpoint.Datagram())
+            {
+                _readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
+            }
+            _readHeader = true;
+
+            if (_communicator.TraceLevels.Network >= 1)
+            {
+                var s = new StringBuilder();
+                if (_endpoint.Datagram())
+                {
+                    s.Append("starting to ");
+                    s.Append(_connector != null ? "send" : "receive");
+                    s.Append(" ");
+                    s.Append(_endpoint.Transport());
+                    s.Append(" messages\n");
+                    s.Append(_transceiver.ToDetailedString());
+                }
+                else
+                {
+                    s.Append(_connector != null ? "established" : "accepted");
+                    s.Append(" ");
+                    s.Append(_endpoint.Transport());
+                    s.Append(" connection\n");
+                    s.Append(ToString());
+                }
+                _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
+            }
+
+            if (_acmLastActivity > -1)
+            {
+                _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+            }
+            SetState(StateActive);
         }
 
         internal void Destroy(Exception ex)
@@ -450,7 +466,7 @@ namespace Ice
                 {
                     if (callback != null)
                     {
-                        ThreadPool.Dispatch(() =>
+                        _taskFactory.StartNew(() =>
                         {
                             try
                             {
@@ -763,73 +779,157 @@ namespace Ice
             }
         }
 
-        //
-        // Operations from EventHandler
-        //
-        public override bool StartAsync(int operation, IceInternal.AsyncCallback cb, ref bool completedSynchronously)
+        public async Task ReadMessage()
         {
-            if (_state >= StateClosed)
+            var info = new MessageInfo();
+            int dispatchCount = 0;
+            lock (this)
             {
-                return false;
-            }
+                if (_state >= StateClosed)
+                {
+                    return;
+                }
 
-            try
-            {
-                if ((operation & SocketOperation.Write) != 0)
+                try
                 {
-                    completedSynchronously = _transceiver.StartWrite(_writeBuffer, _writeBufferOffset, cb, this, out bool completed);
-                    if (completed && _outgoingMessages.Count > 0)
-                    {
-                        // The whole message is written, assume it's sent now for at-most-once semantics.
-                        _outgoingMessages.First!.Value.IsSent = true;
-                    }
-                }
-                else if ((operation & SocketOperation.Read) != 0)
-                {
-                    int start = _readBufferOffset;
-                    completedSynchronously = _transceiver.StartRead(ref _readBuffer, ref _readBufferOffset, cb, this);
-                    if (start != _readBufferOffset)
-                    {
-                        TraceReceivedAndUpdateObserver(_readBuffer.Count, start, _readBufferOffset);
-                    }
-                }
-            }
-            catch (System.Exception ex)
-            {
-                SetState(StateClosed, ex);
-                return false;
-            }
-            return true;
-        }
+                    _readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
+                    await _transceiver.ReadAsync(_readBuffer).ConfigureAwait(false);
+                    TraceReceivedAndUpdateObserver(_readBuffer.Count);
 
-        public override bool FinishAsync(int operation)
-        {
-            try
-            {
-                if ((operation & SocketOperation.Write) != 0)
-                {
-                    int start = _writeBufferOffset;
-                    _transceiver.FinishWrite(_writeBuffer, ref _writeBufferOffset);
-                    if (start != _writeBufferOffset)
+                    //
+                    // Connection is validated on first message. This is only used by
+                    // setState() to check whether or not we can print a connection
+                    // warning (a client might close the connection forcefully if the
+                    // connection isn't validated, we don't want to print a warning
+                    // in this case).
+                    //
+                    _validated = true;
+
+                    // TODO: XXX
+                    // if (bytesRead < Ice1Definitions.HeaderSize)
+                    // {
+                    //     //
+                    //     // This situation is possible for small UDP packets.
+                    //     //
+                    //     throw new InvalidDataException($"received packet with only {_readBufferOffset} bytes");
+                    // }
+
+                    Ice1Definitions.CheckHeader(_readBuffer.AsSpan(0, 8));
+                    int size = InputStream.ReadInt(_readBuffer.Slice(10, 4));
+                    if (size < Ice1Definitions.HeaderSize)
                     {
-                        TraceSentAndUpdateObserver(_writeBufferSize, start, _writeBufferOffset);
+                        throw new InvalidDataException($"received ice1 frame with only {size} bytes");
+                    }
+
+                    if (size > _messageSizeMax)
+                    {
+                        throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
+                    }
+
+                    // TODO: XXX
+                    // if (_endpoint.Datagram() && size > bytesRead)
+                    // {
+                    //     if (_warnUdp)
+                    //     {
+                    //         _logger.Warning($"maximum datagram size of {_readBufferOffset} exceeded");
+                    //     }
+                    //     _readBuffer = ArraySegment<byte>.Empty;
+                    //     _readHeader = true;
+                    //     return;
+                    // }
+
+                    if (size > _readBuffer.Array!.Length)
+                    {
+                        // Allocate a new array and copy the header over
+                        byte[] readBuffer = new byte[size];
+                        _readBuffer.AsSpan().CopyTo(readBuffer.AsSpan(0, Ice1Definitions.HeaderSize));
+                        _readBuffer = readBuffer;
+                    }
+                    else if (size > _readBuffer.Count)
+                    {
+                        _readBuffer = new ArraySegment<byte>(_readBuffer.Array, 0, size);
+                    }
+                    Debug.Assert(size == _readBuffer.Count);
+                    await _transceiver.ReadAsync(new ArraySegment<byte>(_readBuffer.Array, Ice1Definitions.HeaderSize,
+                        size - Ice1Definitions.HeaderSize).ConfigureAwait(false);
+
+                    Debug.Assert(_state <= StateClosingPending);
+
+                    //
+                    // We parse messages first, if we receive a close
+                    // connection message we won't send more messages.
+                    //
+                    if ((readyOp & SocketOperation.Read) != 0)
+                    {
+                        newOp |= ParseMessage(ref info);
+                        dispatchCount += info.MessageDispatchCount;
+                    }
+
+                    if ((readyOp & SocketOperation.Write) != 0)
+                    {
+                        newOp |= SendNextMessage(out sentCBs);
+                        if (sentCBs != null)
+                        {
+                            ++dispatchCount;
+                        }
+                    }
+
+                    if (_state < StateClosed)
+                    {
+                        ScheduleTimeout(newOp);
+                        ThreadPool.Update(this, current.Operation, newOp);
                     }
                 }
-                else if ((operation & SocketOperation.Read) != 0)
-                {
-                    int start = _readBufferOffset;
-                    _transceiver.FinishRead(ref _readBuffer, ref _readBufferOffset);
-                    if (start != _readBufferOffset)
-                    {
-                        TraceReceivedAndUpdateObserver(_readBuffer.Count, start, _readBufferOffset);
+
+                        if (_acmLastActivity > -1)
+                        {
+                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                        }
+
+                        if (dispatchCount == 0)
+                        {
+                            return; // Nothing to dispatch we're done!
+                        }
+
+_dispatchCount += dispatchCount;
+                        msg.Completed(ref current);
                     }
+                    catch (TransportException ex)
+                    {
+                        SetState(StateClosed, ex);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        if (_endpoint.Datagram())
+                        {
+                            if (_warn)
+                            {
+                                _logger.Warning(string.Format("datagram connection exception:\n{0}\n{1}", ex, _desc));
+                            }
+                            _readBuffer = ArraySegment<byte>.Empty;
+                            _readBufferOffset = 0;
+                            _readHeader = true;
+                        }
+                        else
+                        {
+                            SetState(StateClosed, ex);
+                        }
+                        return;
+                    }
+
+                    ThreadPoolCurrent c = current;
+ThreadPool.Dispatch(() =>
+                    {
+                        Dispatch(startCB, sentCBs, info);
+msg.Destroy(ref c);
+                    });
                 }
             }
-            catch (System.Exception ex)
+            finally
             {
-                SetState(StateClosed, ex);
+                msg.FinishIOScope(ref current);
             }
-            return _state < StateClosed;
         }
 
         public override void Message(ref ThreadPoolCurrent current)
@@ -1520,8 +1620,6 @@ namespace Ice
             }
         }
 
-        public IceInternal.ThreadPool ThreadPool { get; }
-
         internal Connection(Communicator communicator,
                             IACMMonitor? monitor,
                             ITransceiver transceiver,
@@ -1578,13 +1676,12 @@ namespace Ice
 
             if (adapter != null)
             {
-                ThreadPool = adapter.ThreadPool;
+                _taskFactory = new TaskFactory(adapter.TaskScheduler);
             }
             else
             {
-                ThreadPool = communicator.ClientThreadPool();
+                _taskFactory = new TaskFactory(communicator.TaskScheduler);
             }
-            ThreadPool.Initialize(this);
         }
 
         private const int StateNotInitialized = 0;
@@ -1847,130 +1944,6 @@ namespace Ice
                     Debug.Assert(_exception != null);
                 }
             }
-        }
-
-        private bool Initialize(int operation)
-        {
-            int s = _transceiver.Initialize(ref _readBuffer, _writeBuffer);
-            if (s != SocketOperation.None)
-            {
-                _writeBufferOffset = 0;
-                _writeBufferSize = _writeBuffer.GetByteCount();
-                ScheduleTimeout(s);
-                ThreadPool.Update(this, operation, s);
-                return false;
-            }
-            //
-            // Update the connection description once the transceiver is initialized.
-            //
-            _desc = _transceiver.ToString()!;
-            _initialized = true;
-            SetState(StateNotValidated);
-            return true;
-        }
-
-        private bool Validate(int operation)
-        {
-            if (!_endpoint.Datagram()) // Datagram connections are always implicitly validated.
-            {
-                if (_adapter != null) // The server side has the active role for connection validation.
-                {
-                    if (_writeBufferSize == 0)
-                    {
-                        _writeBuffer = _validateConnectionMessage;
-                        _writeBufferOffset = 0;
-                        _writeBufferSize = Ice1Definitions.HeaderSize;
-                        // TODO we need a better API for tracing
-                        TraceUtil.TraceSend(_communicator,
-                            _writeBuffer.GetSegment(0, _writeBufferSize).ToArray(), _logger, _traceLevels);
-                    }
-
-                    if (_writeBufferOffset < _writeBufferSize)
-                    {
-                        int op = Write(_writeBuffer, _writeBufferSize, ref _writeBufferOffset);
-                        if (op != 0)
-                        {
-                            ScheduleTimeout(op);
-                            ThreadPool.Update(this, operation, op);
-                            return false;
-                        }
-                    }
-                }
-                else // The client side has the passive role for connection validation.
-                {
-                    if (_readBuffer.Count == 0)
-                    {
-                        _readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
-                        _readBufferOffset = 0;
-                    }
-
-                    if (_readBufferOffset < _readBuffer.Count)
-                    {
-                        int op = Read(ref _readBuffer, ref _readBufferOffset);
-                        if (op != 0)
-                        {
-                            ScheduleTimeout(op);
-                            ThreadPool.Update(this, operation, op);
-                            return false;
-                        }
-                    }
-
-                    _validated = true;
-
-                    Debug.Assert(_readBufferOffset == Ice1Definitions.HeaderSize);
-                    Ice1Definitions.CheckHeader(_readBuffer.AsSpan(0, 8));
-                    var messageType = (Ice1Definitions.MessageType)_readBuffer[8];
-                    if (messageType != Ice1Definitions.MessageType.ValidateConnectionMessage)
-                    {
-                        throw new InvalidDataException(@$"received ice1 frame with message type `{messageType
-                            }' before receiving the validate connection message");
-                    }
-
-                    int size = InputStream.ReadInt(_readBuffer.AsSpan(10, 4));
-                    if (size != Ice1Definitions.HeaderSize)
-                    {
-                        throw new InvalidDataException(
-                            $"received an ice1 frame with validate connection type and a size of `{size}' bytes");
-                    }
-                }
-            }
-
-            _writeBuffer = _emptyBuffer;
-            _writeBufferSize = 0;
-            _writeBufferOffset = 0;
-
-            // For datagram connections the buffer is allocated by the datagram transport
-            if (!_endpoint.Datagram())
-            {
-                _readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
-            }
-            _readBufferOffset = 0;
-            _readHeader = true;
-
-            if (_communicator.TraceLevels.Network >= 1)
-            {
-                var s = new StringBuilder();
-                if (_endpoint.Datagram())
-                {
-                    s.Append("starting to ");
-                    s.Append(_connector != null ? "send" : "receive");
-                    s.Append(" ");
-                    s.Append(_endpoint.Transport());
-                    s.Append(" messages\n");
-                    s.Append(_transceiver.ToDetailedString());
-                }
-                else
-                {
-                    s.Append(_connector != null ? "established" : "accepted");
-                    s.Append(" ");
-                    s.Append(_endpoint.Transport());
-                    s.Append(" connection\n");
-                    s.Append(ToString());
-                }
-                _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
-            }
-
-            return true;
         }
 
         private int SendNextMessage(out Queue<OutgoingMessage>? callbacks)
@@ -2535,30 +2508,12 @@ namespace Ice
 
         private void Warning(string msg, System.Exception ex) => _logger.Warning($"{msg}:\n{ex}\n{_transceiver}");
 
-        private int Read(ref ArraySegment<byte> buffer, ref int offset)
+        private void TraceSentAndUpdateObserver(int length)
         {
-            int start = offset;
-            int op = _transceiver.Read(ref buffer, ref offset);
-            if (start != offset)
-            {
-                TraceReceivedAndUpdateObserver(buffer.Count, start, offset);
-            }
-            return op;
-        }
-
-        private void TraceSentAndUpdateObserver(int length, int start, int end)
-        {
-            int remaining = length - start;
-            int bytesTransferred = end - start;
-            if (_communicator.TraceLevels.Network >= 3 && bytesTransferred > 0)
+            if (_communicator.TraceLevels.Network >= 3 && length > 0)
             {
                 var s = new StringBuilder("sent ");
-                s.Append(bytesTransferred);
-                if (!_endpoint.Datagram())
-                {
-                    s.Append(" of ");
-                    s.Append(remaining);
-                }
+                s.Append(length);
                 s.Append(" bytes via ");
                 s.Append(_endpoint.Transport());
                 s.Append("\n");
@@ -2566,30 +2521,18 @@ namespace Ice
                 _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
             }
 
-            if (_observer != null && bytesTransferred > 0)
+            if (_observer != null && length > 0)
             {
-                _observer.SentBytes(bytesTransferred);
+                _observer.SentBytes(length);
             }
         }
 
-        private void TraceReceivedAndUpdateObserver(int length, int start, int end)
+        private void TraceReceivedAndUpdateObserver(int length)
         {
-            int remaining = length - start;
-            int bytesTransferred = end - start;
-
-            if (_communicator.TraceLevels.Network >= 3 && bytesTransferred > 0)
+            if (_communicator.TraceLevels.Network >= 3 && length > 0)
             {
                 var s = new StringBuilder("received ");
-                if (_endpoint.Datagram())
-                {
-                    s.Append(remaining);
-                }
-                else
-                {
-                    s.Append(bytesTransferred);
-                    s.Append(" of ");
-                    s.Append(remaining);
-                }
+                s.Append(length);
                 s.Append(" bytes via ");
                 s.Append(_endpoint.Transport());
                 s.Append("\n");
@@ -2597,21 +2540,10 @@ namespace Ice
                 _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
             }
 
-            if (_observer != null && bytesTransferred > 0)
+            if (_observer != null && length > 0)
             {
-                _observer.ReceivedBytes(bytesTransferred);
+                _observer.ReceivedBytes(length);
             }
-        }
-
-        private int Write(IList<ArraySegment<byte>> buffer, int size, ref int offset)
-        {
-            int start = offset;
-            int socketOperation = _transceiver.Write(buffer, ref offset);
-            if (start != offset)
-            {
-                TraceSentAndUpdateObserver(size, start, offset);
-            }
-            return socketOperation;
         }
 
         private class OutgoingMessage
@@ -2731,6 +2663,7 @@ namespace Ice
 
         private int _state; // The current state.
         private bool _shutdownInitiated = false;
+        private TaskFactory _taskFactory;
         private bool _initialized = false;
         private bool _validated = false;
 

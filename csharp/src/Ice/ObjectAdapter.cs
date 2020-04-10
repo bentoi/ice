@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Ice
 {
@@ -44,18 +45,10 @@ namespace Ice
         /// <value>The object adapter's name.</value>
         public string Name { get; }
 
-        internal int MessageSizeMax { get; }
+        /// <summary>Returns the TaskScheduler used to dispatch requests.</summary>
+        public TaskScheduler TaskScheduler { get; }
 
-        internal ThreadPool ThreadPool
-        {
-            get
-            {
-                // No mutex lock necessary: _threadPool is immutable until Destroy and ThreadPool is only retrieved
-                // before Destroy runs. No check for deactivation either.
-                Debug.Assert(_state < State.Destroying);
-                return _threadPool ?? Communicator.ServerThreadPool();
-            }
-        }
+        internal int MessageSizeMax { get; }
 
         private static readonly string[] _suffixes =
         {
@@ -90,12 +83,7 @@ namespace Ice
             "Router.Locator.InvocationTimeout",
             "Router.LocatorCacheTimeout",
             "Router.InvocationTimeout",
-            "ProxyOptions",
-            "ThreadPool.Size",
-            "ThreadPool.SizeMax",
-            "ThreadPool.SizeWarn",
-            "ThreadPool.StackSize",
-            "ThreadPool.Serialize"
+            "ProxyOptions"
         };
 
         private readonly ACMConfig _acm;
@@ -115,7 +103,6 @@ namespace Ice
         private readonly string _replicaGroupId;
         private RouterInfo? _routerInfo;
         private State _state = State.Uninitialized;
-        private ThreadPool? _threadPool;
 
         /// <summary>Activates all endpoints of this object adapter. After activation, the object adapter can dispatch
         /// requests received through these endpoints. Activate also registers this object adapter with the locator (if
@@ -289,13 +276,6 @@ namespace Ice
                 _defaultServantMap.Clear();
             }
 
-            // Destroy the thread pool.
-            if (_threadPool != null)
-            {
-                _threadPool.Destroy();
-                _threadPool.JoinWithAllThreads();
-            }
-
             Communicator.RemoveObjectAdapter(this);
 
             lock (_mutex)
@@ -304,7 +284,6 @@ namespace Ice
                 _incomingConnectionFactories.Clear();
 
                 // Remove object references (some of them cyclic).
-                _threadPool = null;
                 _routerInfo = null;
                 _publishedEndpoints = Array.Empty<Endpoint>();
                 _locatorInfo = null;
@@ -809,10 +788,11 @@ namespace Ice
         }
 
         // Called by Communicator
-        internal ObjectAdapter(Communicator communicator, string name, IRouterPrx? router)
+        internal ObjectAdapter(Communicator communicator, string name, TaskScheduler scheduler, IRouterPrx? router)
         {
             Communicator = communicator;
             Name = name;
+            TaskScheduler = scheduler;
 
             _publishedEndpoints = Array.Empty<Endpoint>();
             _routerInfo = null;
@@ -874,13 +854,6 @@ namespace Ice
 
             try
             {
-                int threadPoolSize = Communicator.GetPropertyAsInt($"{Name}.ThreadPool.Size") ?? 0;
-                int threadPoolSizeMax = Communicator.GetPropertyAsInt($"{Name}.ThreadPool.SizeMax") ?? 0;
-                if (threadPoolSize > 0 || threadPoolSizeMax > 0)
-                {
-                    _threadPool = new ThreadPool(Communicator, $"{Name}.ThreadPool", 0);
-                }
-
                 router ??= Communicator.GetPropertyAsProxy($"{Name}.Router", IRouterPrx.Factory);
 
                 if (router != null)
@@ -911,8 +884,7 @@ namespace Ice
                         Communicator.GetProperty($"{Name}.Endpoints") ?? "", true);
                     foreach (Endpoint endp in endpoints)
                     {
-                        Endpoint? publishedEndpoint;
-                        foreach (Endpoint expanded in endp.ExpandHost(out publishedEndpoint))
+                        foreach (Endpoint expanded in endp.ExpandHost(out Endpoint? publishedEndpoint))
                         {
                             var factory = new IncomingConnectionFactory(this, expanded, publishedEndpoint, _acm);
                             _incomingConnectionFactories.Add(factory);
@@ -1002,20 +974,6 @@ namespace Ice
             foreach (IncomingConnectionFactory p in factories)
             {
                 p.UpdateConnectionObservers();
-            }
-        }
-
-        internal void UpdateThreadObservers()
-        {
-            ThreadPool? threadPool = null;
-            lock (_mutex)
-            {
-                threadPool = _threadPool;
-            }
-
-            if (threadPool != null)
-            {
-                threadPool.UpdateObservers();
             }
         }
 

@@ -13,6 +13,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Ice
 {
@@ -129,9 +130,8 @@ namespace Ice
 
         public Instrumentation.ICommunicatorObserver? Observer { get; }
 
-        public Action? ThreadStart { get; private set; }
-
-        public Action? ThreadStop { get; private set; }
+        /// <summary>Returns the TaskScheduler used to dispatch requests.</summary>
+        public TaskScheduler TaskScheduler { get; }
 
         public ToStringMode ToStringMode { get; }
 
@@ -171,8 +171,6 @@ namespace Ice
         private readonly HashSet<string> _adminFacetFilter = new HashSet<string>();
         private readonly Dictionary<string, IObject> _adminFacets = new Dictionary<string, IObject>();
         private Identity? _adminIdentity;
-        private AsyncIOThread? _asyncIOThread;
-        private readonly IceInternal.ThreadPool _clientThreadPool;
         private readonly ConcurrentDictionary<int, Type?> _compactIdCache = new ConcurrentDictionary<int, Type?>();
         private readonly string[] _compactIdNamespaces;
         private readonly ThreadLocal<Dictionary<string, string>> _currentContext
@@ -186,7 +184,6 @@ namespace Ice
         private readonly OutgoingConnectionFactory _outgoingConnectionFactory;
         private static bool _printProcessIdDone = false;
         private readonly int[] _retryIntervals;
-        private IceInternal.ThreadPool? _serverThreadPool;
         private readonly Dictionary<EndpointType, BufSizeWarnInfo> _setBufSizeWarn =
             new Dictionary<EndpointType, BufSizeWarnInfo>();
         private int _state;
@@ -197,16 +194,14 @@ namespace Ice
         public Communicator(Dictionary<string, string>? properties,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            Action? threadStart = null,
-                            Action? threadStop = null,
+                            TaskScheduler? scheduler = null,
                             string[]? typeIdNamespaces = null) :
             this(ref _emptyArgs,
                  null,
                  properties,
                  logger,
                  observer,
-                 threadStart,
-                 threadStop,
+                 scheduler,
                  typeIdNamespaces)
         {
         }
@@ -215,16 +210,14 @@ namespace Ice
                             Dictionary<string, string>? properties,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            Action? threadStart = null,
-                            Action? threadStop = null,
+                            TaskScheduler? scheduler = null,
                             string[]? typeIdNamespaces = null) :
             this(ref args,
                  null,
                  properties,
                  logger,
                  observer,
-                 threadStart,
-                 threadStop,
+                 scheduler,
                  typeIdNamespaces)
         {
         }
@@ -233,16 +226,14 @@ namespace Ice
                             Dictionary<string, string>? properties = null,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            Action? threadStart = null,
-                            Action? threadStop = null,
+                            TaskScheduler? scheduler = null,
                             string[]? typeIdNamespaces = null) :
             this(ref _emptyArgs,
                  appSettings,
                  properties,
                  logger,
                  observer,
-                 threadStart,
-                 threadStop,
+                 scheduler,
                  typeIdNamespaces)
         {
         }
@@ -252,15 +243,13 @@ namespace Ice
                             Dictionary<string, string>? properties = null,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            Action? threadStart = null,
-                            Action? threadStop = null,
+                            TaskScheduler? scheduler = null,
                             string[]? typeIdNamespaces = null)
         {
             _state = StateActive;
             Logger = logger ?? Util.GetProcessLogger();
             Observer = observer;
-            ThreadStart = threadStart;
-            ThreadStop = threadStop;
+            TaskScheduler = scheduler ?? TaskScheduler.Default;
             _typeIdNamespaces = typeIdNamespaces ?? new string[] { "Ice.TypeId" };
             _compactIdNamespaces = new string[] { "IceCompactId" }.Concat(_typeIdNamespaces).ToArray();
 
@@ -463,7 +452,6 @@ namespace Ice
                 //
                 // Load plug-ins.
                 //
-                Debug.Assert(_serverThreadPool == null);
                 LoadPlugins(ref args);
 
                 //
@@ -581,7 +569,6 @@ namespace Ice
                     Logger.Error($"cannot create thread for endpoint host resolver:\n{ex}");
                     throw;
                 }
-                _clientThreadPool = new IceInternal.ThreadPool(this, "Ice.ThreadPool.Client", 0);
 
                 //
                 // The default router/locator may have been set during the loading of plugins.
@@ -617,10 +604,6 @@ namespace Ice
                         _printProcessIdDone = true;
                     }
                 }
-
-                //
-                // Server thread pool initialization is lazy in serverThreadPool().
-                //
 
                 //
                 // An application can set Ice.InitPlugins=0 if it wants to postpone
@@ -1255,22 +1238,6 @@ namespace Ice
                 ((ILoggerAdminLogger)Logger).Destroy();
             }
 
-            //
-            // Now, destroy the thread pools. This must be done *only* after
-            // all the connections are finished (the connections destruction
-            // can require invoking callbacks with the thread pools).
-            //
-            if (_serverThreadPool != null)
-            {
-                _serverThreadPool.Destroy();
-            }
-            _clientThreadPool.Destroy();
-
-            if (_asyncIOThread != null)
-            {
-                _asyncIOThread.Destroy();
-            }
-
             lock (_endpointHostResolverThread)
             {
                 Debug.Assert(!_endpointHostResolverDestroyed);
@@ -1282,15 +1249,6 @@ namespace Ice
             // Wait for all the threads to be finished.
             //
             _timer.Destroy();
-            _clientThreadPool.JoinWithAllThreads();
-            if (_serverThreadPool != null)
-            {
-                _serverThreadPool.JoinWithAllThreads();
-            }
-            if (_asyncIOThread != null)
-            {
-                _asyncIOThread.JoinWithThread();
-            }
 
             _endpointHostResolverThread.Join();
 
@@ -1358,9 +1316,6 @@ namespace Ice
 
             lock (this)
             {
-                _serverThreadPool = null;
-                _asyncIOThread = null;
-
                 _adminAdapter = null;
                 _adminFacets.Clear();
 
@@ -1634,24 +1589,6 @@ namespace Ice
             }
         }
 
-        internal AsyncIOThread AsyncIOThread()
-        {
-            lock (this)
-            {
-                if (_state == StateDestroyed)
-                {
-                    throw new CommunicatorDestroyedException();
-                }
-
-                if (_asyncIOThread == null) // Lazy initialization.
-                {
-                    _asyncIOThread = new AsyncIOThread(this);
-                }
-
-                return _asyncIOThread;
-            }
-        }
-
         internal int CheckRetryAfterException(System.Exception ex, Reference reference, ref int cnt)
         {
             ILogger logger = Logger;
@@ -1772,18 +1709,6 @@ namespace Ice
             }
 
             return interval;
-        }
-
-        internal IceInternal.ThreadPool ClientThreadPool()
-        {
-            lock (this)
-            {
-                if (_state == StateDestroyed)
-                {
-                    throw new CommunicatorDestroyedException();
-                }
-                return _clientThreadPool;
-            }
         }
 
         internal Reference CreateReference(Identity ident, string facet, Reference tmpl, Endpoint[] endpoints)
@@ -1920,29 +1845,6 @@ namespace Ice
             });
         }
 
-        internal IceInternal.ThreadPool ServerThreadPool()
-        {
-            lock (this)
-            {
-                if (_state == StateDestroyed)
-                {
-                    throw new CommunicatorDestroyedException();
-                }
-
-                if (_serverThreadPool == null) // Lazy initialization.
-                {
-                    if (_state == StateDestroyInProgress)
-                    {
-                        throw new CommunicatorDestroyedException();
-                    }
-                    _serverThreadPool = new IceInternal.ThreadPool(this, "Ice.ThreadPool.Server",
-                        GetPropertyAsInt("Ice.ServerIdleTime") ?? 0);
-                }
-
-                return _serverThreadPool;
-            }
-        }
-
         internal void SetRcvBufSizeWarn(EndpointType type, int size)
         {
             lock (_setBufSizeWarn)
@@ -1999,15 +1901,6 @@ namespace Ice
             }
         }
 
-        internal void SetThreadHook(Action threadStart, Action threadStop)
-        {
-            //
-            // No locking, as it can only be called during plug-in loading
-            //
-            ThreadStart = threadStart;
-            ThreadStop = threadStop;
-        }
-
         internal void UpdateConnectionObservers()
         {
             try
@@ -2034,29 +1927,8 @@ namespace Ice
         {
             try
             {
-                _clientThreadPool.UpdateObservers();
-                if (_serverThreadPool != null)
-                {
-                    _serverThreadPool.UpdateObservers();
-                }
-
-                ObjectAdapter[] adapters;
-                lock (this)
-                {
-                    adapters = _adapters.ToArray();
-                }
-
-                foreach (ObjectAdapter adapter in adapters)
-                {
-                    adapter.UpdateThreadObservers();
-                }
-
                 UpdateEndpointHostResolverObserver();
 
-                if (_asyncIOThread != null)
-                {
-                    _asyncIOThread.UpdateObserver();
-                }
                 Debug.Assert(Observer != null);
                 _timer.UpdateObserver(Observer);
             }

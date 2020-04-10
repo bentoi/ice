@@ -5,6 +5,8 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Sockets;
+using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace IceInternal
 {
@@ -23,6 +25,7 @@ namespace IceInternal
         /// <returns>Returns SocketOperation.Write, SocketOperation.Read or SocketOperation.None indicating
         /// whenever the operation needs to write more data, read more data or it is done.</returns>
         int Initialize(ref ArraySegment<byte> readBuffer, IList<ArraySegment<byte>> writeBuffer);
+
         int Closing(bool initiator, System.Exception? ex);
         void Close();
         void Destroy();
@@ -85,6 +88,96 @@ namespace IceInternal
         /// with the number of bytes successfully wrote to the socket.</param>
         void FinishWrite(IList<ArraySegment<byte>> buffer, ref int offset);
 
+        // TODO: temporary hack, it will be removed with the transport refactoring
+        Task InitializeAsync()
+        {
+        }
+
+        // TODO: temporary hack, it will be removed with the transport refactoring
+        async Task WriteAsync(IList<ArraySegment<byte>> buffer)
+        {
+            int offset = 0;
+            int op = SocketOperation.Write;
+            while (op != SocketOperation.Write)
+            {
+                (op, offset) = await Write(this, buffer, offset).ConfigureAwait(false);
+            }
+            Debug.Assert(op == SocketOperation.None);
+
+            static Task<(int, int)> Write(ITransceiver self, IList<ArraySegment<byte>> buffer, int offset)
+            {
+                var result = new TaskCompletionSource<(int, int)>();
+                if (self.StartWrite(buffer, offset, state =>
+                {
+                    var transceiver = (ITransceiver)state;
+                    transceiver.FinishWrite(buffer, ref offset);
+                    try
+                    {
+                        var status = transceiver.Write(buffer, ref offset);
+                        result.SetResult((status, offset));
+                    }
+                    catch (System.Exception ex)
+                    {
+                        result.SetException(ex);
+                    }
+                }, self, out bool completed))
+                {
+                    try
+                    {
+                        var status = self.Write(buffer, ref offset);
+                        result.SetResult((status, offset));
+                    }
+                    catch (System.Exception ex)
+                    {
+                        result.SetException(ex);
+                    }
+                }
+                return result.Task;
+            }
+        }
+
+        // TODO: temporary hack, it will be removed with the transport refactoring
+        async Task ReadAsync(ArraySegment<byte> buffer)
+        {
+            int offset = 0;
+            int op = SocketOperation.Read;
+            while (op != SocketOperation.Read)
+            {
+                (op, offset) = await Read(this, buffer, offset).ConfigureAwait(false);
+            }
+            Debug.Assert(op == SocketOperation.None);
+
+            static Task<(int, int)> Read(ITransceiver self, ArraySegment<byte> buffer, int offset)
+            {
+                var result = new TaskCompletionSource<(int, int)>();
+                if (self.StartRead(ref buffer, ref offset, state =>
+                {
+                    var transceiver = (ITransceiver)state;
+                    transceiver.FinishRead(ref buffer, ref offset);
+                    try
+                    {
+                        var status = transceiver.Read(ref buffer, ref offset);
+                        result.SetResult((status, offset));
+                    }
+                    catch (System.Exception ex)
+                    {
+                        result.SetException(ex);
+                    }
+                }, self))
+                {
+                    try
+                    {
+                        var status = self.Read(ref buffer, ref offset);
+                        result.SetResult((status, offset));
+                    }
+                    catch (System.Exception ex)
+                    {
+                        result.SetException(ex);
+                    }
+                }
+                return result.Task;
+            }
+        }
         string Transport();
         string ToDetailedString();
         Ice.ConnectionInfo GetInfo();
