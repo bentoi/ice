@@ -437,7 +437,7 @@ namespace IceLocatorDiscovery
                                         Debug.Assert(ex.InnerException != null);
                                         Exception(ex.InnerException);
                                     }
-                                }, l.Key.Scheduler); // Send multicast request.
+                                }, TaskScheduler.Current); // Send multicast request.
                             }
                             _timer.Schedule(this, _timeout);
                         }
@@ -560,7 +560,7 @@ namespace IceLocatorDiscovery
                                     Debug.Assert(ex.InnerException != null);
                                     Exception(ex.InnerException);
                                 }
-                            }, l.Key.Scheduler); // Send multicast request.
+                            }, TaskScheduler.Current); // Send multicast request.
                         }
                         _timer.Schedule(this, _timeout);
                         return;

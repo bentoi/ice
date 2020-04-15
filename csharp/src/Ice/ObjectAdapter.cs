@@ -46,7 +46,7 @@ namespace Ice
         public string Name { get; }
 
         /// <summary>Returns the TaskScheduler used to dispatch requests.</summary>
-        public TaskScheduler TaskScheduler { get; }
+        public TaskScheduler? TaskScheduler { get; }
 
         internal int MessageSizeMax { get; }
 
@@ -795,7 +795,7 @@ namespace Ice
         }
 
         // Called by Communicator
-        internal ObjectAdapter(Communicator communicator, string name, TaskScheduler scheduler, IRouterPrx? router)
+        internal ObjectAdapter(Communicator communicator, string name, TaskScheduler? scheduler, IRouterPrx? router)
         {
             Communicator = communicator;
             Name = name;

@@ -89,7 +89,8 @@ namespace Ice
         /// <param name="endpoints">The endpoint string for the object adapter.</param>
         /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
-        public ObjectAdapter CreateObjectAdapterWithEndpoints(string name, string endpoints, TaskScheduler? scheduler)
+        public ObjectAdapter CreateObjectAdapterWithEndpoints(string name, string endpoints,
+            TaskScheduler? scheduler = null)
         {
             if (name.Length == 0)
             {
@@ -106,7 +107,7 @@ namespace Ice
         /// <param name="endpoints">The endpoint string for the object adapter.</param>
         /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
-        public ObjectAdapter CreateObjectAdapterWithEndpoints(string endpoints, TaskScheduler? scheduler)
+        public ObjectAdapter CreateObjectAdapterWithEndpoints(string endpoints, TaskScheduler? scheduler = null)
             => CreateObjectAdapterWithEndpoints(Guid.NewGuid().ToString(), endpoints, scheduler);
 
         /// <summary>Creates a new object adapter with the specified router proxy. Calling this method is equivalent
@@ -116,7 +117,8 @@ namespace Ice
         /// <param name="router">The proxy to the router.</param>
         /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
-        public ObjectAdapter CreateObjectAdapterWithRouter(string name, IRouterPrx router, TaskScheduler? scheduler)
+        public ObjectAdapter CreateObjectAdapterWithRouter(string name, IRouterPrx router,
+            TaskScheduler? scheduler = null)
         {
             if (name.Length == 0)
             {
@@ -135,11 +137,11 @@ namespace Ice
 
         /// <summary>Creates a new object adapter with the specified router proxy. This method generates a UUID for
         /// the object adapter name and then calls
-        /// <see cref="CreateObjectAdapterWithRouter(string, IRouterPrx, TaskScheduler? scheduler)"/>.</summary>
+        /// <see cref="CreateObjectAdapterWithRouter(string, IRouterPrx, TaskScheduler?)"/>.</summary>
         /// <param name="router">The proxy to the router.</param>
         /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
-        public ObjectAdapter CreateObjectAdapterWithRouter(IRouterPrx router, TaskScheduler? scheduler)
+        public ObjectAdapter CreateObjectAdapterWithRouter(IRouterPrx router, TaskScheduler? scheduler = null)
             => CreateObjectAdapterWithRouter(Guid.NewGuid().ToString(), router, scheduler);
 
         internal void RemoveObjectAdapter(ObjectAdapter adapter)

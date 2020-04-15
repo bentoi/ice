@@ -131,7 +131,7 @@ namespace Ice
         public Instrumentation.ICommunicatorObserver? Observer { get; }
 
         /// <summary>Returns the TaskScheduler used to dispatch requests.</summary>
-        public TaskScheduler TaskScheduler { get; }
+        public TaskScheduler? TaskScheduler { get; }
 
         public ToStringMode ToStringMode { get; }
 
@@ -249,7 +249,7 @@ namespace Ice
             _state = StateActive;
             Logger = logger ?? Util.GetProcessLogger();
             Observer = observer;
-            TaskScheduler = scheduler ?? TaskScheduler.Default;
+            TaskScheduler = scheduler;
             _typeIdNamespaces = typeIdNamespaces ?? new string[] { "Ice.TypeId" };
             _compactIdNamespaces = new string[] { "IceCompactId" }.Concat(_typeIdNamespaces).ToArray();
 

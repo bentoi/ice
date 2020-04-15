@@ -13,21 +13,6 @@ namespace Ice.ami
 {
     public class AllTests : global::Test.AllTests
     {
-        public class PingReplyI : IPingReply
-        {
-            public void reply(Current current)
-            {
-                _received = true;
-            }
-
-            public bool checkReceived()
-            {
-                return _received;
-            }
-
-            private bool _received = false;
-        }
-
         public class Progress : IProgress<bool>
         {
             public Progress(Action<bool> report)
@@ -792,78 +777,6 @@ namespace Ice.ami
                 }
                 output.WriteLine("ok");
             }
-
-            output.Write("testing ice_scheduler... ");
-            output.Flush();
-            {
-                p.IcePingAsync().ContinueWith(
-                    (t) =>
-                    {
-                        test(Thread.CurrentThread.Name == null ||
-                                !Thread.CurrentThread.Name.Contains("ThreadPool.Client"));
-                    }).Wait();
-
-                p.IcePingAsync().ContinueWith(
-                    (t) =>
-                    {
-                        test(Thread.CurrentThread.Name.Contains("ThreadPool.Client"));
-                    }, p.Scheduler).Wait();
-
-                {
-                    TaskCompletionSource<int> s1 = new TaskCompletionSource<int>();
-                    TaskCompletionSource<int> s2 = new TaskCompletionSource<int>();
-                    Task t1 = s1.Task;
-                    Task t2 = s2.Task;
-                    Task t3 = null;
-                    Task t4 = null;
-                    p.IcePingAsync().ContinueWith(
-                        (t) =>
-                        {
-                            test(Thread.CurrentThread.Name.Contains("ThreadPool.Client"));
-                            //
-                            // t1 Continuation run in the thread that completes it.
-                            //
-                            var id = Thread.CurrentThread.ManagedThreadId;
-                            t3 = t1.ContinueWith(prev =>
-                                {
-                                    test(id == Thread.CurrentThread.ManagedThreadId);
-                                },
-                                CancellationToken.None,
-                                TaskContinuationOptions.ExecuteSynchronously,
-                                p.Scheduler);
-                            s1.SetResult(1);
-
-                            //
-                            // t2 completed from the main thread
-                            //
-                            t4 = t2.ContinueWith(prev =>
-                                        {
-                                            test(id != Thread.CurrentThread.ManagedThreadId);
-                                            test(Thread.CurrentThread.Name == null ||
-                                                    !Thread.CurrentThread.Name.Contains("ThreadPool.Client"));
-                                        },
-                                        CancellationToken.None,
-                                        TaskContinuationOptions.ExecuteSynchronously,
-                                        p.Scheduler);
-                        }, p.Scheduler).Wait();
-                    s2.SetResult(1);
-                    Task.WaitAll(t1, t2, t3, t4);
-                }
-
-                if (!collocated)
-                {
-                    ObjectAdapter adapter = communicator.CreateObjectAdapter();
-                    PingReplyI replyI = new PingReplyI();
-                    var reply = adapter.AddWithUUID(replyI, IPingReplyPrx.Factory);
-                    adapter.Activate();
-
-                    p.GetConnection().SetAdapter(adapter);
-                    p.pingBiDir(reply);
-                    test(replyI.checkReceived());
-                    adapter.Destroy();
-                }
-            }
-            output.WriteLine("ok");
 
             output.Write("testing result struct... ");
             output.Flush();

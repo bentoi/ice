@@ -88,20 +88,6 @@ namespace Ice.ami
             }
         }
 
-        public void pingBiDir(Test.IPingReplyPrx reply, Ice.Current current)
-        {
-            reply = reply.Clone(fixedConnection: current.Connection);
-            Thread dispatchThread = Thread.CurrentThread;
-            reply.replyAsync().ContinueWith(
-                (t) =>
-                {
-                    Thread callbackThread = Thread.CurrentThread;
-                    test(dispatchThread != callbackThread);
-                    test(callbackThread.Name.Contains("Ice.ThreadPool.Server"));
-                },
-                reply.Scheduler).Wait();
-        }
-
         Test.ITestIntfPrx self(Current current) =>
             current.Adapter.CreateProxy(current.Identity, Test.ITestIntfPrx.Factory);
 

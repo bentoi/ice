@@ -3,6 +3,7 @@
 //
 
 using Ice;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
@@ -27,7 +28,7 @@ namespace IceInternal
 
         public int SendAsyncRequest(ProxyOutgoingAsyncBase outAsync) => outAsync.InvokeCollocated(this);
 
-        public void AsyncRequestCanceled(OutgoingAsyncBase outAsync, System.Exception ex)
+        public void AsyncRequestCanceled(OutgoingAsyncBase outAsync, Exception ex)
         {
             lock (this)
             {
@@ -90,7 +91,7 @@ namespace IceInternal
                     _sendAsyncRequests.Add(outAsync, requestId);
                 }
             }
-            catch (System.Exception)
+            catch (Exception)
             {
                 _adapter.DecDirectCount();
                 throw;
@@ -101,7 +102,7 @@ namespace IceInternal
             {
                 // Don't invoke from the user thread if async or invocation timeout is set
                 // TODO: why is oneway included in this list?
-                _adapter.ThreadPool.Dispatch(
+                Task.Factory.StartNew(
                     () =>
                     {
                         if (SentAsync(outAsync))
@@ -109,7 +110,7 @@ namespace IceInternal
                             ValueTask vt = InvokeAllAsync(outAsync.RequestFrame, requestId);
                             // TODO: do something with the value task
                         }
-                    });
+                    }, default, TaskCreationOptions.DenyChildAttach, _adapter.TaskScheduler ?? TaskScheduler.Default);
             }
             else // Optimization: directly call invokeAll
             {
@@ -152,8 +153,7 @@ namespace IceInternal
                 if (_traceLevels.Protocol >= 1)
                 {
                     // TODO we need a better API for tracing
-                    List<System.ArraySegment<byte>> requestData =
-                        Ice1Definitions.GetRequestData(outgoingRequest, requestId);
+                    List<ArraySegment<byte>> requestData = Ice1Definitions.GetRequestData(outgoingRequest, requestId);
                     TraceUtil.TraceSend(_adapter.Communicator, VectoredBufferExtensions.ToArray(requestData), _logger,
                         _traceLevels);
                 }
@@ -189,7 +189,7 @@ namespace IceInternal
                         SendResponse(requestId, response, amd);
                     }
                 }
-                catch (System.Exception ex)
+                catch (Exception ex)
                 {
                     if (requestId != 0)
                     {
@@ -210,7 +210,7 @@ namespace IceInternal
                     }
                 }
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 HandleException(requestId, ex, false);
             }
@@ -226,18 +226,16 @@ namespace IceInternal
             OutgoingAsyncBase? outAsync;
             lock (this)
             {
-                byte[] responseBuffer = VectoredBufferExtensions.ToArray(
-                        Ice1Definitions.GetResponseData(responseFrame, requestId));
+                var responseBuffer = new ArraySegment<byte>(VectoredBufferExtensions.ToArray(
+                        Ice1Definitions.GetResponseData(responseFrame, requestId)));
                 if (_traceLevels.Protocol >= 1)
                 {
-                    var iss = new InputStream(_adapter.Communicator, responseBuffer,
-                        Ice1Definitions.HeaderSize + 4);
-                    TraceUtil.TraceRecv(iss, _logger, _traceLevels);
+                    TraceUtil.TraceRecv(new InputStream(_adapter.Communicator, responseBuffer), _logger, _traceLevels);
                 }
-
+                responseBuffer = responseBuffer.Slice(Ice1Definitions.HeaderSize + 4);
                 if (_asyncRequests.TryGetValue(requestId, out outAsync))
                 {
-                    if (!outAsync.Response(responseBuffer))
+                    if (!outAsync.Response(new IncomingResponseFrame(_adapter.Communicator, responseBuffer)))
                     {
                         outAsync = null;
                     }
@@ -258,7 +256,7 @@ namespace IceInternal
             }
         }
 
-        private void HandleException(int requestId, System.Exception ex, bool amd)
+        private void HandleException(int requestId, Exception ex, bool amd)
         {
             if (requestId == 0)
             {

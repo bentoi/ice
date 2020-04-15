@@ -12,6 +12,9 @@ using System.Threading.Tasks;
 
 namespace IceInternal
 {
+    // TODO: XXX Remove with the transport refactoring
+    public delegate void AsyncCallback(object state);
+
     public interface ITransceiver
     {
         Socket? Fd();
@@ -90,33 +93,81 @@ namespace IceInternal
         /// with the number of bytes successfully wrote to the socket.</param>
         void FinishWrite(IList<ArraySegment<byte>> buffer, ref int offset);
 
-        // TODO: temporary hack, it will be removed with the transport refactoring
-        Task InitializeAsync()
+        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
+        async ValueTask InitializeAsync()
         {
+            ArraySegment<byte> readBuffer = default;
+            IList<ArraySegment<byte>> writeBuffer = new List<ArraySegment<byte>>();
+            while (true)
+            {
+                int status = Initialize(ref readBuffer, writeBuffer);
+                if (status == SocketOperation.Read)
+                {
+                    int offset = 0;
+                    while (offset < readBuffer.Count)
+                    {
+                        offset += await ReadAsync(readBuffer, offset);
+                    }
+                }
+                else if (status == SocketOperation.Write)
+                {
+                    int size = writeBuffer.GetByteCount();
+                    int offset = 0;
+                    while (offset < size)
+                    {
+                        offset += await WriteAsync(writeBuffer, offset);
+                    }
+                }
+                else
+                {
+                    Debug.Assert(status == SocketOperation.None);
+                    break;
+                }
+            }
         }
 
-        // TODO: temporary hack, it will be removed with the transport refactoring
-        async Task WriteAsync(IList<ArraySegment<byte>> buffer)
+        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
+        async ValueTask ClosingAsync(bool initiator, System.Exception? ex)
         {
-            int offset = 0;
-            int op = SocketOperation.Write;
-            while (op != SocketOperation.Write)
+            ArraySegment<byte> readBuffer = default;
+            IList<ArraySegment<byte>> writeBuffer = new List<ArraySegment<byte>>();
+            int status = Closing(initiator, ex);
+            if (status == SocketOperation.Read)
             {
-                (op, offset) = await Write(this, buffer, offset).ConfigureAwait(false);
+                int offset = 0;
+                do
+                {
+                    offset += await ReadAsync(readBuffer, offset);
+                }
+                while (offset < readBuffer.Count);
             }
-            Debug.Assert(op == SocketOperation.None);
-
-            static Task<(int, int)> Write(ITransceiver self, IList<ArraySegment<byte>> buffer, int offset)
+            else if (status == SocketOperation.Write)
             {
-                var result = new TaskCompletionSource<(int, int)>();
+                int offset = 0;
+                do
+                {
+                    offset += await WriteAsync(writeBuffer, offset);
+                }
+                while (offset != writeBuffer.GetByteCount());
+            }
+        }
+
+        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
+        async ValueTask<int> WriteAsync(IList<ArraySegment<byte>> buffer, int offset = 0)
+        {
+            return await Write(this, buffer, offset).ConfigureAwait(false);
+
+            static Task<int> Write(ITransceiver self, IList<ArraySegment<byte>> buffer, int offset)
+            {
+                var result = new TaskCompletionSource<int>();
                 if (self.StartWrite(buffer, offset, state =>
                 {
                     var transceiver = (ITransceiver)state;
                     transceiver.FinishWrite(buffer, ref offset);
                     try
                     {
-                        var status = transceiver.Write(buffer, ref offset);
-                        result.SetResult((status, offset));
+                        transceiver.Write(buffer, ref offset);
+                        result.SetResult(offset);
                     }
                     catch (System.Exception ex)
                     {
@@ -126,8 +177,8 @@ namespace IceInternal
                 {
                     try
                     {
-                        var status = self.Write(buffer, ref offset);
-                        result.SetResult((status, offset));
+                        self.Write(buffer, ref offset);
+                        result.SetResult(offset);
                     }
                     catch (System.Exception ex)
                     {
@@ -138,28 +189,23 @@ namespace IceInternal
             }
         }
 
-        // TODO: temporary hack, it will be removed with the transport refactoring
-        async Task ReadAsync(ArraySegment<byte> buffer)
+        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
+        async ValueTask<int> ReadAsync(ArraySegment<byte> buffer, int offset = 0)
         {
-            int offset = 0;
-            int op = SocketOperation.Read;
-            while (op != SocketOperation.Read)
-            {
-                (op, offset) = await Read(this, buffer, offset).ConfigureAwait(false);
-            }
-            Debug.Assert(op == SocketOperation.None);
+            return await Read(this, buffer.Slice(offset)).ConfigureAwait(false);
 
-            static Task<(int, int)> Read(ITransceiver self, ArraySegment<byte> buffer, int offset)
+            static Task<int> Read(ITransceiver self, ArraySegment<byte> buffer)
             {
-                var result = new TaskCompletionSource<(int, int)>();
+                var result = new TaskCompletionSource<int>();
+                int offset = 0;
                 if (self.StartRead(ref buffer, ref offset, state =>
                 {
                     var transceiver = (ITransceiver)state;
                     transceiver.FinishRead(ref buffer, ref offset);
                     try
                     {
-                        var status = transceiver.Read(ref buffer, ref offset);
-                        result.SetResult((status, offset));
+                        transceiver.Read(ref buffer, ref offset);
+                        result.SetResult(offset);
                     }
                     catch (System.Exception ex)
                     {
@@ -169,8 +215,8 @@ namespace IceInternal
                 {
                     try
                     {
-                        var status = self.Read(ref buffer, ref offset);
-                        result.SetResult((status, offset));
+                        self.Read(ref buffer, ref offset);
+                        result.SetResult(offset);
                     }
                     catch (System.Exception ex)
                     {

@@ -31,7 +31,7 @@ namespace IceInternal
 
         public virtual bool Exception(Exception ex) => ExceptionImpl(ex);
 
-        public virtual bool Response(ArraySegment<byte> data)
+        public virtual bool Response(IncomingResponseFrame responseFrame)
         {
             Debug.Assert(false); // Must be overridden by request that can handle responses
             return false;
@@ -39,36 +39,20 @@ namespace IceInternal
 
         public void InvokeSentAsync()
         {
-            //
-            // This is called when it's not safe to call the sent callback
-            // synchronously from this thread. Instead the exception callback
-            // is called asynchronously from the client thread pool.
-            //
-            try
-            {
-                Communicator.ClientThreadPool().Dispatch(InvokeSent);
-            }
-            catch (Ice.CommunicatorDestroyedException)
-            {
-            }
+            Task.Factory.StartNew(InvokeSent, default, TaskCreationOptions.DenyChildAttach,
+                Communicator.TaskScheduler ?? TaskScheduler.Default);
         }
 
         public void InvokeExceptionAsync()
         {
-            //
-            // CommunicatorDestroyedCompleted is the only exception that can propagate directly
-            // from this method.
-            //
-            Communicator.ClientThreadPool().Dispatch(InvokeException);
+            Task.Factory.StartNew(InvokeException, default, TaskCreationOptions.DenyChildAttach,
+                Communicator.TaskScheduler ?? TaskScheduler.Default);
         }
 
         public void InvokeResponseAsync()
         {
-            //
-            // CommunicatorDestroyedCompleted is the only exception that can propagate directly
-            // from this method.
-            //
-            Communicator.ClientThreadPool().Dispatch(InvokeResponse);
+            Task.Factory.StartNew(InvokeResponse, default, TaskCreationOptions.DenyChildAttach,
+                Communicator.TaskScheduler ?? TaskScheduler.Default);
         }
 
         public void InvokeSent()
@@ -636,10 +620,9 @@ namespace IceInternal
 
         public override bool Sent() => base.SentImpl(IsOneway); // done = true
 
-        public override bool Response(ArraySegment<byte> data)
+        public override bool Response(IncomingResponseFrame responseFrame)
         {
-            ResponseFrame = new IncomingResponseFrame(Communicator,
-                data.Slice(Ice1Definitions.HeaderSize + 4));
+            ResponseFrame = responseFrame;
             //
             // NOTE: this method is called from ConnectionI.parseMessage
             // with the connection locked. Therefore, it must not invoke

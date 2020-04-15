@@ -139,7 +139,7 @@ namespace IceDiscovery
                     Debug.Assert(ex.InnerException != null);
                     Lookup.AdapterRequestException(this, ex.InnerException);
                 }
-            }, lookup.Scheduler);
+            }, TaskScheduler.Current);
         }
 
         private void SendResponse(IObjectPrx? proxy)
@@ -193,7 +193,7 @@ namespace IceDiscovery
                     Debug.Assert(ex.InnerException != null);
                     Lookup.ObjectRequestException(this, ex.InnerException);
                 }
-            }, lookup.Scheduler);
+            }, TaskScheduler.Current);
         }
     };
 

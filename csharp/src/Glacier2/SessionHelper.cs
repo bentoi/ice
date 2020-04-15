@@ -24,8 +24,7 @@ namespace Glacier2
         /// <param name="properties">Optional properties used for communicator initialization.</param>
         /// <param name="logger">Optional logger used for communicator initialization.</param>
         /// <param name="observer">Optional communicator observer used for communicator initialization.</param>
-        /// <param name="threadStart">Optional thread start delegate used for communicator initialization.</param>
-        /// <param name="threadStop">Optional thread stop delegate used for communicator initialization.</param>
+        /// <param name="scheduler">Optional task scheduler used for communicator initialization.</param>
         /// <param name="typeIdNamespaces">Optional list of TypeId namespaces used for communicator initialization.
         /// The default is Ice.TypeId.</param>
         /// <param name="finderStr">The stringified Ice.RouterFinder proxy.</param>
@@ -36,8 +35,7 @@ namespace Glacier2
             Dictionary<string, string> properties,
             ILogger? logger = null,
             Ice.Instrumentation.ICommunicatorObserver? observer = null,
-            Action? threadStart = null,
-            Action? threadStop = null,
+            System.Threading.Tasks.TaskScheduler? scheduler = null,
             string[]? typeIdNamespaces = null)
         {
             _callback = callback;
@@ -46,8 +44,7 @@ namespace Glacier2
             _properties = properties;
             _logger = logger;
             _observer = observer;
-            _threadStart = threadStart;
-            _threadStop = threadStop;
+            _taskScheduler = scheduler;
             _typeIdNamespaces = typeIdNamespaces;
         }
 
@@ -394,8 +391,7 @@ namespace Glacier2
                             properties: _properties,
                             logger: _logger,
                             observer: _observer,
-                            threadStart: _threadStart,
-                            threadStop: _threadStop,
+                            scheduler: _taskScheduler,
                             typeIdNamespaces: _typeIdNamespaces);
                     }
                 }
@@ -468,8 +464,7 @@ namespace Glacier2
         private readonly Dictionary<string, string> _properties;
         private readonly Ice.ILogger? _logger;
         private readonly Ice.Instrumentation.ICommunicatorObserver? _observer;
-        private readonly Action? _threadStart;
-        private readonly Action? _threadStop;
+        private readonly System.Threading.Tasks.TaskScheduler? _taskScheduler;
         private readonly string[]? _typeIdNamespaces;
 
         private readonly SessionCallback _callback;
