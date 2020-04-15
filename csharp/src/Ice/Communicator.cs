@@ -490,7 +490,7 @@ namespace Ice
                     string processFacetName = "Process";
                     if (_adminFacetFilter.Count == 0 || _adminFacetFilter.Contains(processFacetName))
                     {
-                        _adminFacets.Add(processFacetName, new IceInternal.Process(this));
+                        _adminFacets.Add(processFacetName, new Process(this));
                     }
 
                     //
@@ -1737,8 +1737,7 @@ namespace Ice
                 facet: "",
                 fixedConnection: connection,
                 identity: identity,
-                invocationMode: ((Endpoint)connection.Endpoint).Datagram() ?
-                    InvocationMode.Datagram : InvocationMode.Twoway,
+                invocationMode: connection.Endpoint.IsDatagram ? InvocationMode.Datagram : InvocationMode.Twoway,
                 invocationTimeout: -1);
         }
 

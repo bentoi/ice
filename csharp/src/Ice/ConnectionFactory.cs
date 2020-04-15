@@ -6,6 +6,9 @@ using Ice;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
+#if DEBUG
+using System.Linq;
+#endif
 
 namespace IceInternal
 {
@@ -119,8 +122,8 @@ namespace IceInternal
                 foreach (Connection c in _monitor.SwapReapedConnections())
                 {
                     _connections.Remove(c.Connector, c);
-                    _connectionsByEndpoint.Remove((Endpoint)c.Endpoint, c);
-                    _connectionsByEndpoint.Remove(((Endpoint)c.Endpoint).Compress(true), c);
+                    _connectionsByEndpoint.Remove(c.Endpoint, c);
+                    _connectionsByEndpoint.Remove((c.Endpoint).NewCompressionFlag(true), c);
                 }
                 Debug.Assert(_connections.Count == 0);
                 Debug.Assert(_connectionsByEndpoint.Count == 0);
@@ -198,7 +201,7 @@ namespace IceInternal
                     //
                     if (defaultsAndOverrides.OverrideTimeout)
                     {
-                        endpoint = endpoint.Timeout(defaultsAndOverrides.OverrideTimeoutValue);
+                        endpoint = endpoint.NewTimeout(defaultsAndOverrides.OverrideTimeoutValue);
                     }
 
                     //
@@ -210,7 +213,7 @@ namespace IceInternal
                     // only, we always set the compression flag to false here in
                     // this connection factory.
                     //
-                    endpoint = endpoint.Compress(false);
+                    endpoint = endpoint.NewCompressionFlag(false);
 
                     foreach (ICollection<Connection> connections in _connections.Values)
                     {
@@ -270,7 +273,7 @@ namespace IceInternal
                 //
                 if (defaultsAndOverrides.OverrideTimeout)
                 {
-                    endpoints.Add(endpts[i].Timeout(defaultsAndOverrides.OverrideTimeoutValue));
+                    endpoints.Add(endpts[i].NewTimeout(defaultsAndOverrides.OverrideTimeoutValue));
                 }
                 else
                 {
@@ -310,7 +313,7 @@ namespace IceInternal
                             }
                             else
                             {
-                                compress = endpoint.Compress();
+                                compress = endpoint.HasCompressionFlag;
                             }
                             return connection;
                         }
@@ -350,7 +353,7 @@ namespace IceInternal
                         }
                         else
                         {
-                            compress = ci.Endpoint.Compress();
+                            compress = ci.Endpoint.HasCompressionFlag;
                         }
                         return connection;
                     }
@@ -409,8 +412,8 @@ namespace IceInternal
                 foreach (Connection c in _monitor.SwapReapedConnections())
                 {
                     _connections.Remove(c.Connector, c);
-                    _connectionsByEndpoint.Remove((Endpoint)c.Endpoint, c);
-                    _connectionsByEndpoint.Remove(((Endpoint)c.Endpoint).Compress(true), c);
+                    _connectionsByEndpoint.Remove(c.Endpoint, c);
+                    _connectionsByEndpoint.Remove(c.Endpoint.NewCompressionFlag(true), c);
                 }
 
                 //
@@ -498,7 +501,7 @@ namespace IceInternal
                     }
 
                     connection = new Connection(_communicator, _monitor, transceiver, ci.Connector,
-                                                    ci.Endpoint.Compress(false), null);
+                                                    ci.Endpoint.NewCompressionFlag(false), null);
                 }
                 catch (System.Exception)
                 {
@@ -513,8 +516,8 @@ namespace IceInternal
                     throw;
                 }
                 _connections.Add(ci.Connector, connection);
-                _connectionsByEndpoint.Add((Endpoint)connection.Endpoint, connection);
-                _connectionsByEndpoint.Add(((Endpoint)connection.Endpoint).Compress(true), connection);
+                _connectionsByEndpoint.Add(connection.Endpoint, connection);
+                _connectionsByEndpoint.Add(connection.Endpoint.NewCompressionFlag(true), connection);
                 return connection;
             }
         }
@@ -572,7 +575,7 @@ namespace IceInternal
             }
             else
             {
-                compress = ci.Endpoint.Compress();
+                compress = ci.Endpoint.HasCompressionFlag;
             }
 
             foreach (ConnectCallback cc in callbacks)
@@ -959,7 +962,7 @@ namespace IceInternal
                         if (_factory._communicator.TraceLevels.Network >= 2)
                         {
                             _factory._communicator.Logger.Trace(_factory._communicator.TraceLevels.NetworkCat,
-                                $"trying to establish {_current.Endpoint.Transport()} connection to " +
+                                $"trying to establish {_current.Endpoint.Name} connection to " +
                                 $"{_current.Connector}");
                         }
 
@@ -972,7 +975,7 @@ namespace IceInternal
                         {
                             Debug.Assert(_current != null);
                             _factory._communicator.Logger.Trace(_factory._communicator.TraceLevels.NetworkCat,
-                                $"failed to establish {_current.Endpoint.Transport()} connection to " +
+                                $"failed to establish {_current.Endpoint.Name} connection to " +
                                 $"{_current.Connector}\n{ex}");
                         }
 
@@ -1046,7 +1049,7 @@ namespace IceInternal
                     if (_communicator.TraceLevels.Network >= 1)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
-                            $"accepting {_endpoint.Transport()} connections at {_acceptor}");
+                            $"accepting {_endpoint.Name} connections at {_acceptor}");
                     }
                     Task.Run(async () => await Accept().ConfigureAwait(false));
                 }
@@ -1063,7 +1066,7 @@ namespace IceInternal
                     if (_communicator.TraceLevels.Network >= 1)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
-                            $"stopping to accept {_endpoint.Transport()} connections at {_acceptor}");
+                            $"stopping to accept {_endpoint.Name} connections at {_acceptor}");
                     }
 
                     _acceptor!.Close();
@@ -1174,45 +1177,45 @@ namespace IceInternal
             DefaultsAndOverrides defaultsAndOverrides = _communicator.DefaultsAndOverrides;
             if (defaultsAndOverrides.OverrideTimeout)
             {
-                _endpoint = _endpoint.Timeout(defaultsAndOverrides.OverrideTimeoutValue);
+                _endpoint = _endpoint.NewTimeout(defaultsAndOverrides.OverrideTimeoutValue);
             }
 
             if (defaultsAndOverrides.OverrideCompress)
             {
-                _endpoint = _endpoint.Compress(defaultsAndOverrides.OverrideCompressValue);
+                _endpoint = _endpoint.NewCompressionFlag(defaultsAndOverrides.OverrideCompressValue);
             }
 
             try
             {
-                _transceiver = _endpoint.Transceiver();
+                _transceiver = _endpoint.GetTransceiver();
                 if (_transceiver != null)
                 {
                     if (_communicator.TraceLevels.Network >= 2)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
-                            $"attempting to bind to {_endpoint.Transport()} socket\n{_transceiver}");
+                            $"attempting to bind to {_endpoint.Name} socket\n{_transceiver}");
                     }
                     _endpoint = _transceiver.Bind();
 
                     var connection = new Connection(_communicator, null, _transceiver, null, _endpoint, _adapter);
-                    connection.StartAndWait();
+                    connection.StartAsync().AsTask().Wait();
                     _connections.Add(connection);
                 }
                 else
                 {
-                    _acceptor = _endpoint.Acceptor(_adapter!.Name);
+                    _acceptor = _endpoint.GetAcceptor(_adapter!.Name);
 
                     if (_communicator.TraceLevels.Network >= 2)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
-                            $"attempting to bind to {_endpoint.Transport()} socket {_acceptor}");
+                            $"attempting to bind to {_endpoint.Name} socket {_acceptor}");
                     }
                     _endpoint = _acceptor!.Listen();
 
                     if (_communicator.TraceLevels.Network >= 1)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
-                            $"listening for {_endpoint.Transport()} connections\n{_acceptor!.ToDetailedString()}");
+                            $"listening for {_endpoint.Name} connections\n{_acceptor!.ToDetailedString()}");
                     }
                 }
             }
@@ -1290,7 +1293,7 @@ namespace IceInternal
                     if (_communicator.TraceLevels.Network >= 2)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
-                            $"trying to accept {_endpoint.Transport()} connection\n{transceiver}");
+                            $"trying to accept {_endpoint.Name} connection\n{transceiver}");
                     }
 
                     try

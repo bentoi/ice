@@ -504,9 +504,9 @@ public class AllTests : Test.AllTests
         string isSecure = "";
         if (!collocated)
         {
-            Ice.EndpointInfo endpointInfo = metrics.GetConnection().Endpoint.GetInfo();
-            type = endpointInfo.Type().ToString();
-            isSecure = endpointInfo.Secure() ? "True" : "False";
+            Ice.Endpoint connectionEndpoint = metrics.GetConnection().Endpoint;
+            type = connectionEndpoint.Type.ToString();
+            isSecure = connectionEndpoint.IsSecure ? "True" : "False";
         }
 
         Dictionary<string, IceMX.Metrics> map;
@@ -1102,7 +1102,7 @@ public class AllTests : Test.AllTests
         test(rim1.Size == 42 && rim1.ReplySize == 0);
 
         testAttribute(clientMetrics, clientProps, update, "Invocation", "mode", "oneway",
-                      () => { invokeOp(metricsOneway); }, output);
+                      () => invokeOp(metricsOneway), output);
 
         output.Write("testing metrics view enable/disable...");
         output.Flush();

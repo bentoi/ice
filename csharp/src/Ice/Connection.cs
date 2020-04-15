@@ -85,9 +85,10 @@ namespace Ice
             private readonly Connection _connection;
         }
 
+        // TODO: refactor remove IStartCallback
         public void Start(IStartCallback? callback)
         {
-            var task = StartAsync();
+            var task = StartAsync().AsTask();
             if (callback != null)
             {
                 task.ContinueWith(t => {
@@ -100,60 +101,63 @@ namespace Ice
                     {
                         callback!.ConnectionStartFailed(this, ex);
                     }
-                }, _taskFactory.Scheduler!);
+                }, _taskScheduler ?? TaskScheduler.Default);
             }
         }
 
-        internal void StartAndWait()
-        {
-            StartAsync().Wait();
-        }
-
-        internal async Task StartAsync()
+        internal async ValueTask StartAsync()
         {
             await _transceiver.InitializeAsync().ConfigureAwait(false);
 
-            //
-            // Update the connection description once the transceiver is initialized.
-            //
-            _desc = _transceiver.ToString()!;
-            _initialized = true;
-            SetState(StateNotValidated);
+            lock (this)
+            {
+                if (_state >= StateClosed)
+                {
+                    throw _exception!;
+                }
 
-            if (!_endpoint.Datagram()) // Datagram connections are always implicitly validated.
+                //
+                // Update the connection description once the transceiver is initialized.
+                //
+                _desc = _transceiver.ToString()!;
+                _initialized = true;
+                SetState(StateNotValidated);
+
+                if (!_endpoint.IsDatagram) // Datagram connections are always implicitly validated.
+                {
+                    if (_adapter != null) // The server side has the active role for connection validation.
+                    {
+                        // TODO we need a better API for tracing
+                        TraceUtil.TraceSend(_communicator, VectoredBufferExtensions.ToArray(_validateConnectionMessage),
+                            _logger, _traceLevels);
+                    }
+                }
+            }
+
+            byte[]? readBuffer = null;
+            if (!_endpoint.IsDatagram) // Datagram connections are always implicitly validated.
             {
                 if (_adapter != null) // The server side has the active role for connection validation.
                 {
-                    _writeBuffer = _validateConnectionMessage;
-
-                    // TODO we need a better API for tracing
-                    TraceUtil.TraceSend(_communicator,
-                        _writeBuffer.GetSegment(0, _writeBufferSize).ToArray(), _logger, _traceLevels);
-
-                    await _transceiver.WriteAsync(_writeBuffer).ConfigureAwait(false);
-
-                    TraceSentAndUpdateObserver(_writeBuffer.GetByteCount());
+                    int sentBytes = await _transceiver.WriteAsync(_validateConnectionMessage).ConfigureAwait(false);
+                    Debug.Assert(sentBytes == _validateConnectionMessage.GetByteCount());
                 }
                 else // The client side has the passive role for connection validation.
                 {
-                    _readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
+                    readBuffer = new byte[256];
+                    int receivedBytes = await _transceiver.ReadAsync(
+                        new ArraySegment<byte>(readBuffer!, 0, Ice1Definitions.HeaderSize)).ConfigureAwait(false);
+                    Debug.Assert(receivedBytes == Ice1Definitions.HeaderSize);
 
-                    await _transceiver.ReadAsync(_readBuffer).ConfigureAwait(false);
-
-                    TraceReceivedAndUpdateObserver(_readBuffer.Count);
-
-                    _validated = true;
-
-                    Debug.Assert(_readBufferOffset == Ice1Definitions.HeaderSize);
-                    Ice1Definitions.CheckHeader(_readBuffer.AsSpan(0, 8));
-                    var messageType = (Ice1Definitions.MessageType)_readBuffer[8];
+                    Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
+                    var messageType = (Ice1Definitions.MessageType)readBuffer[8];
                     if (messageType != Ice1Definitions.MessageType.ValidateConnectionMessage)
                     {
                         throw new InvalidDataException(@$"received ice1 frame with message type `{messageType
                             }' before receiving the validate connection message");
                     }
 
-                    int size = InputStream.ReadInt(_readBuffer.AsSpan(10, 4));
+                    int size = InputStream.ReadInt(readBuffer.AsSpan(10, 4));
                     if (size != Ice1Definitions.HeaderSize)
                     {
                         throw new InvalidDataException(
@@ -162,44 +166,59 @@ namespace Ice
                 }
             }
 
-            _writeBuffer = _emptyBuffer;
-            _writeBufferSize = 0;
-
-            // For datagram connections the buffer is allocated by the datagram transport
-            if (!_endpoint.Datagram())
+            lock (this)
             {
-                _readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
-            }
-            _readHeader = true;
-
-            if (_communicator.TraceLevels.Network >= 1)
-            {
-                var s = new StringBuilder();
-                if (_endpoint.Datagram())
+                if (_state >= StateClosed)
                 {
-                    s.Append("starting to ");
-                    s.Append(_connector != null ? "send" : "receive");
-                    s.Append(" ");
-                    s.Append(_endpoint.Transport());
-                    s.Append(" messages\n");
-                    s.Append(_transceiver.ToDetailedString());
+                    throw _exception!;
                 }
-                else
-                {
-                    s.Append(_connector != null ? "established" : "accepted");
-                    s.Append(" ");
-                    s.Append(_endpoint.Transport());
-                    s.Append(" connection\n");
-                    s.Append(ToString());
-                }
-                _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
-            }
 
-            if (_acmLastActivity > -1)
-            {
-                _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                if (!_endpoint.IsDatagram) // Datagram connections are always implicitly validated.
+                {
+                    if (_adapter != null) // The server side has the active role for connection validation.
+                    {
+                        TraceSentAndUpdateObserver(_validateConnectionMessage.GetByteCount());
+                    }
+                    else
+                    {
+                        TraceReceivedAndUpdateObserver(readBuffer!.Length);
+                        TraceUtil.TraceRecv(new InputStream(_communicator, readBuffer!), _logger, _traceLevels);
+                    }
+                }
+
+                if (_communicator.TraceLevels.Network >= 1)
+                {
+                    var s = new StringBuilder();
+                    if (_endpoint.IsDatagram)
+                    {
+                        s.Append("starting to ");
+                        s.Append(_connector != null ? "send" : "receive");
+                        s.Append(" ");
+                        s.Append(_endpoint.Name);
+                        s.Append(" messages\n");
+                        s.Append(_transceiver.ToDetailedString());
+                    }
+                    else
+                    {
+                        s.Append(_connector != null ? "established" : "accepted");
+                        s.Append(" ");
+                        s.Append(_endpoint.Name);
+                        s.Append(" connection\n");
+                        s.Append(ToString());
+                    }
+                    _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
+                }
+
+                if (_acmLastActivity > -1)
+                {
+                    _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                }
+                if (_adapter == null)
+                {
+                    _validated = true;
+                }
+                SetState(StateActive);
             }
-            SetState(StateActive);
         }
 
         internal void Destroy(Exception ex)
@@ -338,24 +357,12 @@ namespace Ice
                 // called every (timeout / 2) period.
                 //
                 if (acm.Heartbeat == ACMHeartbeat.HeartbeatAlways ||
-                   (acm.Heartbeat != ACMHeartbeat.HeartbeatOff && _writeBufferSize == 0 &&
-                    now >= (_acmLastActivity + (acm.Timeout / 4))))
+                   (acm.Heartbeat != ACMHeartbeat.HeartbeatOff && now >= (_acmLastActivity + (acm.Timeout / 4))))
                 {
                     if (acm.Heartbeat != ACMHeartbeat.HeartbeatOnDispatch || _dispatchCount > 0)
                     {
                         SendHeartbeatNow();
                     }
-                }
-
-                if (_readBuffer.Count > Ice1Definitions.HeaderSize || _writeBufferSize > 0)
-                {
-                    //
-                    // If writing or reading, nothing to do, the connection
-                    // timeout will kick-in if writes or reads don't progress.
-                    // This check is necessary because the activity timer is
-                    // only set when a message is fully read/written.
-                    //
-                    return;
                 }
 
                 if (acm.Close != ACMClose.CloseOff && now >= (_acmLastActivity + acm.Timeout))
@@ -466,15 +473,14 @@ namespace Ice
                 {
                     if (callback != null)
                     {
-                        _taskFactory.StartNew(() =>
-                        {
+                        RunTask(() => {
                             try
                             {
                                 callback(this);
                             }
                             catch (Exception ex)
                             {
-                                _logger.Error("connection callback exception:\n" + ex + '\n' + _desc);
+                                _logger.Error($"connection callback exception:\n{ex}\n{_desc}");
                             }
                         });
                     }
@@ -754,7 +760,7 @@ namespace Ice
         /// Get the endpoint from which the connection was created.
         /// </summary>
         /// <returns>The endpoint from which the connection was created.</returns>
-        public IEndpoint Endpoint => _endpoint; // No mutex protection necessary, _endpoint is immutable.
+        public Endpoint Endpoint => _endpoint; // No mutex protection necessary, _endpoint is immutable.
 
         /// <summary>Creates a special "fixed" proxy that always uses this connection. This proxy can be used for
         /// callbacks from a server to a client if the server cannot directly establish a connection to the client,
@@ -779,538 +785,538 @@ namespace Ice
             }
         }
 
-        public async Task ReadMessage()
+        public void TimedOut()
         {
-            var info = new MessageInfo();
-            int dispatchCount = 0;
+            lock (this)
+            {
+                if (_state <= StateNotValidated)
+                {
+                    SetState(StateClosed, new ConnectTimeoutException());
+                }
+                else if (_state < StateClosed)
+                {
+                    SetState(StateClosed, new ConnectionTimeoutException());
+                }
+            }
+        }
+
+        /// <summary>
+        /// Return the connection type.
+        /// This corresponds to the endpoint
+        /// type, i.e., "tcp", "udp", etc.
+        ///
+        /// </summary>
+        /// <returns>The type of the connection.</returns>
+        public string Type() => _type; // No mutex lock, _type is immutable.
+
+        /// <summary>
+        /// Get the timeout for the connection.
+        /// </summary>
+        /// <returns>The connection's timeout.</returns>
+        public int Timeout => _endpoint.Timeout; // No mutex protection necessary, _endpoint is immutable.
+
+        /// <summary>
+        /// Returns the connection information.
+        /// </summary>
+        /// <returns>The connection information.</returns>
+        public ConnectionInfo GetConnectionInfo()
+        {
             lock (this)
             {
                 if (_state >= StateClosed)
                 {
-                    return;
+                    throw _exception!;
                 }
-
-                try
-                {
-                    _readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
-                    await _transceiver.ReadAsync(_readBuffer).ConfigureAwait(false);
-                    TraceReceivedAndUpdateObserver(_readBuffer.Count);
-
-                    //
-                    // Connection is validated on first message. This is only used by
-                    // setState() to check whether or not we can print a connection
-                    // warning (a client might close the connection forcefully if the
-                    // connection isn't validated, we don't want to print a warning
-                    // in this case).
-                    //
-                    _validated = true;
-
-                    // TODO: XXX
-                    // if (bytesRead < Ice1Definitions.HeaderSize)
-                    // {
-                    //     //
-                    //     // This situation is possible for small UDP packets.
-                    //     //
-                    //     throw new InvalidDataException($"received packet with only {_readBufferOffset} bytes");
-                    // }
-
-                    Ice1Definitions.CheckHeader(_readBuffer.AsSpan(0, 8));
-                    int size = InputStream.ReadInt(_readBuffer.Slice(10, 4));
-                    if (size < Ice1Definitions.HeaderSize)
-                    {
-                        throw new InvalidDataException($"received ice1 frame with only {size} bytes");
-                    }
-
-                    if (size > _messageSizeMax)
-                    {
-                        throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
-                    }
-
-                    // TODO: XXX
-                    // if (_endpoint.Datagram() && size > bytesRead)
-                    // {
-                    //     if (_warnUdp)
-                    //     {
-                    //         _logger.Warning($"maximum datagram size of {_readBufferOffset} exceeded");
-                    //     }
-                    //     _readBuffer = ArraySegment<byte>.Empty;
-                    //     _readHeader = true;
-                    //     return;
-                    // }
-
-                    if (size > _readBuffer.Array!.Length)
-                    {
-                        // Allocate a new array and copy the header over
-                        byte[] readBuffer = new byte[size];
-                        _readBuffer.AsSpan().CopyTo(readBuffer.AsSpan(0, Ice1Definitions.HeaderSize));
-                        _readBuffer = readBuffer;
-                    }
-                    else if (size > _readBuffer.Count)
-                    {
-                        _readBuffer = new ArraySegment<byte>(_readBuffer.Array, 0, size);
-                    }
-                    Debug.Assert(size == _readBuffer.Count);
-                    await _transceiver.ReadAsync(new ArraySegment<byte>(_readBuffer.Array, Ice1Definitions.HeaderSize,
-                        size - Ice1Definitions.HeaderSize).ConfigureAwait(false);
-
-                    Debug.Assert(_state <= StateClosingPending);
-
-                    //
-                    // We parse messages first, if we receive a close
-                    // connection message we won't send more messages.
-                    //
-                    if ((readyOp & SocketOperation.Read) != 0)
-                    {
-                        newOp |= ParseMessage(ref info);
-                        dispatchCount += info.MessageDispatchCount;
-                    }
-
-                    if ((readyOp & SocketOperation.Write) != 0)
-                    {
-                        newOp |= SendNextMessage(out sentCBs);
-                        if (sentCBs != null)
-                        {
-                            ++dispatchCount;
-                        }
-                    }
-
-                    if (_state < StateClosed)
-                    {
-                        ScheduleTimeout(newOp);
-                        ThreadPool.Update(this, current.Operation, newOp);
-                    }
-                }
-
-                        if (_acmLastActivity > -1)
-                        {
-                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                        }
-
-                        if (dispatchCount == 0)
-                        {
-                            return; // Nothing to dispatch we're done!
-                        }
-
-_dispatchCount += dispatchCount;
-                        msg.Completed(ref current);
-                    }
-                    catch (TransportException ex)
-                    {
-                        SetState(StateClosed, ex);
-                        return;
-                    }
-                    catch (Exception ex)
-                    {
-                        if (_endpoint.Datagram())
-                        {
-                            if (_warn)
-                            {
-                                _logger.Warning(string.Format("datagram connection exception:\n{0}\n{1}", ex, _desc));
-                            }
-                            _readBuffer = ArraySegment<byte>.Empty;
-                            _readBufferOffset = 0;
-                            _readHeader = true;
-                        }
-                        else
-                        {
-                            SetState(StateClosed, ex);
-                        }
-                        return;
-                    }
-
-                    ThreadPoolCurrent c = current;
-ThreadPool.Dispatch(() =>
-                    {
-                        Dispatch(startCB, sentCBs, info);
-msg.Destroy(ref c);
-                    });
-                }
-            }
-            finally
-            {
-                msg.FinishIOScope(ref current);
+                return InitConnectionInfo();
             }
         }
 
-        public override void Message(ref ThreadPoolCurrent current)
+        /// <summary>
+        /// Set the connection buffer receive/send size.
+        /// </summary>
+        /// <param name="rcvSize">The connection receive buffer size.
+        /// </param>
+        /// <param name="sndSize">The connection send buffer size.</param>
+        public void SetBufferSize(int rcvSize, int sndSize)
         {
-            IStartCallback? startCB = null;
-            Queue<OutgoingMessage>? sentCBs = null;
-            var info = new MessageInfo();
-            int dispatchCount = 0;
-
-            var msg = new ThreadPoolMessage(this);
-            try
+            lock (this)
             {
+                if (_state >= StateClosed)
+                {
+                    throw _exception!;
+                }
+                _transceiver.SetBufferSize(rcvSize, sndSize);
+                _info = null; // Invalidate the cached connection info
+            }
+        }
+
+        /// <summary>
+        /// Return a description of the connection as human readable text,
+        /// suitable for logging or error messages.
+        /// </summary>
+        /// <returns>The description of the connection as human readable
+        /// text.</returns>
+        public override string ToString() => _desc; // No mutex lock, _desc is immutable.
+
+        internal Connection(Communicator communicator,
+                            IACMMonitor? monitor,
+                            ITransceiver transceiver,
+                            IConnector? connector,
+                            Endpoint endpoint,
+                            ObjectAdapter? adapter)
+        {
+            _communicator = communicator;
+            _monitor = monitor;
+            _transceiver = transceiver;
+            _desc = transceiver.ToString()!;
+            _type = transceiver.Transport();
+            _connector = connector;
+            _endpoint = endpoint;
+            _adapter = adapter;
+            _communicatorObserver = communicator.Observer;
+            _logger = communicator.Logger; // Cached for better performance.
+            _traceLevels = communicator.TraceLevels; // Cached for better performance.
+            _warn = communicator.GetPropertyAsInt("Ice.Warn.Connections") > 0;
+            _warnUdp = communicator.GetPropertyAsInt("Ice.Warn.Datagrams") > 0;
+
+            if (_monitor != null && _monitor.GetACM().Timeout > 0)
+            {
+                _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+            }
+            else
+            {
+                _acmLastActivity = -1;
+            }
+            _nextRequestId = 1;
+            _messageSizeMax = adapter != null ? adapter.MessageSizeMax : communicator.MessageSizeMax;
+            _dispatchCount = 0;
+            _pendingIO = 0;
+            _state = StateNotInitialized;
+
+            _compressionLevel = communicator.GetPropertyAsInt("Ice.Compression.Level") ?? 1;
+            if (_compressionLevel < 1)
+            {
+                _compressionLevel = 1;
+            }
+            else if (_compressionLevel > 9)
+            {
+                _compressionLevel = 9;
+            }
+
+            _taskScheduler = adapter != null ? adapter.TaskScheduler : communicator.TaskScheduler;
+        }
+
+        private async ValueTask Read()
+        {
+            while (true)
+            {
+                var readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
+                await _transceiver.ReadAsync(readBuffer).ConfigureAwait(false);
+
+                // TODO: XXX: datagrams
+                // if (_readBufferOffset < Ice1Definitions.HeaderSize)
+                // {
+                //     //
+                //     // This situation is possible for small UDP packets.
+                //     //
+                //     throw new InvalidDataException($"received packet with only {_readBufferOffset} bytes");
+                // }
+
+                Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
+                int size = InputStream.ReadInt(readBuffer.Slice(10, 4));
+                if (size < Ice1Definitions.HeaderSize)
+                {
+                    throw new InvalidDataException($"received ice1 frame with only {size} bytes");
+                }
+
+                if (size > _messageSizeMax)
+                {
+                    throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
+                }
+
+                // TODO: XXX: datagrams
+                // if (_endpoint.IsDatagram && size > _readBufferOffset)
+                // {
+                //     if (_warnUdp)
+                //     {
+                //         _logger.Warning($"maximum datagram size of {_readBufferOffset} exceeded");
+                //     }
+                //     _readBuffer = ArraySegment<byte>.Empty;
+                //     _readBufferOffset = 0;
+                //     _readHeader = true;
+                //     return;
+                // }
+
                 lock (this)
                 {
-                    if (!msg.StartIOScope(ref current))
-                    {
-                        return;
-                    }
-
                     if (_state >= StateClosed)
                     {
                         return;
                     }
 
-                    int readyOp = current.Operation;
-                    try
+                    TraceReceivedAndUpdateObserver(readBuffer.Count);
+
+                    if (_acmLastActivity > -1)
                     {
-                        UnscheduleTimeout(current.Operation);
+                        _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                    }
+                }
 
-                        int writeOp = SocketOperation.None;
-                        int readOp = SocketOperation.None;
-                        if ((readyOp & SocketOperation.Write) != 0)
+                if (size > readBuffer.Array!.Length)
+                {
+                    // Allocate a new array and copy the header over
+                    var buffer = new ArraySegment<byte>(new byte[size], 0, size);
+                    readBuffer.AsSpan().CopyTo(buffer.AsSpan(0, Ice1Definitions.HeaderSize));
+                }
+                else if (size > readBuffer.Count)
+                {
+                    readBuffer = new ArraySegment<byte>(readBuffer.Array!, 0, size);
+                }
+                Debug.Assert(size == readBuffer.Array!.Length);
+
+                // Read the reminder of the message
+                int offset = Ice1Definitions.HeaderSize;
+                while (offset < size)
+                {
+                    int bytesReceived = await _transceiver.ReadAsync(readBuffer, offset).ConfigureAwait(false);
+                    lock (this)
+                    {
+                        if (_state >= StateClosed)
                         {
-                            writeOp = Write(_writeBuffer, _writeBufferSize, ref _writeBufferOffset);
+                            return;
                         }
 
-                        while ((readyOp & SocketOperation.Read) != 0)
-                        {
-                            readOp = Read(ref _readBuffer, ref _readBufferOffset);
-                            if ((readOp & SocketOperation.Read) != 0)
-                            {
-                                break;
-                            }
-
-                            if (_readHeader) // Read header if necessary.
-                            {
-                                _readHeader = false;
-
-                                //
-                                // Connection is validated on first message. This is only used by
-                                // setState() to check whether or not we can print a connection
-                                // warning (a client might close the connection forcefully if the
-                                // connection isn't validated, we don't want to print a warning
-                                // in this case).
-                                //
-                                _validated = true;
-
-                                if (_readBufferOffset < Ice1Definitions.HeaderSize)
-                                {
-                                    //
-                                    // This situation is possible for small UDP packets.
-                                    //
-                                    throw new InvalidDataException(
-                                        $"received packet with only {_readBufferOffset} bytes");
-                                }
-
-                                Ice1Definitions.CheckHeader(_readBuffer.AsSpan(0, 8));
-                                int size = InputStream.ReadInt(_readBuffer.Slice(10, 4));
-                                if (size < Ice1Definitions.HeaderSize)
-                                {
-                                    throw new InvalidDataException($"received ice1 frame with only {size} bytes");
-                                }
-
-                                if (size > _messageSizeMax)
-                                {
-                                    throw new InvalidDataException(
-                                        $"frame with {size} bytes exceeds Ice.MessageSizeMax value");
-                                }
-
-                                if (_endpoint.Datagram() && size > _readBufferOffset)
-                                {
-                                    if (_warnUdp)
-                                    {
-                                        _logger.Warning($"maximum datagram size of {_readBufferOffset} exceeded");
-                                    }
-                                    _readBuffer = ArraySegment<byte>.Empty;
-                                    _readBufferOffset = 0;
-                                    _readHeader = true;
-                                    return;
-                                }
-
-                                if (size > _readBuffer.Array!.Length)
-                                {
-                                    // Allocate a new array and copy the header over
-                                    byte[] readBuffer = new byte[size];
-                                    _readBuffer.AsSpan().CopyTo(readBuffer.AsSpan(0, Ice1Definitions.HeaderSize));
-                                    _readBuffer = readBuffer;
-                                }
-                                else if (size > _readBuffer.Count)
-                                {
-                                    _readBuffer = new ArraySegment<byte>(_readBuffer.Array, 0, size);
-                                }
-                                Debug.Assert(size == _readBuffer.Count);
-                            }
-
-                            if (_readBufferOffset < _readBuffer.Count)
-                            {
-                                Debug.Assert(!_endpoint.Datagram());
-                                continue;
-                            }
-                            break;
-                        }
-
-                        int newOp = readOp | writeOp;
-                        readyOp &= ~newOp;
-                        Debug.Assert(readyOp != 0 || newOp != 0);
-
-                        if (_state <= StateNotValidated)
-                        {
-                            if (newOp != 0)
-                            {
-                                //
-                                // Wait for all the transceiver conditions to be
-                                // satisfied before continuing.
-                                //
-                                ScheduleTimeout(newOp);
-                                ThreadPool.Update(this, current.Operation, newOp);
-                                return;
-                            }
-
-                            if (_state == StateNotInitialized && !Initialize(current.Operation))
-                            {
-                                return;
-                            }
-
-                            if (_state <= StateNotValidated && !Validate(current.Operation))
-                            {
-                                return;
-                            }
-
-                            ThreadPool.Unregister(this, current.Operation);
-
-                            SetState(StateActive);
-                            if (_startCallback != null)
-                            {
-                                startCB = _startCallback;
-                                _startCallback = null;
-                                if (startCB != null)
-                                {
-                                    ++dispatchCount;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            Debug.Assert(_state <= StateClosingPending);
-
-                            //
-                            // We parse messages first, if we receive a close
-                            // connection message we won't send more messages.
-                            //
-                            if ((readyOp & SocketOperation.Read) != 0)
-                            {
-                                newOp |= ParseMessage(ref info);
-                                dispatchCount += info.MessageDispatchCount;
-                            }
-
-                            if ((readyOp & SocketOperation.Write) != 0)
-                            {
-                                newOp |= SendNextMessage(out sentCBs);
-                                if (sentCBs != null)
-                                {
-                                    ++dispatchCount;
-                                }
-                            }
-
-                            if (_state < StateClosed)
-                            {
-                                ScheduleTimeout(newOp);
-                                ThreadPool.Update(this, current.Operation, newOp);
-                            }
-                        }
+                        TraceReceivedAndUpdateObserver(bytesReceived);
 
                         if (_acmLastActivity > -1)
                         {
                             _acmLastActivity = Time.CurrentMonotonicTimeMillis();
                         }
-
-                        if (dispatchCount == 0)
-                        {
-                            return; // Nothing to dispatch we're done!
-                        }
-
-                        _dispatchCount += dispatchCount;
-                        msg.Completed(ref current);
                     }
-                    catch (TransportException ex)
+                    offset += bytesReceived;
+                }
+
+                Current? current = null;
+                IncomingRequestFrame? requestFrame = null;
+                OutgoingAsyncBase? outAsyncSent = null;
+                OutgoingAsyncBase? outAsyncResponse = null;
+                HeartbeatCallback? heartbeatCallback = null;
+                bool closing = false;
+                byte compressionStatus;
+
+                lock (this)
+                {
+                    if (_state >= StateClosed)
                     {
-                        SetState(StateClosed, ex);
                         return;
                     }
-                    catch (Exception ex)
+
+                    // The magic and version fields have already been checked.
+                    var messageType = (Ice1Definitions.MessageType)readBuffer[8];
+                    compressionStatus = readBuffer[9];
+                    if (compressionStatus == 2)
                     {
-                        if (_endpoint.Datagram())
+                        if (BZip2.IsLoaded)
                         {
-                            if (_warn)
-                            {
-                                _logger.Warning(string.Format("datagram connection exception:\n{0}\n{1}", ex, _desc));
-                            }
-                            _readBuffer = ArraySegment<byte>.Empty;
-                            _readBufferOffset = 0;
-                            _readHeader = true;
+                            readBuffer = BZip2.Decompress(readBuffer, Ice1Definitions.HeaderSize, _messageSizeMax);
                         }
                         else
                         {
-                            SetState(StateClosed, ex);
+                            throw new LoadException("compression not supported, bzip2 library not found");
                         }
-                        return;
                     }
 
-                    ThreadPoolCurrent c = current;
-                    ThreadPool.Dispatch(() =>
+                    switch (messageType)
                     {
-                        Dispatch(startCB, sentCBs, info);
-                        msg.Destroy(ref c);
-                    });
+                        case Ice1Definitions.MessageType.CloseConnectionMessage:
+                        {
+                            TraceUtil.TraceRecv(new InputStream(_communicator, readBuffer), _logger, _traceLevels);
+                            if (_endpoint.IsDatagram)
+                            {
+                                if (_warn)
+                                {
+                                    _logger.Warning(
+                                        $"ignoring close connection message for datagram connection:\n{_desc}");
+                                }
+                            }
+                            else
+                            {
+                                SetState(StateClosingPending, new ConnectionClosedByPeerException());
+                                closing = true;
+                            }
+                            break;
+                        }
+
+                        case Ice1Definitions.MessageType.RequestMessage:
+                        {
+                            if (_state >= StateClosing)
+                            {
+                                TraceUtil.Trace("received request during closing\n" +
+                                                "(ignored by server, client will retry)",
+                                                new InputStream(_communicator, readBuffer),
+                                                _logger, _traceLevels);
+                            }
+                            else
+                            {
+                                TraceUtil.TraceRecv(new InputStream(_communicator, readBuffer), _logger, _traceLevels);
+                                readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
+                                int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
+                                requestFrame = new IncomingRequestFrame(_adapter!.Communicator, readBuffer.Slice(4));
+                                current = new Current(_adapter!, requestFrame, requestId, this);
+                                ++_dispatchCount;
+                            }
+                            break;
+                        }
+
+                        case Ice1Definitions.MessageType.RequestBatchMessage:
+                        {
+                            if (_state >= StateClosing)
+                            {
+                                TraceUtil.Trace("received batch request during closing\n" +
+                                                "(ignored by server, client will retry)",
+                                                new InputStream(_communicator, readBuffer),
+                                                _logger, _traceLevels);
+                            }
+                            else
+                            {
+                                TraceUtil.TraceRecv(new InputStream(_communicator, readBuffer), _logger, _traceLevels);
+                                int invokeNum = InputStream.ReadInt(readBuffer.AsSpan(Ice1Definitions.HeaderSize, 4));
+                                if (invokeNum < 0)
+                                {
+                                    throw new InvalidDataException(
+                                        $"received ice1 RequestBatchMessage with {invokeNum} batch requests");
+                                }
+                                Debug.Assert(false); // TODO: deal with batch requests
+                            }
+                            break;
+                        }
+
+                        case Ice1Definitions.MessageType.ReplyMessage:
+                        {
+                            TraceUtil.TraceRecv(new InputStream(_communicator, readBuffer), _logger, _traceLevels);
+                            readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
+                            int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
+                            if (_asyncRequests.TryGetValue(requestId, out OutgoingAsyncBase? outAsync))
+                            {
+                                _asyncRequests.Remove(requestId);
+
+                                //
+                                // If we just received the reply for a request which isn't acknowledge as
+                                // sent yet, we queue the reply instead of processing it right away. It
+                                // will be processed once the write callback is invoked for the message.
+                                //
+                                var response = new IncomingResponseFrame(_communicator, readBuffer.Slice(4));
+                                OutgoingMessage? message = _outgoingMessages.First?.Value;
+                                if (message != null && message.OutAsync == outAsync)
+                                {
+                                    if (message.Sent())
+                                    {
+                                        outAsyncSent = outAsync;
+                                    }
+                                }
+
+                                if (outAsync.Response(response))
+                                {
+                                    outAsyncResponse = outAsync;
+                                }
+
+                                if (outAsyncSent != null || outAsyncResponse != null)
+                                {
+                                    ++_dispatchCount;
+                                }
+                                System.Threading.Monitor.PulseAll(this); // Notify threads blocked in close()
+                            }
+                            break;
+                        }
+
+                        case Ice1Definitions.MessageType.ValidateConnectionMessage:
+                        {
+                            TraceUtil.TraceRecv(new InputStream(_communicator, readBuffer), _logger, _traceLevels);
+                            if (_heartbeatCallback != null)
+                            {
+                                heartbeatCallback = _heartbeatCallback;
+                                ++_dispatchCount;
+                            }
+                            break;
+                        }
+
+                        default:
+                        {
+                            TraceUtil.Trace("received unknown message\n(invalid, closing connection)",
+                                            new InputStream(_communicator, readBuffer), _logger, _traceLevels);
+                            throw new InvalidDataException(
+                                $"received ice1 frame with unknown message type `{messageType}'");
+                        }
+                    }
+                }
+
+                if (closing)
+                {
+                    // Wait for the transceiver closing. We're done once it returns.
+                    await _transceiver.ClosingAsync(false, _exception).ConfigureAwait(false);
+                    lock (this)
+                    {
+                        SetState(StateClosed);
+                    }
+                    return;
+                }
+                else if (_taskScheduler != null)
+                {
+                    // Dispatch on the configured task scheduler and continue reading.
+                    RunTask(async () =>
+                        await Dispatch(current, requestFrame, compressionStatus, outAsyncSent, outAsyncResponse,
+                            heartbeatCallback));
+                }
+                // TODO: serialize support
+                // else if (_serialize)
+                // {
+                //     // Dispatch on this thread and continue reading once the dispatch is done.
+                //     await Dispatch(current, requestFrame, outAsync, heartbeatCallback);
+                // }
+                else
+                {
+                    // Start a read on another thread and dispatch on this thread, we're done
+                    // with this thread once the dipatch completes.
+                    StartIO(Read);
+                    await Dispatch(current, requestFrame, compressionStatus, outAsyncSent, outAsyncResponse,
+                        heartbeatCallback);
+                    return;
+                }
+            }
+        }
+
+        // TODO: Consider adding RequestFrame and CompressionStatus to Ice.Current (could be internal)?
+        private async ValueTask Dispatch(Current? current, IncomingRequestFrame? requestFrame, byte compressionStatus,
+            OutgoingAsyncBase? outAsyncSent, OutgoingAsyncBase? outAsyncResponse, HeartbeatCallback? heartbeatCallback)
+        {
+            if (current != null)
+            {
+                await InvokeAsync(current, requestFrame!, compressionStatus).ConfigureAwait(false);
+            }
+
+            if (outAsyncSent != null)
+            {
+                outAsyncSent.InvokeSent();
+            }
+            if (outAsyncResponse != null)
+            {
+                outAsyncResponse.InvokeResponse();
+            }
+
+            if (heartbeatCallback != null)
+            {
+                try
+                {
+                    heartbeatCallback(this);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error($"connection callback exception:\n{ex}\n{_desc}");
+                }
+            }
+
+            lock (this)
+            {
+                if (--_dispatchCount == 0)
+                {
+                    //
+                    // Only initiate shutdown if not already done. It
+                    // might have already been done if the sent callback
+                    // or AMI callback was dispatched when the connection
+                    // was already in the closing state.
+                    //
+                    if (_state == StateClosing)
+                    {
+                        try
+                        {
+                            InitiateShutdown();
+                        }
+                        catch (Exception ex)
+                        {
+                            SetState(StateClosed, ex);
+                        }
+                    }
+                    else if (_state == StateFinished)
+                    {
+                        Reap();
+                    }
+                    System.Threading.Monitor.PulseAll(this);
+                }
+            }
+        }
+
+        private async Task InvokeAsync(Current current, IncomingRequestFrame requestFrame, byte compressionStatus)
+        {
+            IDispatchObserver? dispatchObserver = null;
+
+            try
+            {
+                // Then notify and set dispatch observer, if any.
+                ICommunicatorObserver? communicatorObserver = current.Adapter.Communicator.Observer;
+                if (communicatorObserver != null)
+                {
+                    dispatchObserver = communicatorObserver.GetDispatchObserver(current, requestFrame!.Size);
+                    dispatchObserver?.Attach();
+                }
+
+                OutgoingResponseFrame? response = null;
+                try
+                {
+                    IObject? servant = current.Adapter.Find(current.Identity, current.Facet);
+                    if (servant == null)
+                    {
+                        throw new ObjectNotExistException(current.Identity, current.Facet, current.Operation);
+                    }
+
+                    ValueTask<OutgoingResponseFrame> vt = servant.DispatchAsync(requestFrame!, current);
+                    if (current.RequestId != 0)
+                    {
+                        response = await vt.ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (current.RequestId != 0)
+                    {
+                        RemoteException actualEx;
+                        if (ex is RemoteException remoteEx && !remoteEx.ConvertToUnhandled)
+                        {
+                            actualEx = remoteEx;
+                        }
+                        else
+                        {
+                            actualEx = new UnhandledException(current.Identity, current.Facet, current.Operation,
+                                ex);
+                        }
+                        Incoming.ReportException(actualEx, dispatchObserver, current);
+                        response = new OutgoingResponseFrame(current, actualEx);
+                    }
+                }
+
+                if (current.RequestId == 0)
+                {
+                    SendNoResponse();
+                }
+                else
+                {
+                    Debug.Assert(response != null);
+                    dispatchObserver?.Reply(response.Size);
+                    SendResponse(response, current.RequestId, compressionStatus);
+                }
+            }
+            catch (Exception ex)
+            {
+                lock (this)
+                {
+                    SetState(StateClosed, ex);
                 }
             }
             finally
             {
-                msg.FinishIOScope(ref current);
-            }
-
-        }
-
-        private void Dispatch(IStartCallback? startCB, Queue<OutgoingMessage>? sentCBs, MessageInfo info)
-        {
-            int dispatchedCount = 0;
-
-            //
-            // Notify the factory that the connection establishment and
-            // validation has completed.
-            //
-            if (startCB != null)
-            {
-                startCB.ConnectionStartCompleted(this);
-                ++dispatchedCount;
-            }
-
-            //
-            // Notify AMI calls that the message was sent.
-            //
-            if (sentCBs != null)
-            {
-                foreach (OutgoingMessage m in sentCBs)
-                {
-                    if (m.InvokeSent)
-                    {
-                        Debug.Assert(m.OutAsync != null);
-                        m.OutAsync.InvokeSent();
-                    }
-                    if (m.ReceivedReply)
-                    {
-                        Debug.Assert(m.OutAsync != null);
-                        var outAsync = (OutgoingAsync)m.OutAsync;
-                        if (outAsync.Response(m.IncomingData))
-                        {
-                            outAsync.InvokeResponse();
-                        }
-                    }
-                }
-                ++dispatchedCount;
-            }
-
-            //
-            // Asynchronous replies must be handled outside the thread
-            // synchronization, so that nested calls are possible.
-            //
-            if (info.OutAsync != null)
-            {
-                info.OutAsync.InvokeResponse();
-                ++dispatchedCount;
-            }
-
-            if (info.HeartbeatCallback != null)
-            {
-                try
-                {
-                    info.HeartbeatCallback(this);
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error("connection callback exception:\n" + ex + '\n' + _desc);
-                }
-                ++dispatchedCount;
-            }
-
-            //
-            // Method invocation must be done outside the thread synchronization, so that nested
-            // calls are possible.
-            //
-            if (info.InvokeNum > 0)
-            {
-                ValueTask vt = InvokeAllAsync(info.Data, info.InvokeNum, info.RequestId, info.Compress,
-                    info.Adapter!);
-
-                // TODO: do something with the value task
-
-                //
-                // Don't increase dispatchedCount, the dispatch count is
-                // decreased when the incoming reply is sent.
-                //
-            }
-
-            //
-            // Decrease dispatch count.
-            //
-            if (dispatchedCount > 0)
-            {
-                lock (this)
-                {
-                    _dispatchCount -= dispatchedCount;
-                    if (_dispatchCount == 0)
-                    {
-                        //
-                        // Only initiate shutdown if not already done. It
-                        // might have already been done if the sent callback
-                        // or AMI callback was dispatched when the connection
-                        // was already in the closing state.
-                        //
-                        if (_state == StateClosing)
-                        {
-                            try
-                            {
-                                InitiateShutdown();
-                            }
-                            catch (Exception ex)
-                            {
-                                SetState(StateClosed, ex);
-                            }
-                        }
-                        else if (_state == StateFinished)
-                        {
-                            Reap();
-                        }
-                        System.Threading.Monitor.PulseAll(this);
-                    }
-                }
+                dispatchObserver?.Detach();
             }
         }
-
-        public override void Finished(ref ThreadPoolCurrent current)
-        {
-            lock (this)
-            {
-                Debug.Assert(_state == StateClosed);
-                UnscheduleTimeout(SocketOperation.Read | SocketOperation.Write);
-            }
-
-            //
-            // If there are no callbacks to call, we don't call ioCompleted() since we're not going
-            // to call code that will potentially block (this avoids promoting a new leader and
-            // unnecessary thread creation, especially if this is called on shutdown).
-            //
-            if (_startCallback == null && _outgoingMessages.Count == 0 && _asyncRequests.Count == 0 &&
-               _closeCallback == null && _heartbeatCallback == null)
-            {
-                Finish();
-                return;
-            }
-
-            //
-            // Unlike C++/Java, this method is called from an IO thread of the .NET thread
-            // pool of from the communicator async IO thread. While it's fine to handle the
-            // non-blocking activity of the connection from these threads, the dispatching
-            // of the message must be taken care of by the Ice thread pool.
-            //
-            ThreadPool.Dispatch(Finish);
-        }
-
-        private new void Finish() // TODO: rename to avoid new
+        private void Finish()
         {
             if (!_initialized)
             {
@@ -1319,7 +1325,7 @@ msg.Destroy(ref c);
                     var s = new StringBuilder("failed to ");
                     s.Append(_connector != null ? "establish" : "accept");
                     s.Append(" ");
-                    s.Append(_endpoint.Transport());
+                    s.Append(_endpoint.Name);
                     s.Append(" connection\n");
                     s.Append(ToString());
                     s.Append("\n");
@@ -1330,7 +1336,7 @@ msg.Destroy(ref c);
             else if (_communicator.TraceLevels.Network >= 1)
             {
                 var s = new StringBuilder("closed ");
-                s.Append(_endpoint.Transport());
+                s.Append(_endpoint.Name);
                 s.Append(" connection\n");
                 s.Append(ToString());
 
@@ -1349,50 +1355,8 @@ msg.Destroy(ref c);
                 _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
             }
 
-            if (_startCallback != null)
-            {
-                Debug.Assert(_exception != null);
-                _startCallback.ConnectionStartFailed(this, _exception);
-                _startCallback = null;
-            }
-
             if (_outgoingMessages.Count > 0)
             {
-                if (_writeBufferSize > 0)
-                {
-                    // Return the stream to the outgoing call. This is important for
-                    // retriable AMI calls which are not marshalled again.
-                    OutgoingMessage message = _outgoingMessages.First!.Value;
-                    Debug.Assert(message.OutgoingData != null);
-                    _writeBufferOffset = 0;
-                    _writeBufferSize = 0;
-                    _writeBuffer = _emptyBuffer;
-
-                    //
-                    // The current message might be sent but not yet removed from _sendStreams. If
-                    // the response has been received in the meantime, we remove the message from
-                    // _sendStreams to not call finished on a message which is already done.
-                    //
-                    if (message.IsSent || message.ReceivedReply)
-                    {
-                        if (message.Sent() && message.InvokeSent)
-                        {
-                            Debug.Assert(message.OutAsync != null);
-                            message.OutAsync.InvokeSent();
-                        }
-                        if (message.ReceivedReply)
-                        {
-                            Debug.Assert(message.OutAsync != null);
-                            var outAsync = (OutgoingAsync)message.OutAsync;
-                            if (outAsync.Response(message.IncomingData))
-                            {
-                                outAsync.InvokeResponse();
-                            }
-                        }
-                        _outgoingMessages.RemoveFirst();
-                    }
-                }
-
                 foreach (OutgoingMessage o in _outgoingMessages)
                 {
                     o.Completed(_exception!);
@@ -1412,13 +1376,6 @@ msg.Destroy(ref c);
                 }
             }
             _asyncRequests.Clear();
-
-            //
-            // Don't wait to be reaped to reclaim memory allocated by read/write streams.
-            //
-            // TODO reclaim read/write buffers
-            _readBuffer = ArraySegment<byte>.Empty;
-            _readBufferOffset = 0;
 
             if (_closeCallback != null)
             {
@@ -1522,176 +1479,6 @@ msg.Destroy(ref c);
             }
         }
 
-        private void InvokeException(System.Exception ex, int invokeNum)
-        {
-            // Fatal exception while invoking a request. Since sendResponse/sendNoResponse isn't
-            // called in case of a fatal exception we decrement _dispatchCount here.
-
-            lock (this)
-            {
-                SetState(StateClosed, ex);
-
-                if (invokeNum > 0)
-                {
-                    Debug.Assert(_dispatchCount >= invokeNum);
-                    _dispatchCount -= invokeNum;
-                    if (_dispatchCount == 0)
-                    {
-                        if (_state == StateFinished)
-                        {
-                            Reap();
-                        }
-                        System.Threading.Monitor.PulseAll(this);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Return a description of the connection as human readable text,
-        /// suitable for logging or error messages.
-        /// </summary>
-        /// <returns>The description of the connection as human readable
-        /// text.</returns>
-        public override string ToString() => _desc; // No mutex lock, _desc is immutable.
-
-        public void TimedOut()
-        {
-            lock (this)
-            {
-                if (_state <= StateNotValidated)
-                {
-                    SetState(StateClosed, new ConnectTimeoutException());
-                }
-                else if (_state < StateClosed)
-                {
-                    SetState(StateClosed, new ConnectionTimeoutException());
-                }
-            }
-        }
-
-        /// <summary>
-        /// Return the connection type.
-        /// This corresponds to the endpoint
-        /// type, i.e., "tcp", "udp", etc.
-        ///
-        /// </summary>
-        /// <returns>The type of the connection.</returns>
-        public string Type() => _type; // No mutex lock, _type is immutable.
-
-        /// <summary>
-        /// Get the timeout for the connection.
-        /// </summary>
-        /// <returns>The connection's timeout.</returns>
-        public int Timeout => _endpoint.Timeout(); // No mutex protection necessary, _endpoint is immutable.
-
-        /// <summary>
-        /// Returns the connection information.
-        /// </summary>
-        /// <returns>The connection information.</returns>
-        public ConnectionInfo GetConnectionInfo()
-        {
-            lock (this)
-            {
-                if (_state >= StateClosed)
-                {
-                    throw _exception!;
-                }
-                return InitConnectionInfo();
-            }
-        }
-
-        /// <summary>
-        /// Set the connection buffer receive/send size.
-        /// </summary>
-        /// <param name="rcvSize">The connection receive buffer size.
-        /// </param>
-        /// <param name="sndSize">The connection send buffer size.</param>
-        public void SetBufferSize(int rcvSize, int sndSize)
-        {
-            lock (this)
-            {
-                if (_state >= StateClosed)
-                {
-                    throw _exception!;
-                }
-                _transceiver.SetBufferSize(rcvSize, sndSize);
-                _info = null; // Invalidate the cached connection info
-            }
-        }
-
-        internal Connection(Communicator communicator,
-                            IACMMonitor? monitor,
-                            ITransceiver transceiver,
-                            IConnector? connector,
-                            Endpoint endpoint,
-                            ObjectAdapter? adapter)
-        {
-            _communicator = communicator;
-            _monitor = monitor;
-            _transceiver = transceiver;
-            _desc = transceiver.ToString()!;
-            _type = transceiver.Transport();
-            _connector = connector;
-            _endpoint = endpoint;
-            _adapter = adapter;
-            _communicatorObserver = communicator.Observer;
-            _logger = communicator.Logger; // Cached for better performance.
-            _traceLevels = communicator.TraceLevels; // Cached for better performance.
-            _timer = communicator.Timer();
-            _writeTimeout = new TimeoutCallback(this);
-            _writeTimeoutScheduled = false;
-            _readTimeout = new TimeoutCallback(this);
-            _readTimeoutScheduled = false;
-            _warn = communicator.GetPropertyAsInt("Ice.Warn.Connections") > 0;
-            _warnUdp = communicator.GetPropertyAsInt("Ice.Warn.Datagrams") > 0;
-
-            if (_monitor != null && _monitor.GetACM().Timeout > 0)
-            {
-                _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-            }
-            else
-            {
-                _acmLastActivity = -1;
-            }
-            _nextRequestId = 1;
-            _messageSizeMax = adapter != null ? adapter.MessageSizeMax : communicator.MessageSizeMax;
-            _readBuffer = ArraySegment<byte>.Empty;
-            _readHeader = false;
-            _writeBuffer = new List<ArraySegment<byte>>();
-            _writeBufferSize = 0;
-            _writeBufferOffset = 0;
-            _dispatchCount = 0;
-            _state = StateNotInitialized;
-
-            _compressionLevel = communicator.GetPropertyAsInt("Ice.Compression.Level") ?? 1;
-            if (_compressionLevel < 1)
-            {
-                _compressionLevel = 1;
-            }
-            else if (_compressionLevel > 9)
-            {
-                _compressionLevel = 9;
-            }
-
-            if (adapter != null)
-            {
-                _taskFactory = new TaskFactory(adapter.TaskScheduler);
-            }
-            else
-            {
-                _taskFactory = new TaskFactory(communicator.TaskScheduler);
-            }
-        }
-
-        private const int StateNotInitialized = 0;
-        private const int StateNotValidated = 1;
-        private const int StateActive = 2;
-        private const int StateClosing = 3;
-        private const int StateClosingPending = 4;
-        private const int StateClosed = 5;
-        private const int StateFinished = 6;
-
         private void SetState(int state, System.Exception ex)
         {
             //
@@ -1747,7 +1534,7 @@ msg.Destroy(ref c);
             // We don't want to send close connection messages if the endpoint
             // only supports oneway transmission from client to server.
             //
-            if (_endpoint.Datagram() && state == StateClosing)
+            if (_endpoint.IsDatagram && state == StateClosing)
             {
                 state = StateClosed;
             }
@@ -1770,61 +1557,59 @@ msg.Destroy(ref c);
                 switch (state)
                 {
                     case StateNotInitialized:
-                        {
-                            Debug.Assert(false);
-                            break;
-                        }
+                    {
+                        Debug.Assert(false);
+                        break;
+                    }
 
                     case StateNotValidated:
+                    {
+                        if (_state != StateNotInitialized)
                         {
-                            if (_state != StateNotInitialized)
-                            {
-                                Debug.Assert(_state == StateClosed);
-                                return;
-                            }
-                            break;
+                            Debug.Assert(_state == StateClosed);
+                            return;
                         }
+                        break;
+                    }
 
                     case StateActive:
+                    {
+                        // Can only switch from validated to active.
+                        if (_state != StateNotValidated)
                         {
-                            // Can only switch from validated to active.
-                            if (_state != StateNotValidated)
-                            {
-                                return;
-                            }
-                            ThreadPool.Register(this, SocketOperation.Read);
-                            break;
+                            return;
                         }
+                        StartIO(Read);
+                        break;
+                    }
 
                     case StateClosing:
                     case StateClosingPending:
+                    {
+                        // Can't change back from closing pending.
+                        if (_state >= StateClosingPending)
                         {
-                            // Can't change back from closing pending.
-                            if (_state >= StateClosingPending)
-                            {
-                                return;
-                            }
-                            break;
+                            return;
                         }
+                        break;
+                    }
 
                     case StateClosed:
+                    {
+                        if (_state == StateFinished)
                         {
-                            if (_state == StateFinished)
-                            {
-                                return;
-                            }
-
-                            ThreadPool.Finish(this);
-                            _transceiver.Close();
-                            break;
+                            return;
                         }
+                        _transceiver.Close();
+                        break;
+                    }
 
                     case StateFinished:
-                        {
-                            Debug.Assert(_state == StateClosed);
-                            _transceiver.Destroy();
-                            break;
-                        }
+                    {
+                        Debug.Assert(_state == StateClosed);
+                        _transceiver.Destroy();
+                        break;
+                    }
                 }
             }
             catch (System.Exception ex)
@@ -1888,7 +1673,7 @@ msg.Destroy(ref c);
                 {
                     InitiateShutdown();
                 }
-                catch (System.Exception ex)
+                catch (Exception ex)
                 {
                     SetState(StateClosed, ex);
                 }
@@ -1905,7 +1690,7 @@ msg.Destroy(ref c);
             }
             _shutdownInitiated = true;
 
-            if (!_endpoint.Datagram())
+            if (!_endpoint.IsDatagram)
             {
                 //
                 // Before we shut down, we send a close connection message.
@@ -1913,17 +1698,20 @@ msg.Destroy(ref c);
                 if ((SendMessage(new OutgoingMessage(_closeConnectionMessage, false)) &
                     OutgoingAsyncBase.AsyncStatusSent) != 0)
                 {
-                    SetState(StateClosingPending);
+                    // TODO: XXX: SendMessage always returns Queued for now , this will need fixing
+                    // once it allows sync writes.
+                    Debug.Assert(false);
+                    // SetState(StateClosingPending);
 
-                    //
-                    // Notify the transceiver of the graceful connection closure.
-                    //
-                    int op = _transceiver.Closing(true, _exception);
-                    if (op != 0)
-                    {
-                        ScheduleTimeout(op);
-                        ThreadPool.Register(this, op);
-                    }
+                    // //
+                    // // Notify the transceiver of the graceful connection closure.
+                    // //
+                    // int op = _transceiver.Closing(true, _exception);
+                    // if (op != 0)
+                    // {
+                    //     ScheduleTimeout(op);
+                    //     ThreadPool.Register(this, op);
+                    // }
                 }
             }
         }
@@ -1932,7 +1720,7 @@ msg.Destroy(ref c);
         {
             Debug.Assert(_state == StateActive);
 
-            if (!_endpoint.Datagram())
+            if (!_endpoint.IsDatagram)
             {
                 try
                 {
@@ -1945,163 +1733,105 @@ msg.Destroy(ref c);
                 }
             }
         }
-
-        private int SendNextMessage(out Queue<OutgoingMessage>? callbacks)
+        private async ValueTask Write()
         {
-            callbacks = null;
-
-            if (_outgoingMessages.Count == 0)
+            while (true)
             {
-                return SocketOperation.None;
-            }
-            else if (_state == StateClosingPending && _writeBufferOffset == 0)
-            {
-                // Message wasn't sent, empty the _writeStream, we're not going to send more data.
-                _writeBuffer = _emptyBuffer;
-                _writeBufferOffset = 0;
-                _writeBufferSize = 0;
-                return SocketOperation.None;
-            }
-
-            Debug.Assert(_writeBufferSize > 0 && _writeBufferOffset == _writeBufferSize);
-            try
-            {
-                while (true)
+                bool closing = false;
+                OutgoingMessage? message = null;
+                int size = 0;
+                List<ArraySegment<byte>>? writeBuffer = null;
+                lock (this)
                 {
-                    //
-                    // Notify the message that it was sent.
-                    //
-                    OutgoingMessage message = _outgoingMessages.First!.Value;
-                    _writeBuffer = _emptyBuffer;
-                    _writeBufferOffset = 0;
-                    _writeBufferSize = 0;
-                    if (message.Sent())
-                    {
-                        if (callbacks == null)
-                        {
-                            callbacks = new Queue<OutgoingMessage>();
-                        }
-                        callbacks.Enqueue(message);
-                    }
-                    _outgoingMessages.RemoveFirst();
-
-                    //
-                    // If there's nothing left to send, we're done.
-                    //
                     if (_outgoingMessages.Count == 0)
                     {
-                        break;
-                    }
-
-                    //
-                    // If we are in the closed state or if the close is
-                    // pending, don't continue sending.
-                    //
-                    // This can occur if ParseMessage (called before
-                    // SendNextMessage by Message()) closes the connection.
-                    //
-                    if (_state >= StateClosingPending)
-                    {
-                        return SocketOperation.None;
-                    }
-
-                    //
-                    // Otherwise, prepare the next message stream for writing.
-                    //
-                    message = _outgoingMessages.First.Value;
-                    Debug.Assert(message.OutgoingData != null);
-                    List<ArraySegment<byte>> data = message.OutgoingData;
-
-                    message.OutgoingData = DoCompress(message.OutgoingData, message.Size, message.Compress);
-                    message.Size = message.OutgoingData.GetByteCount();
-
-                    TraceUtil.TraceSend(_communicator, data.GetSegment(0, message.Size).Array!, _logger, _traceLevels);
-                    _writeBuffer = message.OutgoingData;
-                    _writeBufferSize = message.Size;
-                    _writeBufferOffset = 0;
-                    //
-                    // Send the message.
-                    //
-                    if (_writeBufferOffset < _writeBufferSize)
-                    {
-                        int op = Write(_writeBuffer, _writeBufferSize, ref _writeBufferOffset);
-                        if (op != 0)
+                        // If all the messages were sent and we are in the closing state, we schedule
+                        // the close timeout to wait for the peer to close the connection.
+                        if (_state == StateClosing && _shutdownInitiated)
                         {
-                            return op;
+                            SetState(StateClosingPending);
+                            closing = true;
                         }
                     }
-                }
-
-                //
-                // If all the messages were sent and we are in the closing state, we schedule
-                // the close timeout to wait for the peer to close the connection.
-                //
-                if (_state == StateClosing && _shutdownInitiated)
-                {
-                    SetState(StateClosingPending);
-                    int op = _transceiver.Closing(true, _exception);
-                    if (op != 0)
+                    else if (_state < StateClosingPending)
                     {
-                        return op;
+                        // Otherwise, prepare the next message for writing. The message isn't removed
+                        // from the send queue because the connection needs to figure out which message
+                        // is being sent in case the response is received before the WriteAsync returns.
+                        // This is required to guarantee that the sent progress notification is called
+                        // before the response is returned.
+                        // TODO: Benoit: while it was useful with the callback API to guarantee such
+                        // ordering, is it still useful with the async based API now? Could the user
+                        // rely in the progress callback to be called before the ContinueWith
+                        // continuation?
+                        message = _outgoingMessages.First!.Value;
+                        writeBuffer = DoCompress(message.OutgoingData!, message.OutgoingData!.GetByteCount(),
+                            message.Compress);
+                        size = writeBuffer.GetByteCount();
+                        TraceUtil.TraceSend(_communicator, message.OutgoingData!.GetSegment(0, size).Array!, _logger,
+                            _traceLevels);
                     }
                 }
+
+                if (message == null)
+                {
+                    if (closing)
+                    {
+                        await _transceiver.ClosingAsync(true, _exception);
+                    }
+                    // If there's no more messages to write, we're done.
+                    return;
+                }
+
+                int offset = 0;
+                OutgoingAsyncBase? outAsync = null;
+                while (offset < size)
+                {
+                    int bytesSent = await _transceiver.WriteAsync(writeBuffer!, offset).ConfigureAwait(false);
+                    lock (this)
+                    {
+                        // If we finished sending the message, remove it from the send queue and dispatch
+                        // the progress notification or response if it was already received.
+                        if (offset == size)
+                        {
+                            if (message.Sent())
+                            {
+                                outAsync = message.OutAsync;
+                                ++_dispatchCount;
+                            }
+                            _outgoingMessages.RemoveFirst();
+                        }
+
+                        if (_state < StateClosed)
+                        {
+                            TraceSentAndUpdateObserver(bytesSent);
+
+                            if (_acmLastActivity > -1)
+                            {
+                                _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                            }
+                        }
+                    }
+                    offset += bytesSent;
+                }
+
+                if (outAsync != null)
+                {
+                    RunTask(async () => await Dispatch(null, null, 0, outAsync, null, null));
+                }
             }
-            catch (System.Exception ex)
-            {
-                SetState(StateClosed, ex);
-            }
-            return SocketOperation.None;
         }
 
         private int SendMessage(OutgoingMessage message)
         {
             Debug.Assert(_state < StateClosed);
-            if (_outgoingMessages.Count > 0)
-            {
-                _outgoingMessages.AddLast(message);
-                return OutgoingAsyncBase.AsyncStatusQueued;
-            }
-
-            //
-            // Attempt to send the message without blocking. If the send blocks, we use
-            // asynchronous I/O or we request the caller to call FinishSendMessage() outside
-            // the synchronization.
-            //
-            Debug.Assert(message.OutgoingData != null);
-            List<ArraySegment<byte>> requestData = message.OutgoingData;
-
-            message.OutgoingData = DoCompress(requestData, message.Size, message.Compress);
-            message.Size = message.OutgoingData.GetByteCount();
-            _writeBuffer = message.OutgoingData;
-            _writeBufferSize = message.Size;
-            _writeBufferOffset = 0;
-
-            TraceUtil.TraceSend(_communicator, VectoredBufferExtensions.ToArray(requestData), _logger, _traceLevels);
-
-            //
-            // Send the message without blocking.
-            //
-            int op = Write(_writeBuffer, _writeBufferSize, ref _writeBufferOffset);
-            if (op == 0)
-            {
-                _writeBuffer = _emptyBuffer;
-                _writeBufferSize = 0;
-                _writeBufferOffset = 0;
-                int status = OutgoingAsyncBase.AsyncStatusSent;
-                if (message.Sent())
-                {
-                    status |= OutgoingAsyncBase.AsyncStatusInvokeSentCallback;
-                }
-
-                if (_acmLastActivity > -1)
-                {
-                    _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                }
-                return status;
-            }
+            // TODO: XXX: Refactor to write and await the calling thread to avoid having writing
+            // on a thread pool thread
             _outgoingMessages.AddLast(message);
-            ScheduleTimeout(op);
-            ThreadPool.Register(this, op);
+            if (_outgoingMessages.Count == 1)
+            {
+                StartIO(Write);
+            }
             return OutgoingAsyncBase.AsyncStatusQueued;
         }
 
@@ -2135,339 +1865,6 @@ msg.Destroy(ref c);
             public int MessageDispatchCount;
         }
 
-        private int ParseMessage(ref MessageInfo info)
-        {
-            Debug.Assert(_state > StateNotValidated && _state < StateClosed);
-            info.Data = _readBuffer;
-
-            // For datagram connections the buffer is allocated by the datagram transport
-            _readBuffer = _endpoint.Datagram() ?
-                ArraySegment<byte>.Empty : new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
-            _readBufferOffset = 0;
-            _readHeader = true;
-
-            try
-            {
-                //
-                // The magic and version fields have already been checked.
-                //
-                var messageType = (Ice1Definitions.MessageType)info.Data[8];
-                info.Compress = info.Data[9];
-                if (info.Compress == 2)
-                {
-                    if (BZip2.IsLoaded)
-                    {
-                        info.Data = BZip2.Decompress(info.Data, Ice1Definitions.HeaderSize, _messageSizeMax);
-                    }
-                    else
-                    {
-                        throw new LoadException("compression not supported, bzip2 library not found");
-                    }
-                }
-
-                switch (messageType)
-                {
-                    case Ice1Definitions.MessageType.CloseConnectionMessage:
-                        {
-                            TraceUtil.TraceRecv(new InputStream(_communicator, info.Data), _logger, _traceLevels);
-                            if (_endpoint.Datagram())
-                            {
-                                if (_warn)
-                                {
-                                    _logger.Warning("ignoring close connection message for datagram connection:\n" + _desc);
-                                }
-                            }
-                            else
-                            {
-                                SetState(StateClosingPending, new ConnectionClosedByPeerException());
-
-                                //
-                                // Notify the transceiver of the graceful connection closure.
-                                //
-                                int op = _transceiver.Closing(false, _exception);
-                                if (op != 0)
-                                {
-                                    return op;
-                                }
-                                SetState(StateClosed);
-                            }
-                            break;
-                        }
-
-                    case Ice1Definitions.MessageType.RequestMessage:
-                        {
-                            if (_state >= StateClosing)
-                            {
-                                TraceUtil.Trace("received request during closing\n" +
-                                                "(ignored by server, client will retry)",
-                                                new InputStream(_communicator, info.Data),
-                                                _logger, _traceLevels);
-                            }
-                            else
-                            {
-                                TraceUtil.TraceRecv(new InputStream(_communicator, info.Data), _logger, _traceLevels);
-                                info.RequestId = InputStream.ReadInt(info.Data.AsSpan(Ice1Definitions.HeaderSize, 4));
-                                info.InvokeNum = 1;
-                                info.Adapter = _adapter;
-                                ++info.MessageDispatchCount;
-                            }
-                            break;
-                        }
-
-                    case Ice1Definitions.MessageType.RequestBatchMessage:
-                        {
-                            if (_state >= StateClosing)
-                            {
-                                TraceUtil.Trace("received batch request during closing\n" +
-                                                "(ignored by server, client will retry)",
-                                                new InputStream(_communicator, info.Data),
-                                                _logger, _traceLevels);
-                            }
-                            else
-                            {
-                                TraceUtil.TraceRecv(new InputStream(_communicator, info.Data), _logger, _traceLevels);
-                                info.InvokeNum = InputStream.ReadInt(info.Data.AsSpan(Ice1Definitions.HeaderSize, 4));
-                                if (info.InvokeNum < 0)
-                                {
-                                    int invokeNum = info.InvokeNum;
-                                    info.InvokeNum = 0;
-                                    throw new InvalidDataException(
-                                        $"received ice1 RequestBatchMessage with {invokeNum} batch requests");
-                                }
-                                info.Adapter = _adapter;
-                                info.MessageDispatchCount += info.InvokeNum;
-                            }
-                            break;
-                        }
-
-                    case Ice1Definitions.MessageType.ReplyMessage:
-                        {
-                            TraceUtil.TraceRecv(new InputStream(_communicator, info.Data), _logger, _traceLevels);
-                            info.RequestId = InputStream.ReadInt(info.Data.AsSpan(Ice1Definitions.HeaderSize, 4));
-                            if (_asyncRequests.TryGetValue(info.RequestId, out info.OutAsync))
-                            {
-                                _asyncRequests.Remove(info.RequestId);
-
-                                //
-                                // If we just received the reply for a request which isn't acknowledge as
-                                // sent yet, we queue the reply instead of processing it right away. It
-                                // will be processed once the write callback is invoked for the message.
-                                //
-                                OutgoingMessage? message = _outgoingMessages.Count > 0 ? _outgoingMessages.First!.Value : null;
-                                if (message != null && message.OutAsync == info.OutAsync)
-                                {
-                                    message.ReceivedReply = true;
-                                    message.IncomingData = info.Data;
-                                }
-                                else if (info.OutAsync.Response(info.Data))
-                                {
-                                    ++info.MessageDispatchCount;
-                                }
-                                else
-                                {
-                                    info.OutAsync = null;
-                                }
-                                System.Threading.Monitor.PulseAll(this); // Notify threads blocked in close()
-                            }
-                            break;
-                        }
-
-                    case Ice1Definitions.MessageType.ValidateConnectionMessage:
-                        {
-                            TraceUtil.TraceRecv(new InputStream(_communicator, info.Data), _logger, _traceLevels);
-                            if (_heartbeatCallback != null)
-                            {
-                                info.HeartbeatCallback = _heartbeatCallback;
-                                ++info.MessageDispatchCount;
-                            }
-                            break;
-                        }
-
-                    default:
-                        {
-                            TraceUtil.Trace("received unknown message\n(invalid, closing connection)",
-                                            new InputStream(_communicator, info.Data), _logger, _traceLevels);
-                            throw new InvalidDataException(
-                                $"received ice1 frame with unknown message type `{messageType}'");
-                        }
-                }
-            }
-            catch (Exception ex)
-            {
-                if (_endpoint.Datagram())
-                {
-                    if (_warn)
-                    {
-                        _logger.Warning("datagram connection exception:\n" + ex.ToString() + "\n" + _desc);
-                    }
-                }
-                else
-                {
-                    SetState(StateClosed, ex);
-                }
-            }
-
-            return SocketOperation.Read;
-        }
-
-        private async ValueTask InvokeAllAsync(ArraySegment<byte> data, int invokeNum, int requestId,
-            byte compressionStatus, ObjectAdapter adapter)
-        {
-            // Note: In contrast to other private or protected methods, this method must be called *without* the
-            // mutex locked.
-
-            Debug.Assert(invokeNum > 0); // invokeNum is usually 1 but can be larger for a batch request.
-            Debug.Assert(invokeNum == 1); // TODO: deal with batch requests
-
-            IDispatchObserver? dispatchObserver = null;
-
-            try
-            {
-                var request = new IncomingRequestFrame(adapter.Communicator,
-                    data.Slice(Ice1Definitions.HeaderSize + 4));
-                var current = new Current(adapter, request, requestId, this);
-
-                // Then notify and set dispatch observer, if any.
-                ICommunicatorObserver? communicatorObserver = adapter.Communicator.Observer;
-                if (communicatorObserver != null)
-                {
-                    dispatchObserver = communicatorObserver.GetDispatchObserver(current, request.Size);
-                    dispatchObserver?.Attach();
-                }
-
-                OutgoingResponseFrame? response = null;
-                try
-                {
-                    IObject? servant = current.Adapter.Find(current.Identity, current.Facet);
-                    if (servant == null)
-                    {
-                        // TODO if we want to support incoming batch request we need
-                        // to skip current encapsulation.
-                        throw new ObjectNotExistException(current.Identity, current.Facet, current.Operation);
-                    }
-
-                    ValueTask<OutgoingResponseFrame> vt = servant.DispatchAsync(request, current);
-                    --invokeNum;
-                    if (requestId != 0)
-                    {
-                        response = await vt.ConfigureAwait(false);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (requestId != 0)
-                    {
-                        RemoteException actualEx;
-                        if (ex is RemoteException remoteEx && !remoteEx.ConvertToUnhandled)
-                        {
-                            actualEx = remoteEx;
-                        }
-                        else
-                        {
-                            actualEx = new UnhandledException(current.Identity, current.Facet, current.Operation, ex);
-                        }
-                        Incoming.ReportException(actualEx, dispatchObserver, current);
-                        response = new OutgoingResponseFrame(current, actualEx);
-                    }
-                }
-
-                if (requestId == 0)
-                {
-                    SendNoResponse();
-                }
-                else
-                {
-                    Debug.Assert(response != null);
-                    dispatchObserver?.Reply(response.Size);
-                    SendResponse(response, requestId, compressionStatus);
-                }
-            }
-            catch (Exception ex)
-            {
-                InvokeException(ex, invokeNum);
-            }
-            finally
-            {
-                dispatchObserver?.Detach();
-            }
-        }
-
-        private void ScheduleTimeout(int status)
-        {
-            int timeout;
-            if (_state < StateActive)
-            {
-                DefaultsAndOverrides defaultsAndOverrides = _communicator.DefaultsAndOverrides;
-                if (defaultsAndOverrides.OverrideConnectTimeout)
-                {
-                    timeout = defaultsAndOverrides.OverrideConnectTimeoutValue;
-                }
-                else
-                {
-                    timeout = _endpoint.Timeout();
-                }
-            }
-            else if (_state < StateClosingPending)
-            {
-                if (_readHeader) // No timeout for reading the header.
-                {
-                    status &= ~SocketOperation.Read;
-                }
-                timeout = _endpoint.Timeout();
-            }
-            else
-            {
-                DefaultsAndOverrides defaultsAndOverrides = _communicator.DefaultsAndOverrides;
-                if (defaultsAndOverrides.OverrideCloseTimeout)
-                {
-                    timeout = defaultsAndOverrides.OverrideCloseTimeoutValue;
-                }
-                else
-                {
-                    timeout = _endpoint.Timeout();
-                }
-            }
-
-            if (timeout < 0)
-            {
-                return;
-            }
-
-            if ((status & SocketOperation.Read) != 0)
-            {
-                if (_readTimeoutScheduled)
-                {
-                    _timer.Cancel(_readTimeout);
-                }
-                _timer.Schedule(_readTimeout, timeout);
-                _readTimeoutScheduled = true;
-            }
-            if ((status & (SocketOperation.Write | SocketOperation.Connect)) != 0)
-            {
-                if (_writeTimeoutScheduled)
-                {
-                    _timer.Cancel(_writeTimeout);
-                }
-                _timer.Schedule(_writeTimeout, timeout);
-                _writeTimeoutScheduled = true;
-            }
-        }
-
-        private void UnscheduleTimeout(int status)
-        {
-            if ((status & SocketOperation.Read) != 0 && _readTimeoutScheduled)
-            {
-                _timer.Cancel(_readTimeout);
-                _readTimeoutScheduled = false;
-            }
-            if ((status & (SocketOperation.Write | SocketOperation.Connect)) != 0 &&
-               _writeTimeoutScheduled)
-            {
-                _timer.Cancel(_writeTimeout);
-                _writeTimeoutScheduled = false;
-            }
-        }
-
         private ConnectionInfo InitConnectionInfo()
         {
             if (_state > StateNotInitialized && _info != null) // Update the connection info until it's initialized
@@ -2485,7 +1882,7 @@ msg.Destroy(ref c);
             }
             for (ConnectionInfo? info = _info; info != null; info = info.Underlying)
             {
-                info.ConnectionId = _endpoint.ConnectionId();
+                info.ConnectionId = _endpoint.ConnectionId;
                 info.AdapterName = _adapter != null ? _adapter.Name : "";
                 info.Incoming = _connector == null;
             }
@@ -2504,6 +1901,53 @@ msg.Destroy(ref c);
             }
         }
 
+        private void RunTask(Action action)
+        {
+            // Use the configured task scheduler to run the task. DenyChildAttach is the default for Task.Run,
+            // we use the same here.
+            Task.Factory.StartNew(action, default, TaskCreationOptions.DenyChildAttach,
+                _taskScheduler ?? TaskScheduler.Default);
+        }
+
+        private void StartIO(Func<ValueTask> operation)
+        {
+            RunTask(async () =>
+            {
+                lock (this)
+                {
+                    if (_state >= StateClosed)
+                    {
+                        return;
+                    }
+                    ++_pendingIO;
+                }
+                try
+                {
+                    await operation().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    lock (this)
+                    {
+                        SetState(StateClosed, ex);
+                    }
+                }
+                finally
+                {
+                    bool finish = false;
+                    lock (this)
+                    {
+                        finish = --_pendingIO == 0 && _state >= StateClosed;
+                    }
+                    if (finish)
+                    {
+                        // No more pending IO and closed, it's time to terminate the connection
+                        Finish();
+                    }
+                }
+            });
+        }
+
         private ConnectionState ToConnectionState(int state) => _connectionStateMap[state];
 
         private void Warning(string msg, System.Exception ex) => _logger.Warning($"{msg}:\n{ex}\n{_transceiver}");
@@ -2515,7 +1959,7 @@ msg.Destroy(ref c);
                 var s = new StringBuilder("sent ");
                 s.Append(length);
                 s.Append(" bytes via ");
-                s.Append(_endpoint.Transport());
+                s.Append(_endpoint.Name);
                 s.Append("\n");
                 s.Append(ToString());
                 _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
@@ -2534,7 +1978,7 @@ msg.Destroy(ref c);
                 var s = new StringBuilder("received ");
                 s.Append(length);
                 s.Append(" bytes via ");
-                s.Append(_endpoint.Transport());
+                s.Append(_endpoint.Name);
                 s.Append("\n");
                 s.Append(ToString());
                 _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
@@ -2551,7 +1995,6 @@ msg.Destroy(ref c);
             internal OutgoingMessage(List<ArraySegment<byte>> requestData, bool compress)
             {
                 OutgoingData = requestData;
-                Size = OutgoingData.GetByteCount();
                 Compress = compress;
             }
 
@@ -2559,7 +2002,6 @@ msg.Destroy(ref c);
             {
                 OutAsync = outgoing;
                 OutgoingData = data;
-                Size = OutgoingData.GetByteCount();
                 Compress = compress;
                 RequestId = requestId;
             }
@@ -2567,7 +2009,6 @@ msg.Destroy(ref c);
             internal OutgoingMessage(OutgoingResponseFrame frame, bool compress, int requestId)
             {
                 OutgoingData = Ice1Definitions.GetResponseData(frame, requestId);
-                Size = OutgoingData.GetByteCount();
                 Compress = compress;
             }
 
@@ -2580,10 +2021,10 @@ msg.Destroy(ref c);
             internal bool Sent()
             {
                 OutgoingData = null;
-                if (OutAsync != null)
+                if (OutAsync != null && !InvokeSent)
                 {
                     InvokeSent = OutAsync.Sent();
-                    return InvokeSent || ReceivedReply;
+                    return InvokeSent;
                 }
                 return false;
             }
@@ -2601,15 +2042,20 @@ msg.Destroy(ref c);
             }
 
             internal List<ArraySegment<byte>>? OutgoingData;
-            internal ArraySegment<byte> IncomingData;
-            internal int Size;
+            internal TaskCompletionSource<bool>? WaitSent;  // The bool is ignored
             internal OutgoingAsyncBase? OutAsync;
             internal bool Compress;
             internal int RequestId;
-            internal bool IsSent;
             internal bool InvokeSent;
-            internal bool ReceivedReply;
         }
+
+        private const int StateNotInitialized = 0;
+        private const int StateNotValidated = 1;
+        private const int StateActive = 2;
+        private const int StateClosing = 3;
+        private const int StateClosingPending = 4;
+        private const int StateClosed = 5;
+        private const int StateFinished = 6;
 
         private readonly Communicator _communicator;
         private IACMMonitor? _monitor;
@@ -2623,17 +2069,8 @@ msg.Destroy(ref c);
 
         private readonly ILogger _logger;
         private readonly TraceLevels _traceLevels;
-        private readonly IceInternal.Timer _timer;
-        private readonly ITimerTask _writeTimeout;
-        private bool _writeTimeoutScheduled;
-        private readonly ITimerTask _readTimeout;
-        private bool _readTimeoutScheduled;
-
-        private IStartCallback? _startCallback = null;
-
         private readonly bool _warn;
         private readonly bool _warnUdp;
-
         private long _acmLastActivity;
 
         private readonly int _compressionLevel;
@@ -2647,14 +2084,7 @@ msg.Destroy(ref c);
         private readonly int _messageSizeMax;
 
         private readonly LinkedList<OutgoingMessage> _outgoingMessages = new LinkedList<OutgoingMessage>();
-
-        private ArraySegment<byte> _readBuffer;
-        private int _readBufferOffset;
-        private bool _readHeader;
-
-        private IList<ArraySegment<byte>> _writeBuffer;
-        private int _writeBufferOffset;
-        private int _writeBufferSize;
+        private int _pendingIO;
 
         private ICommunicatorObserver? _communicatorObserver;
         private IConnectionObserver? _observer;
@@ -2663,7 +2093,7 @@ msg.Destroy(ref c);
 
         private int _state; // The current state.
         private bool _shutdownInitiated = false;
-        private TaskFactory _taskFactory;
+        private readonly TaskScheduler? _taskScheduler;
         private bool _initialized = false;
         private bool _validated = false;
 
@@ -2682,7 +2112,6 @@ msg.Destroy(ref c);
             ConnectionState.ConnectionStateClosed,       // StateFinished
         };
 
-        private static readonly List<ArraySegment<byte>> _emptyBuffer = new List<ArraySegment<byte>>();
         private static readonly List<ArraySegment<byte>> _validateConnectionMessage =
             new List<ArraySegment<byte>> { Ice1Definitions.ValidateConnectionMessage };
         private static readonly List<ArraySegment<byte>> _closeConnectionMessage =
