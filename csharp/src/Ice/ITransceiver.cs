@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 
 namespace IceInternal
 {
-    // TODO: XXX Remove with the transport refactoring
+    // TODO: Benoit: Remove with the transport refactoring
     public delegate void AsyncCallback(object state);
 
     public interface ITransceiver

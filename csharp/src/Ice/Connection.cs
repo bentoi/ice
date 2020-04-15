@@ -913,7 +913,7 @@ namespace Ice
                 var readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
                 await _transceiver.ReadAsync(readBuffer).ConfigureAwait(false);
 
-                // TODO: XXX: datagrams
+                // TODO: Benoit: datagrams
                 // if (_readBufferOffset < Ice1Definitions.HeaderSize)
                 // {
                 //     //
@@ -934,7 +934,7 @@ namespace Ice
                     throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
                 }
 
-                // TODO: XXX: datagrams
+                // TODO: Benoit: datagrams
                 // if (_endpoint.IsDatagram && size > _readBufferOffset)
                 // {
                 //     if (_warnUdp)
@@ -1698,8 +1698,8 @@ namespace Ice
                 if ((SendMessage(new OutgoingMessage(_closeConnectionMessage, false)) &
                     OutgoingAsyncBase.AsyncStatusSent) != 0)
                 {
-                    // TODO: XXX: SendMessage always returns Queued for now , this will need fixing
-                    // once it allows sync writes.
+                    // TODO: Benoit: SendMessage always returns Queued for now , this will need fixing
+                    // to allow synchronous writes and awaitable SendAsyncRequest
                     Debug.Assert(false);
                     // SetState(StateClosingPending);
 
@@ -1825,7 +1825,7 @@ namespace Ice
         private int SendMessage(OutgoingMessage message)
         {
             Debug.Assert(_state < StateClosed);
-            // TODO: XXX: Refactor to write and await the calling thread to avoid having writing
+            // TODO: Benoit: Refactor to write and await the calling thread to avoid having writing
             // on a thread pool thread
             _outgoingMessages.AddLast(message);
             if (_outgoingMessages.Count == 1)
