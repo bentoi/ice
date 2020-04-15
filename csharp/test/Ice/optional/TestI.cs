@@ -10,7 +10,7 @@ namespace Ice.optional
     {
         public void shutdown(Current current) => current.Adapter.Communicator.Shutdown();
 
-        public AnyClass pingPong(AnyClass obj, Current current) => obj;
+        public AnyClass? pingPong(AnyClass? obj, Current current) => obj;
 
         public void opOptionalException(int? a, string? b, Test.OneOptional? o, Current current) =>
             throw new Test.OptionalException(false, a, b, o);
@@ -68,20 +68,28 @@ namespace Ice.optional
         public (IObjectPrx?, IObjectPrx?) opOneOptionalProxy(IObjectPrx? p1, Current current) => (p1, p1);
 
         public (byte[]?, byte[]?) opByteSeq(byte[]? p1, Current current) => (p1, p1);
+        public (List<byte>?, List<byte>?) opByteList(List<byte>? p1, Current current) => (p1, p1);
 
         public (bool[]?, bool[]?) opBoolSeq(bool[]? p1, Current current) => (p1, p1);
+        public (List<bool>?, List<bool>?) opBoolList(List<bool>? p1, Current current) => (p1, p1);
 
         public (short[]?, short[]?) opShortSeq(short[]? p1, Current current) => (p1, p1);
+        public (List<short>?, List<short>?) opShortList(List<short>? p1, Current current) => (p1, p1);
 
         public (int[]?, int[]?) opIntSeq(int[]? p1, Current current) => (p1, p1);
+        public (List<int>?, List<int>?) opIntList(List<int>? p1, Current current) => (p1, p1);
 
         public (long[]?, long[]?) opLongSeq(long[]? p1, Current current) => (p1, p1);
+        public (List<long>?, List<long>?) opLongList(List<long>? p1, Current current) => (p1, p1);
 
         public (float[]?, float[]?) opFloatSeq(float[]? p1, Current current) => (p1, p1);
+        public (List<float>?, List<float>?) opFloatList(List<float>? p1, Current current) => (p1, p1);
 
         public (double[]?, double[]?) opDoubleSeq(double[]? p1, Current current) => (p1, p1);
+        public (List<double>?, List<double>?) opDoubleList(List<double>? p1, Current current) => (p1, p1);
 
         public (string[]?, string[]?) opStringSeq(string[]? p1, Current current) => (p1, p1);
+        public (List<string>?, List<string>?) opStringList(List<string>? p1, Current current) => (p1, p1);
 
         public (Test.SmallStruct[]?, Test.SmallStruct[]?) opSmallStructSeq(Test.SmallStruct[]? p1, Current current) =>
             (p1, p1);
@@ -106,10 +114,10 @@ namespace Ice.optional
         public (Dictionary<string, int>?, Dictionary<string, int>?)
         opStringIntDict(Dictionary<string, int>? p1, Current current) => (p1, p1);
 
-        public (Dictionary<int, Test.OneOptional>?, Dictionary<int, Test.OneOptional>?)
-        opIntOneOptionalDict(Dictionary<int, Test.OneOptional>? p1, Current current) => (p1, p1);
+        public (Dictionary<int, Test.OneOptional?>?, Dictionary<int, Test.OneOptional?>?)
+        opIntOneOptionalDict(Dictionary<int, Test.OneOptional?>? p1, Current current) => (p1, p1);
 
-        public void opClassAndUnknownOptional(Test.A p, Current current)
+        public void opClassAndUnknownOptional(Test.A? p, Current current)
         {
         }
 
@@ -119,7 +127,7 @@ namespace Ice.optional
 
         public Test.OneOptional? returnOptionalClass(bool req, Current current) => new Test.OneOptional(53);
 
-        public Test.G opG(Test.G g, Current current) => g;
+        public Test.G? opG(Test.G? g, Current current) => g;
 
         public void opVoid(Current current)
         {

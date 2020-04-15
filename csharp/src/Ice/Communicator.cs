@@ -10,6 +10,7 @@ using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -121,9 +122,22 @@ namespace Ice
             }
         }
 
-        /// <summary>The default format (Compact or Sliced) for class instances marshaled by this communicator.
-        /// </summary>
-        public FormatType DefaultFormat => DefaultsAndOverrides.DefaultFormat;
+        public bool DefaultCollocationOptimized { get; }
+        public Encoding DefaultEncoding { get; }
+        public EndpointSelectionType DefaultEndpointSelection { get; }
+        public FormatType DefaultFormat { get; }
+        public string? DefaultHost { get; }
+        public bool DefaultPreferNonSecure { get; }
+        public IPAddress? DefaultSourceAddress { get; }
+        public string DefaultTransport { get; }
+        public int DefaultTimeout { get; }
+        public int DefaultInvocationTimeout { get; }
+        public int DefaultLocatorCacheTimeout { get; }
+
+        public bool? OverrideCompress { get; }
+        public int? OverrideTimeout { get; }
+        public int? OverrideCloseTimeout { get; }
+        public int? OverrideConnectTimeout { get; }
 
         /// <summary>The logger for this communicator.</summary>
         public ILogger Logger { get; internal set; }
@@ -137,7 +151,6 @@ namespace Ice
 
         internal int ClassGraphDepthMax { get; }
         internal ACMConfig ClientACM { get; }
-        internal DefaultsAndOverrides DefaultsAndOverrides { get; private set; }
         internal int MessageSizeMax { get; }
         internal INetworkProxy? NetworkProxy { get; }
         internal bool PreferIPv6 { get; }
@@ -349,7 +362,124 @@ namespace Ice
 
                 TraceLevels = new TraceLevels(this);
 
-                DefaultsAndOverrides = new DefaultsAndOverrides(this, Logger);
+                DefaultCollocationOptimized = (GetPropertyAsInt("Ice.Default.CollocationOptimized") ?? 1) > 0;
+
+                if (GetProperty("Ice.Default.Encoding") is string encoding)
+                {
+                    try
+                    {
+                        DefaultEncoding = Encoding.Parse(encoding);
+                        DefaultEncoding.CheckSupported();
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidConfigurationException(
+                            $"invalid value for for Ice.Default.Encoding: `{encoding}'", ex);
+                    }
+                }
+                else
+                {
+                    DefaultEncoding = Encoding.Latest;
+                }
+
+                var endpointSelection = GetProperty("Ice.Default.EndpointSelection") ?? "Random";
+                DefaultEndpointSelection = endpointSelection switch
+                {
+                    "Random" => EndpointSelectionType.Random,
+                    "Ordered" => EndpointSelectionType.Ordered,
+                    _ => throw new InvalidConfigurationException(
+                             $"illegal value `{endpointSelection}'; expected `Random' or `Ordered'")
+                };
+
+                DefaultFormat = (GetPropertyAsInt("Ice.Default.SlicedFormat") > 0) ? FormatType.Sliced :
+                                                                                     FormatType.Compact;
+
+                DefaultHost = GetProperty("Ice.Default.Host");
+
+                // TODO: switch to 0 default
+                DefaultPreferNonSecure = (GetPropertyAsInt("Ice.Default.PreferNonSecure") ?? 1) > 0;
+
+                if (GetProperty("Ice.Default.SourceAddress") is string address)
+                {
+                    DefaultSourceAddress = Network.GetNumericAddress(address);
+                    if (DefaultSourceAddress == null)
+                    {
+                        throw new InvalidConfigurationException(
+                            $"invalid IP address set for Ice.Default.SourceAddress: `{address}'");
+                    }
+                }
+
+                DefaultTransport = GetProperty("Ice.Default.Transport") ?? "tcp";
+
+                DefaultTimeout = GetPropertyAsInt("Ice.Default.Timeout") ?? 60000;
+                if (DefaultTimeout < 1 && DefaultTimeout != -1)
+                {
+                    throw new InvalidConfigurationException(
+                        $"invalid value for Ice.Default.Timeout: `{DefaultTimeout}'");
+                }
+
+                DefaultInvocationTimeout = GetPropertyAsInt("Ice.Default.InvocationTimeout") ?? -1;
+                if (DefaultInvocationTimeout < 1 && DefaultInvocationTimeout != -1)
+                {
+                    throw new InvalidConfigurationException(
+                        $"invalid value for Ice.Default.InvocationTimeout: `{DefaultInvocationTimeout}'");
+                }
+
+                DefaultLocatorCacheTimeout = GetPropertyAsInt("Ice.Default.LocatorCacheTimeout") ?? -1;
+                if (DefaultLocatorCacheTimeout < -1)
+                {
+                    throw new InvalidConfigurationException(
+                        $"invalid value for Ice.Default.LocatorCacheTimeout: `{DefaultLocatorCacheTimeout}'");
+                }
+
+                if (GetPropertyAsInt("Ice.Override.Compress") is int compress)
+                {
+                    OverrideCompress = compress > 0;
+                    if (!BZip2.IsLoaded && OverrideCompress.Value)
+                    {
+                        throw new InvalidConfigurationException($"compression not supported, bzip2 library not found");
+                    }
+                }
+                else if (!BZip2.IsLoaded)
+                {
+                    OverrideCompress = false;
+                }
+
+                {
+                    if (GetPropertyAsInt("Ice.Override.Timeout") is int timeout)
+                    {
+                        OverrideTimeout = timeout;
+                        if (timeout < 1 && timeout != -1)
+                        {
+                            throw new InvalidConfigurationException(
+                                $"invalid value for Ice.Override.Timeout: `{timeout}'");
+                        }
+                    }
+                }
+
+                {
+                    if (GetPropertyAsInt("Ice.Override.CloseTimeout") is int timeout)
+                    {
+                        OverrideCloseTimeout = timeout;
+                        if (timeout < 1 && timeout != -1)
+                        {
+                            throw new InvalidConfigurationException(
+                                $"invalid value for Ice.Override.CloseTimeout: `{timeout}'");
+                        }
+                    }
+                }
+
+                {
+                    if (GetPropertyAsInt("Ice.Override.ConnectTimeout") is int timeout)
+                    {
+                        OverrideConnectTimeout = timeout;
+                        if (timeout < 1 && timeout != -1)
+                        {
+                            throw new InvalidConfigurationException(
+                                $"invalid value for Ice.Override.ConnectTimeout: `{timeout}'");
+                        }
+                    }
+                }
 
                 ClientACM = new ACMConfig(this, Logger, "Ice.ACM.Client",
                                            new ACMConfig(this, Logger, "Ice.ACM", new ACMConfig(false)));
@@ -525,13 +655,11 @@ namespace Ice
                         Observer = communicatorObserver;
                         _adminFacets.Add(metricsFacetName, communicatorObserver.GetFacet());
 
-                        //
                         // Make sure the admin plugin receives property updates.
-                        //
                         if (propsAdmin != null)
                         {
-                            propsAdmin.AddUpdateCallback((Dictionary<string, string> updates) =>
-                                communicatorObserver.GetFacet().Updated(updates));
+                            propsAdmin.Updated += (_, updates) =>
+                                communicatorObserver.GetFacet().Updated(updates);
                         }
                     }
                 }
@@ -791,7 +919,7 @@ namespace Ice
 
             string facet = "";
             InvocationMode mode = InvocationMode.Twoway;
-            Encoding encoding = DefaultsAndOverrides.DefaultEncoding;
+            Encoding encoding = DefaultEncoding;
             Protocol protocol = Protocol.Ice1;
             string adapter;
 
@@ -1062,9 +1190,7 @@ namespace Ice
                     }
                     Logger.Warning(msg.ToString());
                 }
-
-                Endpoint[] ep = endpoints.ToArray();
-                return CreateReference(ident, facet, mode, protocol, encoding, ep, null, propertyPrefix);
+                return CreateReference(ident, facet, mode, protocol, encoding, endpoints, null, propertyPrefix);
             }
             else if (s[beg] == '@')
             {
@@ -1456,7 +1582,7 @@ namespace Ice
         }
 
         /// <summary>
-        /// Get the default locator this communicator.
+        /// Get this communicator's default locator.
         /// </summary>
         /// <returns>The default locator for this communicator.</returns>
         public ILocatorPrx? GetDefaultLocator()
@@ -1472,7 +1598,7 @@ namespace Ice
         }
 
         /// <summary>
-        /// Get the default router this communicator.
+        /// Get this communicator's default router.
         /// </summary>
         /// <returns>The default router for this communicator.</returns>
         public IRouterPrx? GetDefaultRouter()
@@ -1489,7 +1615,7 @@ namespace Ice
         }
 
         /// <summary>
-        /// Check whether communicator has been shut down.
+        /// Check whether the communicator has been shut down.
         /// </summary>
         /// <returns>True if the communicator has been shut down; false otherwise.</returns>
         public bool IsShutdown()
@@ -1711,7 +1837,8 @@ namespace Ice
             return interval;
         }
 
-        internal Reference CreateReference(Identity ident, string facet, Reference tmpl, Endpoint[] endpoints)
+        internal Reference CreateReference(Identity ident, string facet, Reference tmpl,
+            IReadOnlyList<Endpoint> endpoints)
         {
             return CreateReference(ident, facet, tmpl.InvocationMode, tmpl.Protocol, tmpl.Encoding,
                           endpoints, null, null);
@@ -1733,7 +1860,7 @@ namespace Ice
                 communicator: this,
                 compress: null,
                 context: DefaultContext,
-                encoding: DefaultsAndOverrides.DefaultEncoding,
+                encoding: DefaultEncoding,
                 facet: "",
                 fixedConnection: connection,
                 identity: identity,
@@ -2036,7 +2163,7 @@ namespace Ice
             InvocationMode mode,
             Protocol protocol,
             Encoding encoding,
-            Endpoint[] endpoints,
+            IReadOnlyList<Endpoint> endpoints,
             string? adapterId,
             string? propertyPrefix)
         {
@@ -2068,12 +2195,12 @@ namespace Ice
             {
                 routerInfo = GetRouterInfo(_defaultRouter);
             }
-            bool collocOptimized = DefaultsAndOverrides.DefaultCollocationOptimization;
+            bool collocOptimized = DefaultCollocationOptimized;
             bool cacheConnection = true;
-            bool preferNonSecure = DefaultsAndOverrides.DefaultPreferNonSecure;
-            EndpointSelectionType endpointSelection = DefaultsAndOverrides.DefaultEndpointSelection;
-            int locatorCacheTimeout = DefaultsAndOverrides.DefaultLocatorCacheTimeout;
-            int invocationTimeout = DefaultsAndOverrides.DefaultInvocationTimeout;
+            bool preferNonSecure = DefaultPreferNonSecure;
+            EndpointSelectionType endpointSelection = DefaultEndpointSelection;
+            int locatorCacheTimeout = DefaultLocatorCacheTimeout;
+            int invocationTimeout = DefaultInvocationTimeout;
             IReadOnlyDictionary<string, string>? context = null;
 
             //

@@ -17,21 +17,19 @@ namespace Ice.admin
 
     public class RemoteCommunicator : IRemoteCommunicator
     {
+        private volatile IReadOnlyDictionary<string, string>? _changes;
+        private readonly Communicator _communicator;
+
         public RemoteCommunicator(Communicator communicator) => _communicator = communicator;
 
-        public IObjectPrx getAdmin(Current current) => _communicator.GetAdmin();
+        public IObjectPrx? getAdmin(Current current) => _communicator.GetAdmin();
 
-        public Dictionary<string, string> getChanges(Ice.Current current)
-        {
-            lock (this)
-            {
-                return _changes;
-            }
-        }
+        public Dictionary<string, string> getChanges(Current current) => new Dictionary<string, string>(_changes!);
 
         public void print(string message, Current current) => _communicator.Logger.Print(message);
 
-        public void trace(string category, string message, Current current) => _communicator.Logger.Trace(category, message);
+        public void trace(string category, string message, Current current) =>
+            _communicator.Logger.Trace(category, message);
 
         public void warning(string message, Current current) => _communicator.Logger.Warning(message);
 
@@ -45,16 +43,7 @@ namespace Ice.admin
 
         public void destroy(Current current) => _communicator.Destroy();
 
-        public void updated(Dictionary<string, string> changes)
-        {
-            lock (this)
-            {
-                _changes = changes;
-            }
-        }
-
-        private Communicator _communicator;
-        private Dictionary<string, string> _changes;
+        public void Updated(IReadOnlyDictionary<string, string> changes) => _changes = changes;
     }
 
     public class RemoteCommunicatorFactoryI : IRemoteCommunicatorFactory
@@ -65,9 +54,8 @@ namespace Ice.admin
             // Prepare the property set using the given properties.
             //
             ILogger? logger = null;
-            string? value;
-            int nullLogger;
-            if (props.TryGetValue("NullLogger", out value) && int.TryParse(value, out nullLogger) && nullLogger > 0)
+            if (props.TryGetValue("NullLogger", out string? value) &&
+                int.TryParse(value, out int nullLogger) && nullLogger > 0)
             {
                 logger = new NullLogger();
             }
@@ -89,18 +77,13 @@ namespace Ice.admin
             {
             }
 
-            //
             // The RemoteCommunicator servant also implements PropertiesAdminUpdateCallback.
-            // Set the callback on the admin facet.
-            //
             var servant = new RemoteCommunicator(communicator);
             var propFacet = communicator.FindAdminFacet("Properties");
 
-            if (propFacet != null)
+            if (propFacet is IPropertiesAdmin admin)
             {
-                var admin = (INativePropertiesAdmin)propFacet;
-                Debug.Assert(admin != null);
-                admin.AddUpdateCallback(servant.updated);
+                admin.Updated += (_, updates) => servant.Updated(updates);
             }
 
             return current.Adapter.AddWithUUID(servant, IRemoteCommunicatorPrx.Factory);
