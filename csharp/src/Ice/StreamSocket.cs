@@ -411,14 +411,7 @@ namespace IceInternal
         public void Close()
         {
             Debug.Assert(_fd != null);
-            try
-            {
-                Network.CloseSocket(_fd);
-            }
-            finally
-            {
-                _fd = null;
-            }
+            Network.CloseSocket(_fd);
         }
 
         public void Destroy()

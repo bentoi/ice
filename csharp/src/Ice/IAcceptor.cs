@@ -24,10 +24,10 @@ namespace IceInternal
             var result = new TaskCompletionSource<ITransceiver>();
             if (StartAccept(state =>
             {
-                var acceptor = (IAcceptor)state;
-                acceptor.FinishAccept();
                 try
                 {
+                    var acceptor = (IAcceptor)state;
+                    acceptor.FinishAccept();
                     result.SetResult(acceptor.Accept());
                 }
                 catch (System.Exception ex)
@@ -36,7 +36,15 @@ namespace IceInternal
                 }
             }, this))
             {
-                result.SetResult(Accept());
+                try
+                {
+                    FinishAccept();
+                    result.SetResult(Accept());
+                }
+                catch (System.Exception ex)
+                {
+                    result.SetException(ex);
+                }
             }
             return result.Task;
         }

@@ -20,12 +20,10 @@ namespace IceInternal
             if (_acceptFd != null)
             {
                 Network.CloseSocketNoThrow(_acceptFd);
-                _acceptFd = null;
             }
             if (_fd != null)
             {
                 Network.CloseSocketNoThrow(_fd);
-                _fd = null;
             }
         }
 

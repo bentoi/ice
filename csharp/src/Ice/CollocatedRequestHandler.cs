@@ -230,7 +230,7 @@ namespace IceInternal
                         Ice1Definitions.GetResponseData(responseFrame, requestId)));
                 if (_traceLevels.Protocol >= 1)
                 {
-                    TraceUtil.TraceRecv(new InputStream(_adapter.Communicator, responseBuffer), _logger, _traceLevels);
+                    TraceUtil.TraceRecv(_adapter.Communicator, responseBuffer, _logger, _traceLevels);
                 }
                 responseBuffer = responseBuffer.Slice(Ice1Definitions.HeaderSize + 4);
                 if (_asyncRequests.TryGetValue(requestId, out outAsync))

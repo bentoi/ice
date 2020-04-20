@@ -104,19 +104,20 @@ namespace IceInternal
                 if (status == SocketOperation.Read)
                 {
                     int offset = 0;
-                    while (offset < readBuffer.Count)
+                    do
                     {
                         offset += await ReadAsync(readBuffer, offset);
                     }
+                    while (offset < readBuffer.Count);
                 }
                 else if (status == SocketOperation.Write)
                 {
-                    int size = writeBuffer.GetByteCount();
                     int offset = 0;
-                    while (offset < size)
+                    do
                     {
                         offset += await WriteAsync(writeBuffer, offset);
                     }
+                    while (offset < writeBuffer.GetByteCount());
                 }
                 else
                 {
@@ -127,12 +128,13 @@ namespace IceInternal
         }
 
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
-        async ValueTask ClosingAsync(bool initiator, System.Exception? ex)
+        async ValueTask ClosingAsync(System.Exception? ex, bool canRead, bool canWrite)
         {
-            ArraySegment<byte> readBuffer = default;
+            ArraySegment<byte> readBuffer = new ArraySegment<byte>(new byte[128]);
             IList<ArraySegment<byte>> writeBuffer = new List<ArraySegment<byte>>();
+            bool initiator = !(ex is ConnectionClosedByPeerException);
             int status = Closing(initiator, ex);
-            if (status == SocketOperation.Read)
+            if (status == SocketOperation.Read && !initiator && canRead)
             {
                 int offset = 0;
                 do
@@ -141,7 +143,7 @@ namespace IceInternal
                 }
                 while (offset < readBuffer.Count);
             }
-            else if (status == SocketOperation.Write)
+            else if (status == SocketOperation.Write && canWrite)
             {
                 int offset = 0;
                 do
@@ -155,17 +157,17 @@ namespace IceInternal
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
         async ValueTask<int> WriteAsync(IList<ArraySegment<byte>> buffer, int offset = 0)
         {
-            return await Write(this, buffer, offset).ConfigureAwait(false);
+            return await Write(this, buffer, offset).ConfigureAwait(false) - offset;
 
             static Task<int> Write(ITransceiver self, IList<ArraySegment<byte>> buffer, int offset)
             {
                 var result = new TaskCompletionSource<int>();
                 if (self.StartWrite(buffer, offset, state =>
                 {
-                    var transceiver = (ITransceiver)state;
-                    transceiver.FinishWrite(buffer, ref offset);
                     try
                     {
+                        var transceiver = (ITransceiver)state;
+                        transceiver.FinishWrite(buffer, ref offset);
                         transceiver.Write(buffer, ref offset);
                         result.SetResult(offset);
                     }
@@ -177,6 +179,7 @@ namespace IceInternal
                 {
                     try
                     {
+                        self.FinishWrite(buffer, ref offset);
                         self.Write(buffer, ref offset);
                         result.SetResult(offset);
                     }
@@ -192,18 +195,17 @@ namespace IceInternal
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
         async ValueTask<int> ReadAsync(ArraySegment<byte> buffer, int offset = 0)
         {
-            return await Read(this, buffer.Slice(offset)).ConfigureAwait(false);
+            return await Read(this, buffer, offset).ConfigureAwait(false) - offset;
 
-            static Task<int> Read(ITransceiver self, ArraySegment<byte> buffer)
+            static Task<int> Read(ITransceiver self, ArraySegment<byte> buffer, int offset)
             {
                 var result = new TaskCompletionSource<int>();
-                int offset = 0;
                 if (self.StartRead(ref buffer, ref offset, state =>
                 {
-                    var transceiver = (ITransceiver)state;
-                    transceiver.FinishRead(ref buffer, ref offset);
                     try
                     {
+                        var transceiver = (ITransceiver)state;
+                        transceiver.FinishRead(ref buffer, ref offset);
                         transceiver.Read(ref buffer, ref offset);
                         result.SetResult(offset);
                     }
@@ -215,6 +217,7 @@ namespace IceInternal
                 {
                     try
                     {
+                        self.FinishRead(ref buffer, ref offset);
                         self.Read(ref buffer, ref offset);
                         result.SetResult(offset);
                     }

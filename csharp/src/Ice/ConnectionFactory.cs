@@ -715,7 +715,7 @@ namespace IceInternal
             public Endpoint Endpoint;
         }
 
-        private class ConnectCallback : Connection.IStartCallback, IEndpointConnectors
+        private class ConnectCallback : IEndpointConnectors
         {
             internal ConnectCallback(OutgoingConnectionFactory f, IReadOnlyList<Endpoint> endpoints, bool more,
                                      ICreateConnectionCallback cb, Ice.EndpointSelectionType selType)
@@ -731,27 +731,6 @@ namespace IceInternal
                 _hasMore = more;
                 _callback = cb;
                 _selType = selType;
-            }
-
-            //
-            // Methods from ConnectionI.StartCallback
-            //
-            public void ConnectionStartCompleted(Connection connection)
-            {
-                if (_observer != null)
-                {
-                    _observer.Detach();
-                }
-                Debug.Assert(_current != null);
-                _factory.FinishGetConnection(_connectors, _current, connection, this);
-            }
-
-            public void ConnectionStartFailed(Connection connection, System.Exception ex)
-            {
-                if (ConnectionStartFailedImpl(ex))
-                {
-                    NextConnector();
-                }
             }
 
             //
@@ -932,8 +911,28 @@ namespace IceInternal
                                 $"{_current.Connector}");
                         }
 
+                        // TODO: Connection establishement code needs to be re-factored to use async/await
                         Connection connection = _factory.CreateConnection(_current.Connector.Connect(), _current);
-                        connection.Start(this);
+                        connection.StartAsync().AsTask().ContinueWith(t => {
+                            try
+                            {
+                                t.Wait();
+
+                                if (_observer != null)
+                                {
+                                    _observer.Detach();
+                                }
+                                Debug.Assert(_current != null);
+                                _factory.FinishGetConnection(_connectors, _current, connection, this);
+                            }
+                            catch (System.AggregateException ex)
+                            {
+                                if (ConnectionStartFailedImpl(ex.InnerException!))
+                                {
+                                    NextConnector();
+                                }
+                            }
+                        }, TaskScheduler.Current);
                     }
                     catch (System.Exception ex)
                     {
@@ -1018,7 +1017,16 @@ namespace IceInternal
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
                             $"accepting {_endpoint.Name} connections at {_acceptor}");
                     }
-                    Task.Run(async () => await Accept().ConfigureAwait(false));
+
+                    if (_adapter.TaskScheduler != null)
+                    {
+                        Task.Factory.StartNew(Accept, default, TaskCreationOptions.DenyChildAttach,
+                            _adapter.TaskScheduler);
+                    }
+                    else
+                    {
+                        _ = Accept();
+                    }
                 }
             }
         }
@@ -1041,7 +1049,7 @@ namespace IceInternal
 
                 foreach (Connection connection in _connections)
                 {
-                    connection.Destroy(new ObjectAdapterDeactivatedException(_adapter!.Name));
+                    connection.Destroy(new ObjectAdapterDeactivatedException(_adapter.Name));
                 }
 
                 _destroyed = true;
@@ -1164,7 +1172,7 @@ namespace IceInternal
                     _endpoint = _transceiver.Bind();
 
                     var connection = new Connection(_communicator, null, _transceiver, null, _endpoint, _adapter);
-                    connection.StartAsync().AsTask().Wait();
+                    _ = connection.StartAsync();
                     _connections.Add(connection);
                 }
                 else
@@ -1207,7 +1215,7 @@ namespace IceInternal
             }
         }
 
-        private async Task Accept()
+        private async ValueTask Accept()
         {
             while (true)
             {
@@ -1287,13 +1295,16 @@ namespace IceInternal
                     _connections.Add(connection);
                 }
 
+                // TODO: is awaiting on StartAsync really useful? This will return once the connection
+                // validation message is sent. We might just a well return immediately ignoring when
+                // the write for the connection validation message.
                 Debug.Assert(connection != null);
-                connection.Start(null);
+                await connection.StartAsync();
             }
         }
 
         private readonly IAcceptor? _acceptor;
-        private readonly ObjectAdapter? _adapter;
+        private readonly ObjectAdapter _adapter;
         private readonly Communicator _communicator;
         private readonly HashSet<Connection> _connections = new HashSet<Connection>();
         private readonly Endpoint _endpoint;

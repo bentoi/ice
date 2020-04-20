@@ -53,17 +53,12 @@ namespace Ice.ami
         public async ValueTask<int> opWithResultAsyncDispatchAsync(Current current)
         {
             await Task.Delay(10);
-            TestHelper.Assert(Thread.CurrentThread.Name!.Contains("Ice.ThreadPool.Server"));
-            int r = await Self(current).opWithResultAsync();
-            TestHelper.Assert(Thread.CurrentThread.Name!.Contains("Ice.ThreadPool.Server"));
-            return r;
+            return await Self(current).opWithResultAsync();
         }
 
         public async ValueTask opWithUEAsyncDispatchAsync(Current current)
         {
-            TestHelper.Assert(Thread.CurrentThread.Name!.Contains("Ice.ThreadPool.Server"));
             await Task.Delay(10);
-            TestHelper.Assert(Thread.CurrentThread.Name!.Contains("Ice.ThreadPool.Server"));
             try
             {
                 await Self(current).opWithUEAsync();
