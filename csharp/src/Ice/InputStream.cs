@@ -448,12 +448,12 @@ namespace Ice
 
         /// <summary>Extracts a serializable object from the stream.</summary>
         /// <returns>The serializable object.</returns>
-        public object? ReadSerializable()
+        public object ReadSerializable()
         {
             int sz = ReadAndCheckSeqSize(1);
             if (sz == 0)
             {
-                return null;
+                throw new InvalidDataException("read an empty byte sequence for non-null serializable object");
             }
             var f = new BinaryFormatter(null, new StreamingContext(StreamingContextStates.All, Communicator));
             return f.Deserialize(new InputStreamWrapper(this));
@@ -1024,7 +1024,7 @@ namespace Ice
                 {
                     try
                     {
-                        remoteEx = (RemoteException?)AssemblyUtil.CreateInstance(type);
+                        remoteEx = (RemoteException?)Activator.CreateInstance(type);
                     }
                     catch (Exception ex)
                     {
@@ -1580,7 +1580,7 @@ namespace Ice
                     try
                     {
                         Debug.Assert(!cls.IsAbstract && !cls.IsInterface);
-                        v = (AnyClass?)AssemblyUtil.CreateInstance(cls);
+                        v = (AnyClass?)Activator.CreateInstance(cls);
                     }
                     catch (Exception ex)
                     {
