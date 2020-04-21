@@ -5,10 +5,9 @@
 using Ice;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
-#if DEBUG
 using System.Linq;
-#endif
 
 namespace IceInternal
 {
@@ -443,7 +442,8 @@ namespace IceInternal
             //
             if (cb != null)
             {
-                cb.NextConnector();
+                // TODO: refactor connection establishement to use await/async
+                _ = cb.NextConnectorAsync();
             }
 
             compress = false; // Satisfy the compiler
@@ -756,7 +756,6 @@ namespace IceInternal
                     // We now have all the connectors for the given endpoints. We can try to obtain the
                     // connection.
                     //
-                    _iter = 0;
                     GetConnection();
                 }
             }
@@ -774,7 +773,6 @@ namespace IceInternal
                     // We now have all the connectors for the given endpoints. We can try to obtain the
                     // connection.
                     //
-                    _iter = 0;
                     GetConnection();
                 }
                 else
@@ -884,20 +882,19 @@ namespace IceInternal
                 }
             }
 
-            internal void NextConnector()
+            internal async ValueTask NextConnectorAsync()
             {
-                while (true)
+                System.Exception? lastException = null;
+                for (int i = 0; i < _connectors.Count; ++i)
                 {
+                    var connector = _connectors[i];
                     try
                     {
-                        Debug.Assert(_iter < _connectors.Count);
-                        _current = _connectors[_iter++];
-
                         Ice.Instrumentation.ICommunicatorObserver? obsv = _factory._communicator.Observer;
                         if (obsv != null)
                         {
-                            _observer = obsv.GetConnectionEstablishmentObserver(_current.Endpoint,
-                                                                                _current.Connector.ToString()!);
+                            _observer = obsv.GetConnectionEstablishmentObserver(connector.Endpoint,
+                                                                                connector.Connector.ToString()!);
                             if (_observer != null)
                             {
                                 _observer.Attach();
@@ -907,73 +904,67 @@ namespace IceInternal
                         if (_factory._communicator.TraceLevels.Network >= 2)
                         {
                             _factory._communicator.Logger.Trace(_factory._communicator.TraceLevels.NetworkCat,
-                                $"trying to establish {_current.Endpoint.Name} connection to " +
-                                $"{_current.Connector}");
+                                $"trying to establish {connector.Endpoint.Name} connection to " +
+                                $"{connector.Connector}");
                         }
 
                         // TODO: Connection establishement code needs to be re-factored to use async/await
-                        Connection connection = _factory.CreateConnection(_current.Connector.Connect(), _current);
-                        connection.StartAsync().AsTask().ContinueWith(t => {
-                            try
-                            {
-                                t.Wait();
+                        Connection connection = _factory.CreateConnection(connector.Connector.Connect(), connector);
+                        var task = connection.StartAsync().AsTask();
 
-                                if (_observer != null)
-                                {
-                                    _observer.Detach();
-                                }
-                                Debug.Assert(_current != null);
-                                _factory.FinishGetConnection(_connectors, _current, connection, this);
-                            }
-                            catch (System.AggregateException ex)
+                        int timeout = _factory._communicator.OverrideConnectTimeout ?? connector.Endpoint.Timeout;
+                        if (timeout > 0)
+                        {
+                            var cancellationTokenSource = new CancellationTokenSource();
+                            var timeoutTask = Task.Delay(timeout, cancellationTokenSource.Token);
+                            if (await Task.WhenAny(task, timeoutTask).ConfigureAwait(false) == task)
                             {
-                                if (ConnectionStartFailedImpl(ex.InnerException!))
-                                {
-                                    NextConnector();
-                                }
+                                cancellationTokenSource.Cancel();
+                                await task.ConfigureAwait(false); // Propagate exceptions
                             }
-                        }, TaskScheduler.Current);
+                            else
+                            {
+                                throw new ConnectTimeoutException();
+                            }
+                        }
+                        else
+                        {
+                            await task.ConfigureAwait(false);
+                        }
+
+                        if (_observer != null)
+                        {
+                            _observer.Detach();
+                        }
+
+                        _factory.FinishGetConnection(_connectors, connector, connection, this);
+                        return;
+                    }
+                    catch (Ice.CommunicatorDestroyedException ex)
+                    {
+                        lastException = ex;
+                        break; // No need to continue
                     }
                     catch (System.Exception ex)
                     {
                         if (_factory._communicator.TraceLevels.Network >= 2)
                         {
-                            Debug.Assert(_current != null);
+                            Debug.Assert(connector != null);
                             _factory._communicator.Logger.Trace(_factory._communicator.TraceLevels.NetworkCat,
-                                $"failed to establish {_current.Endpoint.Name} connection to " +
-                                $"{_current.Connector}\n{ex}");
+                                $"failed to establish {connector.Endpoint.Name} connection to " +
+                                $"{connector.Connector}\n{ex}");
                         }
-
-                        if (ConnectionStartFailedImpl(ex))
+                        if (_observer != null)
                         {
-                            continue;
+                            _observer.Failed(ex.GetType().FullName ?? "System.Exception");
+                            _observer.Detach();
                         }
+                        _factory.HandleConnectionException(ex, _hasMore || (i + 1) < _connectors.Count);
+                        lastException = ex;
                     }
-                    break;
                 }
-            }
 
-            private bool ConnectionStartFailedImpl(System.Exception ex)
-            {
-                if (_observer != null)
-                {
-                    _observer.Failed(ex.GetType().FullName ?? "System.Exception");
-                    _observer.Detach();
-                }
-                _factory.HandleConnectionException(ex, _hasMore || _iter < _connectors.Count);
-                if (ex is Ice.CommunicatorDestroyedException) // No need to continue.
-                {
-                    _factory.FinishGetConnection(_connectors, ex, this);
-                }
-                else if (_iter < _connectors.Count) // Try the next connector.
-                {
-                    return true;
-                }
-                else
-                {
-                    _factory.FinishGetConnection(_connectors, ex, this);
-                }
-                return false;
+                _factory.FinishGetConnection(_connectors, lastException!, this);
             }
 
             private readonly OutgoingConnectionFactory _factory;
@@ -985,8 +976,6 @@ namespace IceInternal
             private bool _hasMoreEndpoints;
             private Endpoint? _currentEndpoint;
             private readonly List<ConnectorInfo> _connectors = new List<ConnectorInfo>();
-            private int _iter;
-            private ConnectorInfo? _current;
             private Ice.Instrumentation.IObserver? _observer;
         }
 
@@ -1299,7 +1288,22 @@ namespace IceInternal
                 // validation message is sent. We might just a well return immediately ignoring when
                 // the write for the connection validation message.
                 Debug.Assert(connection != null);
-                await connection.StartAsync();
+                try
+                {
+                    await connection.StartAsync();
+                }
+                catch (ObjectAdapterDeactivatedException)
+                {
+                    // Ignore
+                }
+                catch (System.Exception ex)
+                {
+                    if (_communicator.TraceLevels.Network >= 2)
+                    {
+                        _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
+                            $"failed to accept {_endpoint.Name} connection\n{connection}\n{ex}");
+                    }
+                }
             }
         }
 

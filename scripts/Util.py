@@ -1914,7 +1914,7 @@ class Result:
 class TestSuite(object):
 
     def __init__(self, path, testcases=None, options=None, libDirs=None, runOnMainThread=False, chdir=False,
-                 multihost=True, mapping=None):
+                 multihost=True):
         global currentMapping
         self.path = os.path.dirname(path) if os.path.basename(path) == "test.py" else path
         self.mapping = currentMapping or Mapping.getByPath(self.path)

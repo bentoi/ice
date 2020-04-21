@@ -154,8 +154,7 @@ namespace IceInternal
                 {
                     // TODO we need a better API for tracing
                     List<ArraySegment<byte>> requestData = Ice1Definitions.GetRequestData(outgoingRequest, requestId);
-                    TraceUtil.TraceSend(_adapter.Communicator, VectoredBufferExtensions.ToArray(requestData), _logger,
-                        _traceLevels);
+                    TraceUtil.TraceSend(_adapter.Communicator, requestData, _logger, _traceLevels);
                 }
 
                 var incomingRequest = new IncomingRequestFrame(_adapter.Communicator, outgoingRequest);

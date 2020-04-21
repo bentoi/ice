@@ -103,12 +103,13 @@ namespace IceInternal
                 int status = Initialize(ref readBuffer, writeBuffer);
                 if (status == SocketOperation.Read)
                 {
-                    int offset = 0;
+                    ArraySegment<byte> received = default;
                     do
                     {
-                        offset += await ReadAsync(readBuffer, offset);
+                        received = await ReadAsync(readBuffer, received.Count);
                     }
-                    while (offset < readBuffer.Count);
+                    while (received.Count < readBuffer.Count);
+                    readBuffer = received;
                 }
                 else if (status == SocketOperation.Write)
                 {
@@ -136,12 +137,12 @@ namespace IceInternal
             int status = Closing(initiator, ex);
             if (status == SocketOperation.Read && !initiator && canRead)
             {
-                int offset = 0;
+                ArraySegment<byte> received = default;
                 do
                 {
-                    offset += await ReadAsync(readBuffer, offset);
+                    received = await ReadAsync(readBuffer, received.Count);
                 }
-                while (offset < readBuffer.Count);
+                while (received.Count < readBuffer.Count);
             }
             else if (status == SocketOperation.Write && canWrite)
             {
@@ -192,22 +193,37 @@ namespace IceInternal
             }
         }
 
-        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
-        async ValueTask<int> ReadAsync(ArraySegment<byte> buffer, int offset = 0)
+        private class ArraySegmentAndOffset
         {
-            return await Read(this, buffer, offset).ConfigureAwait(false) - offset;
-
-            static Task<int> Read(ITransceiver self, ArraySegment<byte> buffer, int offset)
+            public ArraySegmentAndOffset(ArraySegment<byte> buffer, int offset)
             {
-                var result = new TaskCompletionSource<int>();
-                if (self.StartRead(ref buffer, ref offset, state =>
+                this.buffer = buffer;
+                this.offset = offset;
+            }
+            public ArraySegment<byte> buffer;
+            public int offset;
+        };
+
+        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
+        async ValueTask<ArraySegment<byte>> ReadAsync(ArraySegment<byte> buffer, int offset = 0)
+        {
+            return await Read(this, buffer, offset).ConfigureAwait(false);
+
+            static Task<ArraySegment<byte>> Read(ITransceiver self, ArraySegment<byte> buffer, int offset)
+            {
+                var result = new TaskCompletionSource<ArraySegment<byte>>();
+
+                // TODO: Benoit: Yes, it's a hack
+                var p = new ArraySegmentAndOffset(buffer, offset);
+
+                if (self.StartRead(ref p.buffer, ref p.offset, state =>
                 {
                     try
                     {
                         var transceiver = (ITransceiver)state;
-                        transceiver.FinishRead(ref buffer, ref offset);
-                        transceiver.Read(ref buffer, ref offset);
-                        result.SetResult(offset);
+                        transceiver.FinishRead(ref p.buffer, ref p.offset);
+                        transceiver.Read(ref p.buffer, ref p.offset);
+                        result.SetResult(new ArraySegment<byte>(p.buffer.Array!, 0, p.offset));
                     }
                     catch (System.Exception ex)
                     {
@@ -217,9 +233,9 @@ namespace IceInternal
                 {
                     try
                     {
-                        self.FinishRead(ref buffer, ref offset);
-                        self.Read(ref buffer, ref offset);
-                        result.SetResult(offset);
+                        self.FinishRead(ref p.buffer, ref p.offset);
+                        self.Read(ref p.buffer, ref p.offset);
+                        result.SetResult(new ArraySegment<byte>(p.buffer.Array!, 0, p.offset));
                     }
                     catch (System.Exception ex)
                     {
