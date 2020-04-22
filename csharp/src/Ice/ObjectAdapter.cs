@@ -32,6 +32,15 @@ namespace Ice
         /// <value>The object adapter's name.</value>
         public string Name { get; }
 
+        /// <summary>Returns whether or not the connections associated with the object adapter serialize the
+        /// dispatching of incoming requests.</summary>
+        /// <value>The serialize value.</value>
+        public bool Serialize
+        {
+            get => _serialize;
+            set => _serialize = value;
+        }
+
         /// <summary>Returns the TaskScheduler used to dispatch requests.</summary>
         public TaskScheduler? TaskScheduler { get; }
 
@@ -89,6 +98,7 @@ namespace Ice
         private Reference? _reference;
         private readonly string _replicaGroupId;
         private RouterInfo? _routerInfo;
+        private volatile bool _serialize;
         private State _state = State.Uninitialized;
 
         /// <summary>Activates all endpoints of this object adapter. After activation, the object adapter can dispatch
@@ -774,6 +784,7 @@ namespace Ice
             _publishedEndpoints = Array.Empty<Endpoint>();
             _routerInfo = null;
             _directCount = 0;
+            _serialize = false;
 
             if (Name.Length == 0)
             {

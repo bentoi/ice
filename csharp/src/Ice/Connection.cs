@@ -181,7 +181,7 @@ namespace Ice
                 }
 
                 Debug.Assert ((_taskScheduler ?? TaskScheduler.Default) == TaskScheduler.Current);
-                _ = RunIO(Read);
+                _ = RunIO(ReadAndDispatchAsync);
             }
             catch (Exception ex)
             {
@@ -868,16 +868,6 @@ namespace Ice
             }
 
             _taskScheduler = adapter != null ? adapter.TaskScheduler : communicator.TaskScheduler;
-
-            bool serialized = false; // TODO: per connection configuration?
-            if (serialized)
-            {
-                Read = SerializedReadAndDispatch;
-            }
-            else
-            {
-                Read = ConcurrentReadAndDispatch;
-            }
         }
 
         private struct IncomingMessage
@@ -889,6 +879,7 @@ namespace Ice
                 OutgoingRequestSent = null;
                 OutgoingRequestResponse = null;
                 Heartbeat = null;
+                Serialize = current.Adapter.Serialize;
             }
 
             public IncomingMessage(OutgoingAsyncBase? sent, OutgoingAsyncBase? response)
@@ -897,6 +888,7 @@ namespace Ice
                 OutgoingRequestSent = sent;
                 OutgoingRequestResponse = response;
                 Heartbeat = null;
+                Serialize = false;
             }
 
             public IncomingMessage(Action<Connection> heartbeat)
@@ -905,275 +897,279 @@ namespace Ice
                 OutgoingRequestSent = null;
                 OutgoingRequestResponse = null;
                 Heartbeat = heartbeat;
+                Serialize = false;
             }
 
             public ValueTuple<Current, IncomingRequestFrame, byte>? IncomingRequest;
             public OutgoingAsyncBase? OutgoingRequestSent;
             public OutgoingAsyncBase? OutgoingRequestResponse;
             public Action<Connection>? Heartbeat;
+            public bool Serialize;
         };
 
-        private async ValueTask<IncomingMessage?> ReadAsync()
+        private async ValueTask<IncomingMessage> ReadAsync()
         {
-            var readBuffer = _endpoint.IsDatagram ?
-                ArraySegment<byte>.Empty : new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
-            ArraySegment<byte> received = default;
-            while (received.Count < Ice1Definitions.HeaderSize)
+            while (true)
             {
-                int bytesReceived = received.Count;
-                received = await _transceiver.ReadAsync(readBuffer, received.Count).ConfigureAwait(false);
-                lock (this)
+                var readBuffer = _endpoint.IsDatagram ?
+                    ArraySegment<byte>.Empty : new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
+                ArraySegment<byte> received = default;
+                while (received.Count < Ice1Definitions.HeaderSize)
                 {
-                    if (_state >= State.ClosingPending)
+                    int bytesReceived = received.Count;
+                    received = await _transceiver.ReadAsync(readBuffer, received.Count).ConfigureAwait(false);
+                    lock (this)
                     {
-                        Debug.Assert(_exception != null);
-                        throw _exception;
-                    }
-
-                    TraceReceivedAndUpdateObserver(received.Count - bytesReceived);
-
-                    if (_acmLastActivity > -1)
-                    {
-                        _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                    }
-                }
-            }
-            readBuffer = received;
-
-            if (readBuffer.Count < Ice1Definitions.HeaderSize)
-            {
-                //
-                // This situation is possible for small UDP packets.
-                //
-                throw new InvalidDataException($"received packet with only {readBuffer.Count} bytes");
-            }
-
-            Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
-            int size = InputStream.ReadInt(readBuffer.Slice(10, 4));
-            if (size < Ice1Definitions.HeaderSize)
-            {
-                throw new InvalidDataException($"received ice1 frame with only {size} bytes");
-            }
-
-            if (size > _messageSizeMax)
-            {
-                throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
-            }
-
-            if (_endpoint.IsDatagram && size > readBuffer.Count)
-            {
-                if (_warnUdp)
-                {
-                    _logger.Warning($"maximum datagram size of {readBuffer.Count} exceeded");
-                }
-                return null;
-            }
-
-            if (size > readBuffer.Array!.Length)
-            {
-                // Allocate a new array and copy the header over
-                var buffer = new ArraySegment<byte>(new byte[size], 0, size);
-                readBuffer.AsSpan().CopyTo(buffer.AsSpan(0, Ice1Definitions.HeaderSize));
-                readBuffer = buffer;
-            }
-            else if (size > readBuffer.Count)
-            {
-                readBuffer = new ArraySegment<byte>(readBuffer.Array!, 0, size);
-            }
-            Debug.Assert(size == readBuffer.Count);
-
-            // Read the reminder of the message if needed
-            while (received.Count < readBuffer.Count)
-            {
-                int bytesReceived = received.Count;
-                received = await _transceiver.ReadAsync(readBuffer, received.Count).ConfigureAwait(false);
-                lock (this)
-                {
-                    if (_state >= State.ClosingPending)
-                    {
-                        Debug.Assert(_exception != null);
-                        throw _exception;
-                    }
-
-                    TraceReceivedAndUpdateObserver(received.Count - bytesReceived);
-
-                    if (_acmLastActivity > -1)
-                    {
-                        _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                    }
-                }
-            }
-            // Non-datagram transport are supposed to read exactly what is requested
-            Debug.Assert(received.Count == readBuffer.Count);
-
-            IncomingMessage? incomingMessage = null;
-
-            lock (this)
-            {
-                if (_state >= State.Closed)
-                {
-                    Debug.Assert(_exception != null);
-                    throw _exception;
-                }
-
-                // The magic and version fields have already been checked.
-                var messageType = (Ice1Definitions.MessageType)readBuffer[8];
-                byte compressionStatus = readBuffer[9];
-                if (compressionStatus == 2)
-                {
-                    if (BZip2.IsLoaded)
-                    {
-                        readBuffer = BZip2.Decompress(readBuffer, Ice1Definitions.HeaderSize, _messageSizeMax);
-                    }
-                    else
-                    {
-                        throw new LoadException("compression not supported, bzip2 library not found");
-                    }
-                }
-
-                switch (messageType)
-                {
-                    case Ice1Definitions.MessageType.CloseConnectionMessage:
-                    {
-                        TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
-                        if (_endpoint.IsDatagram)
+                        if (_state >= State.ClosingPending)
                         {
-                            if (_warn)
-                            {
-                                _logger.Warning(
-                                    $"ignoring close connection message for datagram connection:\n{_desc}");
-                            }
-                        }
-                        else
-                        {
-                            if (_state == State.ClosingPending)
-                            {
-                                SetState(State.Closed);
-                            }
-                            else
-                            {
-                                SetState(State.ClosingPending, new ConnectionClosedByPeerException());
-                            }
                             Debug.Assert(_exception != null);
                             throw _exception;
                         }
-                        break;
+
+                        TraceReceivedAndUpdateObserver(received.Count - bytesReceived);
+
+                        if (_acmLastActivity > -1)
+                        {
+                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                        }
+                    }
+                }
+                readBuffer = received;
+
+                if (readBuffer.Count < Ice1Definitions.HeaderSize)
+                {
+                    //
+                    // This situation is possible for small UDP packets.
+                    //
+                    throw new InvalidDataException($"received packet with only {readBuffer.Count} bytes");
+                }
+
+                Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
+                int size = InputStream.ReadInt(readBuffer.Slice(10, 4));
+                if (size < Ice1Definitions.HeaderSize)
+                {
+                    throw new InvalidDataException($"received ice1 frame with only {size} bytes");
+                }
+
+                if (size > _messageSizeMax)
+                {
+                    throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
+                }
+
+                if (_endpoint.IsDatagram && size > readBuffer.Count)
+                {
+                    if (_warnUdp)
+                    {
+                        _logger.Warning($"maximum datagram size of {readBuffer.Count} exceeded");
+                    }
+                    continue;
+                }
+
+                if (size > readBuffer.Array!.Length)
+                {
+                    // Allocate a new array and copy the header over
+                    var buffer = new ArraySegment<byte>(new byte[size], 0, size);
+                    readBuffer.AsSpan().CopyTo(buffer.AsSpan(0, Ice1Definitions.HeaderSize));
+                    readBuffer = buffer;
+                }
+                else if (size > readBuffer.Count)
+                {
+                    readBuffer = new ArraySegment<byte>(readBuffer.Array!, 0, size);
+                }
+                Debug.Assert(size == readBuffer.Count);
+
+                // Read the reminder of the message if needed
+                while (received.Count < readBuffer.Count)
+                {
+                    int bytesReceived = received.Count;
+                    received = await _transceiver.ReadAsync(readBuffer, received.Count).ConfigureAwait(false);
+                    lock (this)
+                    {
+                        if (_state >= State.ClosingPending)
+                        {
+                            Debug.Assert(_exception != null);
+                            throw _exception;
+                        }
+
+                        TraceReceivedAndUpdateObserver(received.Count - bytesReceived);
+
+                        if (_acmLastActivity > -1)
+                        {
+                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                        }
+                    }
+                }
+                // Non-datagram transport are supposed to read exactly what is requested
+                Debug.Assert(received.Count == readBuffer.Count);
+
+                IncomingMessage? incomingMessage = null;
+
+                lock (this)
+                {
+                    if (_state >= State.Closed)
+                    {
+                        Debug.Assert(_exception != null);
+                        throw _exception;
                     }
 
-                    case Ice1Definitions.MessageType.RequestMessage:
+                    // The magic and version fields have already been checked.
+                    var messageType = (Ice1Definitions.MessageType)readBuffer[8];
+                    byte compressionStatus = readBuffer[9];
+                    if (compressionStatus == 2)
                     {
-                        if (_state >= State.Closing)
+                        if (BZip2.IsLoaded)
                         {
-                            TraceUtil.Trace("received request during closing\n" +
-                                            "(ignored by server, client will retry)",
-                                            new InputStream(_communicator, readBuffer),
-                                            _logger, _traceLevels);
+                            readBuffer = BZip2.Decompress(readBuffer, Ice1Definitions.HeaderSize, _messageSizeMax);
                         }
                         else
+                        {
+                            throw new LoadException("compression not supported, bzip2 library not found");
+                        }
+                    }
+
+                    switch (messageType)
+                    {
+                        case Ice1Definitions.MessageType.CloseConnectionMessage:
+                        {
+                            TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                            if (_endpoint.IsDatagram)
+                            {
+                                if (_warn)
+                                {
+                                    _logger.Warning(
+                                        $"ignoring close connection message for datagram connection:\n{_desc}");
+                                }
+                            }
+                            else
+                            {
+                                if (_state == State.ClosingPending)
+                                {
+                                    SetState(State.Closed);
+                                }
+                                else
+                                {
+                                    SetState(State.ClosingPending, new ConnectionClosedByPeerException());
+                                }
+                                Debug.Assert(_exception != null);
+                                throw _exception;
+                            }
+                            break;
+                        }
+
+                        case Ice1Definitions.MessageType.RequestMessage:
+                        {
+                            if (_state >= State.Closing)
+                            {
+                                TraceUtil.Trace("received request during closing\n" +
+                                                "(ignored by server, client will retry)",
+                                                new InputStream(_communicator, readBuffer),
+                                                _logger, _traceLevels);
+                            }
+                            else
+                            {
+                                TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                                readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
+                                int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
+                                var request = new IncomingRequestFrame(_adapter!.Communicator, readBuffer.Slice(4));
+                                var current = new Current(_adapter!, request, requestId, this);
+                                incomingMessage = new IncomingMessage(current, request, compressionStatus);
+                            }
+                            break;
+                        }
+
+                        case Ice1Definitions.MessageType.RequestBatchMessage:
+                        {
+                            if (_state >= State.Closing)
+                            {
+                                TraceUtil.Trace("received batch request during closing\n" +
+                                                "(ignored by server, client will retry)",
+                                                new InputStream(_communicator, readBuffer),
+                                                _logger, _traceLevels);
+                            }
+                            else
+                            {
+                                TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                                int invokeNum = InputStream.ReadInt(readBuffer.AsSpan(Ice1Definitions.HeaderSize, 4));
+                                if (invokeNum < 0)
+                                {
+                                    throw new InvalidDataException(
+                                        $"received ice1 RequestBatchMessage with {invokeNum} batch requests");
+                                }
+                                Debug.Assert(false); // TODO: deal with batch requests
+                            }
+                            break;
+                        }
+
+                        case Ice1Definitions.MessageType.ReplyMessage:
                         {
                             TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
                             readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
                             int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
-                            var request = new IncomingRequestFrame(_adapter!.Communicator, readBuffer.Slice(4));
-                            var current = new Current(_adapter!, request, requestId, this);
-                            incomingMessage = new IncomingMessage(current, request, compressionStatus);
-                        }
-                        break;
-                    }
-
-                    case Ice1Definitions.MessageType.RequestBatchMessage:
-                    {
-                        if (_state >= State.Closing)
-                        {
-                            TraceUtil.Trace("received batch request during closing\n" +
-                                            "(ignored by server, client will retry)",
-                                            new InputStream(_communicator, readBuffer),
-                                            _logger, _traceLevels);
-                        }
-                        else
-                        {
-                            TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
-                            int invokeNum = InputStream.ReadInt(readBuffer.AsSpan(Ice1Definitions.HeaderSize, 4));
-                            if (invokeNum < 0)
+                            if (_asyncRequests.TryGetValue(requestId, out OutgoingAsyncBase? outAsync))
                             {
-                                throw new InvalidDataException(
-                                    $"received ice1 RequestBatchMessage with {invokeNum} batch requests");
-                            }
-                            Debug.Assert(false); // TODO: deal with batch requests
-                        }
-                        break;
-                    }
+                                _asyncRequests.Remove(requestId);
 
-                    case Ice1Definitions.MessageType.ReplyMessage:
-                    {
-                        TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
-                        readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
-                        int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
-                        if (_asyncRequests.TryGetValue(requestId, out OutgoingAsyncBase? outAsync))
-                        {
-                            _asyncRequests.Remove(requestId);
-
-                            //
-                            // If we just received the reply for a request which isn't acknowledge as
-                            // sent yet, we queue the reply instead of processing it right away. It
-                            // will be processed once the write callback is invoked for the message.
-                            //
-                            var response = new IncomingResponseFrame(_communicator, readBuffer.Slice(4));
-                            OutgoingMessage? outgoingMessage = _outgoingMessages.First?.Value;
-                            OutgoingAsyncBase? outAsyncSent = null;
-                            OutgoingAsyncBase? outAsyncResponse = null;
-                            if (outgoingMessage != null && outgoingMessage.OutAsync == outAsync)
-                            {
-                                if (outgoingMessage.Sent())
+                                //
+                                // If we just received the reply for a request which isn't acknowledge as
+                                // sent yet, we queue the reply instead of processing it right away. It
+                                // will be processed once the write callback is invoked for the message.
+                                //
+                                var response = new IncomingResponseFrame(_communicator, readBuffer.Slice(4));
+                                OutgoingMessage? outgoingMessage = _outgoingMessages.First?.Value;
+                                OutgoingAsyncBase? outAsyncSent = null;
+                                OutgoingAsyncBase? outAsyncResponse = null;
+                                if (outgoingMessage != null && outgoingMessage.OutAsync == outAsync)
                                 {
-                                    outAsyncSent = outAsync;
+                                    if (outgoingMessage.Sent())
+                                    {
+                                        outAsyncSent = outAsync;
+                                    }
+                                }
+
+                                if (outAsync.Response(response))
+                                {
+                                    outAsyncResponse = outAsync;
+                                }
+
+                                if (outAsyncSent != null || outAsyncResponse != null)
+                                {
+                                    incomingMessage = new IncomingMessage(outAsyncSent, outAsyncResponse);
+                                }
+
+                                if (_asyncRequests.Count == 0)
+                                {
+                                    System.Threading.Monitor.PulseAll(this); // Notify threads blocked in close()
                                 }
                             }
-
-                            if (outAsync.Response(response))
-                            {
-                                outAsyncResponse = outAsync;
-                            }
-
-                            if (outAsyncSent != null || outAsyncResponse != null)
-                            {
-                                incomingMessage = new IncomingMessage(outAsyncSent, outAsyncResponse);
-                            }
-
-                            if (_asyncRequests.Count == 0)
-                            {
-                                System.Threading.Monitor.PulseAll(this); // Notify threads blocked in close()
-                            }
+                            break;
                         }
-                        break;
-                    }
 
-                    case Ice1Definitions.MessageType.ValidateConnectionMessage:
-                    {
-                        TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
-                        if (_heartbeatCallback != null)
+                        case Ice1Definitions.MessageType.ValidateConnectionMessage:
                         {
-                            incomingMessage = new IncomingMessage(_heartbeatCallback);
+                            TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                            if (_heartbeatCallback != null)
+                            {
+                                incomingMessage = new IncomingMessage(_heartbeatCallback);
+                            }
+                            break;
                         }
-                        break;
+
+                        default:
+                        {
+                            TraceUtil.Trace("received unknown message\n(invalid, closing connection)",
+                                            new InputStream(_communicator, readBuffer), _logger, _traceLevels);
+                            throw new InvalidDataException(
+                                $"received ice1 frame with unknown message type `{messageType}'");
+                        }
                     }
 
-                    default:
+                    if (incomingMessage != null)
                     {
-                        TraceUtil.Trace("received unknown message\n(invalid, closing connection)",
-                                        new InputStream(_communicator, readBuffer), _logger, _traceLevels);
-                        throw new InvalidDataException(
-                            $"received ice1 frame with unknown message type `{messageType}'");
+                        ++_dispatchCount;
+                        return incomingMessage.Value;
                     }
-                }
-
-                if (incomingMessage != null)
-                {
-                    ++_dispatchCount;
                 }
             }
-
-            return incomingMessage;
         }
 
         private async ValueTask DispatchAsync(IncomingMessage incomingMessage)
@@ -1300,45 +1296,25 @@ namespace Ice
             }
         }
 
-        private async ValueTask SerializedReadAndDispatch()
+        private async ValueTask ReadAndDispatchAsync()
         {
-            // The serialized read and dispatch read method waits for the message to be dispatched to
-            // continue reading on the connection
             // NOTE: we don't use ConfigureWait(false) here on purpose. We want the continuations of
-            // ReadAsync and DispatchAsync to use the Current task scheduler.
+            // ReadAsync and DispatchAsync to use the current task scheduler.
             while (true)
             {
-                IncomingMessage? incomingMessage = await ReadAsync();
-                if (incomingMessage != null)
+                IncomingMessage incomingMessage = await ReadAsync();
+                if (incomingMessage.Serialize)
                 {
-                    await DispatchAsync(incomingMessage!.Value);
+                    await DispatchAsync(incomingMessage);
+                }
+                else
+                {
+                    RunTask(async () => { await RunIO(ReadAndDispatchAsync); });
+                    await DispatchAsync(incomingMessage);
+                    return; // We're done, ReadAndDispatchAsync is performed by the task started above
                 }
             }
         }
-
-        private async ValueTask ConcurrentReadAndDispatch()
-        {
-            // The concurrent read and dispatch method doesn't wait for the message to be dispatched
-            // to start a new asynchronous read. We prefer to the dispatch the message from the
-            // continuation of ReadAsync to ensure there's no addtional thread context switch between
-            // the ReadAsync and DispatchAsync. The new asynchronous Read is started from another
-            // thread, it can't be started from this thread as we could potentially Read and Dispatch
-            // another method before dispatching this one if the ReadAsync on the transport completes
-            // synchronously.
-            // NOTE: we don't use ConfigureWait(false) here on purpose. We want the continuations of
-            // ReadAsync and DispatchAsync to use the Current task scheduler.
-            // TODO: verify if the thread context switch has really an effect on performances here...
-            // otherwise it would be simpler to have a while(true) { ReadAsync(); RunTask(DispatchAsync); }
-            // loop.
-            IncomingMessage? incomingMessage = await ReadAsync();
-            RunTask(async() => { await RunIO(Read); });
-            if (incomingMessage != null)
-            {
-                await DispatchAsync(incomingMessage!.Value);
-            }
-        }
-
-        private Func<ValueTask> Read { get; }
 
         private void Finish()
         {
@@ -1859,7 +1835,7 @@ namespace Ice
             {
                 try
                 {
-                    bool canRead = ioFunc == Read || _pendingIO == 0;
+                    bool canRead = ioFunc == ReadAndDispatchAsync || _pendingIO == 0;
                     bool canWrite = ioFunc == WriteAsync || _pendingIO == 0;
                     await _transceiver.ClosingAsync(_exception, canRead, canWrite);
                 }
