@@ -104,8 +104,11 @@ namespace Ice
                     else // The client side has the passive role for connection validation.
                     {
                         readBuffer = new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]);
-                        readBuffer = await _transceiver.ReadAsync(readBuffer).ConfigureAwait(false);
-                        Debug.Assert(readBuffer.Count == Ice1Definitions.HeaderSize);
+                        int offset = 0;
+                        while (offset < Ice1Definitions.HeaderSize)
+                        {
+                            offset += await _transceiver.ReadAsync(readBuffer, offset).ConfigureAwait(false);
+                        }
 
                         Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
                         var messageType = (Ice1Definitions.MessageType)readBuffer[8];
@@ -909,37 +912,34 @@ namespace Ice
         {
             while (true)
             {
-                var readBuffer = _endpoint.IsDatagram ?
-                    ArraySegment<byte>.Empty : new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
-                ArraySegment<byte> received = default;
-                while (received.Count < Ice1Definitions.HeaderSize)
+                ArraySegment<byte> readBuffer;
+                if (_endpoint.IsDatagram)
                 {
-                    int bytesReceived = received.Count;
-                    received = await _transceiver.ReadAsync(readBuffer, received.Count).ConfigureAwait(false);
-                    lock (this)
+                    readBuffer = await _transceiver.ReadAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    readBuffer = new ArraySegment<byte>(new byte[256], 0, Ice1Definitions.HeaderSize);
+                    int offset = 0;
+                    while (offset < Ice1Definitions.HeaderSize)
                     {
-                        if (_state >= State.ClosingPending)
-                        {
-                            Debug.Assert(_exception != null);
-                            throw _exception;
-                        }
-
-                        TraceReceivedAndUpdateObserver(received.Count - bytesReceived);
-
-                        if (_acmLastActivity > -1)
-                        {
-                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                        }
+                        offset += await _transceiver.ReadAsync(readBuffer, offset).ConfigureAwait(false);
                     }
                 }
-                readBuffer = received;
 
-                if (readBuffer.Count < Ice1Definitions.HeaderSize)
+                lock (this)
                 {
-                    //
-                    // This situation is possible for small UDP packets.
-                    //
-                    throw new InvalidDataException($"received packet with only {readBuffer.Count} bytes");
+                    if (_state >= State.ClosingPending)
+                    {
+                        Debug.Assert(_exception != null);
+                        throw _exception;
+                    }
+
+                    TraceReceivedAndUpdateObserver(readBuffer.Count);
+                    if (_acmLastActivity > -1)
+                    {
+                        _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                    }
                 }
 
                 Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
@@ -954,7 +954,47 @@ namespace Ice
                     throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
                 }
 
-                if (_endpoint.IsDatagram && size > readBuffer.Count)
+                if (!_endpoint.IsDatagram)
+                {
+                    if (size > readBuffer.Array!.Length)
+                    {
+                        // Allocate a new array and copy the header over
+                        var buffer = new ArraySegment<byte>(new byte[size], 0, size);
+                        readBuffer.AsSpan().CopyTo(buffer.AsSpan(0, Ice1Definitions.HeaderSize));
+                        readBuffer = buffer;
+                    }
+                    else if (size > readBuffer.Count)
+                    {
+                        readBuffer = new ArraySegment<byte>(readBuffer.Array!, 0, size);
+                    }
+                    Debug.Assert(size == readBuffer.Count);
+
+                    // Read the reminder of the message if needed
+                    int offset = Ice1Definitions.HeaderSize;
+                    while (offset < readBuffer.Count)
+                    {
+                        int bytesReceived = await _transceiver.ReadAsync(readBuffer, offset).ConfigureAwait(false);
+                        offset += bytesReceived;
+
+                        // Trace the receival progress within the loop as we might be receiving significant amount
+                        // of data here.
+                        lock (this)
+                        {
+                            if (_state >= State.ClosingPending)
+                            {
+                                Debug.Assert(_exception != null);
+                                throw _exception;
+                            }
+
+                            TraceReceivedAndUpdateObserver(bytesReceived);
+                            if (_acmLastActivity > -1)
+                            {
+                                _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                            }
+                        }
+                    }
+                }
+                else if (size > readBuffer.Count)
                 {
                     if (_warnUdp)
                     {
@@ -962,43 +1002,6 @@ namespace Ice
                     }
                     continue;
                 }
-
-                if (size > readBuffer.Array!.Length)
-                {
-                    // Allocate a new array and copy the header over
-                    var buffer = new ArraySegment<byte>(new byte[size], 0, size);
-                    readBuffer.AsSpan().CopyTo(buffer.AsSpan(0, Ice1Definitions.HeaderSize));
-                    readBuffer = buffer;
-                }
-                else if (size > readBuffer.Count)
-                {
-                    readBuffer = new ArraySegment<byte>(readBuffer.Array!, 0, size);
-                }
-                Debug.Assert(size == readBuffer.Count);
-
-                // Read the reminder of the message if needed
-                while (received.Count < readBuffer.Count)
-                {
-                    int bytesReceived = received.Count;
-                    received = await _transceiver.ReadAsync(readBuffer, received.Count).ConfigureAwait(false);
-                    lock (this)
-                    {
-                        if (_state >= State.ClosingPending)
-                        {
-                            Debug.Assert(_exception != null);
-                            throw _exception;
-                        }
-
-                        TraceReceivedAndUpdateObserver(received.Count - bytesReceived);
-
-                        if (_acmLastActivity > -1)
-                        {
-                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                        }
-                    }
-                }
-                // Non-datagram transport are supposed to read exactly what is requested
-                Debug.Assert(received.Count == readBuffer.Count);
 
                 Func<ValueTask>? incoming = null;
                 bool serialize = false;

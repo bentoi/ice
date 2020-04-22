@@ -106,7 +106,7 @@ namespace IceInternal
                     ArraySegment<byte> received = default;
                     do
                     {
-                        received = await ReadAsync(readBuffer, received.Count);
+                        received = await ReadAsyncImpl(readBuffer, received.Count);
                     }
                     while (received.Count < readBuffer.Count);
                     readBuffer = received;
@@ -140,7 +140,7 @@ namespace IceInternal
                 ArraySegment<byte> received = default;
                 do
                 {
-                    received = await ReadAsync(readBuffer, received.Count);
+                    received = await ReadAsyncImpl(readBuffer, received.Count);
                 }
                 while (received.Count < readBuffer.Count);
             }
@@ -204,12 +204,24 @@ namespace IceInternal
             public int offset;
         };
 
+        async ValueTask<ArraySegment<byte>> ReadAsync()
+        {
+            return await ReadAsyncImpl(ArraySegment<byte>.Empty, 0);
+        }
+
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
-        async ValueTask<ArraySegment<byte>> ReadAsync(ArraySegment<byte> buffer, int offset = 0)
+        async ValueTask<int> ReadAsync(ArraySegment<byte> buffer, int offset)
+        {
+            var received = await ReadAsyncImpl(buffer, offset);
+            return received.Count - offset;
+        }
+
+         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
+        async ValueTask<ArraySegment<byte>> ReadAsyncImpl(ArraySegment<byte> buffer, int offset)
         {
             return await Read(this, buffer, offset).ConfigureAwait(false);
 
-            static Task<ArraySegment<byte>> Read(ITransceiver self, ArraySegment<byte> buffer, int offset)
+            static Task<ArraySegment<byte>> Read(ITransceiver self, ArraySegment<byte> buffer, int offset = 0)
             {
                 var result = new TaskCompletionSource<ArraySegment<byte>>();
 
@@ -245,6 +257,7 @@ namespace IceInternal
                 return result.Task;
             }
         }
+
         string Transport();
         string ToDetailedString();
         Ice.ConnectionInfo GetInfo();

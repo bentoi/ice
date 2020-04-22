@@ -13,17 +13,6 @@ namespace Ice.perf
 {
     public class AllTests
     {
-    //     class Tester
-    //     {
-    //         private System.IO.TextWriter _out;
-    //         private Stopwatch _watch = new Stopwatch();
-    //         Tester(System.IO.TextWriter out)
-    //         {
-    //             _out = out;
-    //         }
-
-    //     };
-
         public static void RunTest(System.IO.TextWriter output, int repetitions, string name, Action invocation,
             Action warmUpInvocation)
         {
