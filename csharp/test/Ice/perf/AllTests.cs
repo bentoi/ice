@@ -3,6 +3,7 @@
 //
 
 using System;
+using System.Linq;
 using System.Diagnostics;
 using System.Collections.Generic;
 using Test;
@@ -32,14 +33,19 @@ namespace Ice.perf
             {
                 warmUpInvocation();
             }
+            ;
             var watch = new Stopwatch();
+            var collections = new int[GC.MaxGeneration].Select((v, i) => GC.CollectionCount(i)).ToArray();
             watch.Start();
             for (int i = 0; i < repetitions; i++)
             {
                 invocation();
             }
+            collections = collections.Select((v, i) => GC.CollectionCount(i) - v).ToArray();
+            GC.Collect();
             watch.Stop();
-            output.WriteLine($"{watch.ElapsedMilliseconds / (float)repetitions}ms");
+            output.WriteLine($"{watch.ElapsedMilliseconds / (float)repetitions}ms, " +
+                $"{string.Join("/", collections)} ({string.Join("/", collections.Select((_, i) => $"gen{i}"))}) GCs");
         }
 
         public static void RunTest(System.IO.TextWriter output, int repetitions, string name, Action invocation)

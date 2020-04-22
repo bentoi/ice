@@ -181,7 +181,7 @@ namespace Ice
                 }
 
                 Debug.Assert ((_taskScheduler ?? TaskScheduler.Default) == TaskScheduler.Current);
-                _ = RunIO(ReadAndDispatchAsync);
+                _ = RunIO(ReadAsync);
             }
             catch (Exception ex)
             {
@@ -907,7 +907,7 @@ namespace Ice
             public bool Serialize;
         };
 
-        private async ValueTask<IncomingMessage> ReadAsync()
+        private async ValueTask ReadAsync()
         {
             while (true)
             {
@@ -1002,8 +1002,8 @@ namespace Ice
                 // Non-datagram transport are supposed to read exactly what is requested
                 Debug.Assert(received.Count == readBuffer.Count);
 
-                IncomingMessage? incomingMessage = null;
-
+                Func<ValueTask>? incoming = null;
+                bool serialize = false;
                 lock (this)
                 {
                     if (_state >= State.Closed)
@@ -1070,9 +1070,18 @@ namespace Ice
                                 TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
                                 readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
                                 int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
-                                var request = new IncomingRequestFrame(_adapter!.Communicator, readBuffer.Slice(4));
+                                var request = new IncomingRequestFrame(_communicator, readBuffer.Slice(4));
+                                if (_adapter == null)
+                                {
+                                    throw new ObjectNotExistException(request.Identity, request.Facet,
+                                        request.Operation);
+                                }
+                                serialize = _adapter!.Serialize;
                                 var current = new Current(_adapter!, request, requestId, this);
-                                incomingMessage = new IncomingMessage(current, request, compressionStatus);
+                                incoming = async () =>
+                                {
+                                    await InvokeAsync(current, request, compressionStatus).ConfigureAwait(false);
+                                };
                             }
                             break;
                         }
@@ -1133,7 +1142,12 @@ namespace Ice
 
                                 if (outAsyncSent != null || outAsyncResponse != null)
                                 {
-                                    incomingMessage = new IncomingMessage(outAsyncSent, outAsyncResponse);
+                                    incoming = () =>
+                                    {
+                                        outAsyncSent?.InvokeSent();
+                                        outAsyncResponse?.InvokeResponse();
+                                        return new ValueTask();
+                                    };
                                 }
 
                                 if (_asyncRequests.Count == 0)
@@ -1149,7 +1163,19 @@ namespace Ice
                             TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
                             if (_heartbeatCallback != null)
                             {
-                                incomingMessage = new IncomingMessage(_heartbeatCallback);
+                                var callback = _heartbeatCallback;
+                                incoming = () =>
+                                {
+                                    try
+                                    {
+                                        callback(this);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.Error($"connection callback exception:\n{ex}\n{_desc}");
+                                    }
+                                    return new ValueTask();
+                                };
                             }
                             break;
                         }
@@ -1163,40 +1189,32 @@ namespace Ice
                         }
                     }
 
-                    if (incomingMessage != null)
+                    if (incoming != null)
                     {
                         ++_dispatchCount;
-                        return incomingMessage.Value;
+                    }
+                }
+                if (incoming != null)
+                {
+                    if (serialize)
+                    {
+                        await DispatchAsync(incoming);
+                    }
+                    else
+                    {
+                        RunTask(async () => { await RunIO(ReadAsync); });
+                        await DispatchAsync(incoming);
+                        return; // We're done, ReadAsync is performed by the task started above
                     }
                 }
             }
         }
 
-        private async ValueTask DispatchAsync(IncomingMessage incomingMessage)
+        private async ValueTask DispatchAsync(Func<ValueTask> incoming)
         {
             try
             {
-                if (incomingMessage.IncomingRequest != null)
-                {
-                    var (current, request, compressionStatus) = incomingMessage.IncomingRequest!.Value;
-                    await InvokeAsync(current, request, compressionStatus).ConfigureAwait(false);
-                }
-                else if (incomingMessage.Heartbeat != null)
-                {
-                    try
-                    {
-                        incomingMessage.Heartbeat(this);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error($"connection callback exception:\n{ex}\n{_desc}");
-                    }
-                }
-                else
-                {
-                    incomingMessage.OutgoingRequestSent?.InvokeSent();
-                    incomingMessage.OutgoingRequestResponse?.InvokeResponse();
-                }
+                await incoming();
             }
             finally
             {
@@ -1229,16 +1247,16 @@ namespace Ice
             }
         }
 
-        private async ValueTask InvokeAsync(Current current, IncomingRequestFrame requestFrame, byte compressionStatus)
+        private async ValueTask InvokeAsync(Current current, IncomingRequestFrame request, byte compressionStatus)
         {
             IDispatchObserver? dispatchObserver = null;
             try
             {
                 // Then notify and set dispatch observer, if any.
-                ICommunicatorObserver? communicatorObserver = current.Adapter.Communicator.Observer;
+                ICommunicatorObserver? communicatorObserver = _communicator.Observer;
                 if (communicatorObserver != null)
                 {
-                    dispatchObserver = communicatorObserver.GetDispatchObserver(current, requestFrame!.Size);
+                    dispatchObserver = communicatorObserver.GetDispatchObserver(current, request.Size);
                     dispatchObserver?.Attach();
                 }
 
@@ -1251,7 +1269,7 @@ namespace Ice
                         throw new ObjectNotExistException(current.Identity, current.Facet, current.Operation);
                     }
 
-                    ValueTask<OutgoingResponseFrame> vt = servant.DispatchAsync(requestFrame!, current);
+                    ValueTask<OutgoingResponseFrame> vt = servant.DispatchAsync(request, current);
                     if (current.RequestId != 0)
                     {
                         response = await vt.ConfigureAwait(false);
@@ -1293,26 +1311,6 @@ namespace Ice
             finally
             {
                 dispatchObserver?.Detach();
-            }
-        }
-
-        private async ValueTask ReadAndDispatchAsync()
-        {
-            // NOTE: we don't use ConfigureWait(false) here on purpose. We want the continuations of
-            // ReadAsync and DispatchAsync to use the current task scheduler.
-            while (true)
-            {
-                IncomingMessage incomingMessage = await ReadAsync();
-                if (incomingMessage.Serialize)
-                {
-                    await DispatchAsync(incomingMessage);
-                }
-                else
-                {
-                    RunTask(async () => { await RunIO(ReadAndDispatchAsync); });
-                    await DispatchAsync(incomingMessage);
-                    return; // We're done, ReadAndDispatchAsync is performed by the task started above
-                }
             }
         }
 
@@ -1649,7 +1647,7 @@ namespace Ice
         {
             while (true)
             {
-                OutgoingMessage? message = null;
+                OutgoingMessage message;
                 lock (this)
                 {
                     if (_state > State.Closing || _outgoingMessages.Count == 0)
@@ -1666,54 +1664,51 @@ namespace Ice
                     TraceUtil.TraceSend(_communicator, message.OutgoingData!, _logger, _traceLevels);
                 }
 
-                OutgoingAsyncBase? outAsync = await WriteMessageAsync(message);
-                if (outAsync != null)
+                Func<ValueTask>? dispatch = null;
+                List<ArraySegment<byte>> writeBuffer = DoCompress(message.OutgoingData!, message.Compress);
+                int size = writeBuffer.GetByteCount();
+                int offset = 0;
+                while (offset < size)
+                {
+                    int bytesSent = await _transceiver.WriteAsync(writeBuffer, offset).ConfigureAwait(false);
+                    offset += bytesSent;
+                    lock (this)
+                    {
+                        Debug.Assert(_state < State.Finished); // Finish is only called once WriteAsync returns
+                        TraceSentAndUpdateObserver(bytesSent);
+                        if (_acmLastActivity > -1)
+                        {
+                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                        }
+
+                        if (offset == size)
+                        {
+                            _outgoingMessages.RemoveFirst();
+
+                            OutgoingAsyncBase? outAsync;
+                            if (message.Sent())
+                            {
+                                outAsync = message.OutAsync;
+                                if (outAsync != null)
+                                {
+                                    ++_dispatchCount;
+                                    dispatch = () => { outAsync.InvokeSent(); return new ValueTask(); };
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (dispatch != null)
                 {
                     // Dispatch the sent callback. The sent callback is a synchronous callback so we can't
                     // call DispatchAsync from the write task or it would potentially block the sending of
-                    // messages until it returns (TODO: do we actually want this if _serialized = true?).
-                    RunTask(async () => { await DispatchAsync(new IncomingMessage(sent: outAsync, response: null)); });
+                    // queued messages until it returns
+                    RunTask(async () => { await DispatchAsync(dispatch); });
                 }
             }
         }
 
-        private async ValueTask<OutgoingAsyncBase?> WriteMessageAsync(OutgoingMessage message)
-        {
-            List<ArraySegment<byte>>? writeBuffer = DoCompress(message.OutgoingData!, message.Compress);
-            int size = writeBuffer.GetByteCount();
-            int offset = 0;
-            while (true)
-            {
-                int bytesSent = await _transceiver.WriteAsync(writeBuffer!, offset).ConfigureAwait(false);
-                offset += bytesSent;
-                lock (this)
-                {
-                    Debug.Assert(_state < State.Finished); // Finish is only called once WriteAsync returns
-                    TraceSentAndUpdateObserver(bytesSent);
-                    if (_acmLastActivity > -1)
-                    {
-                        _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                    }
-
-                    if (offset == size)
-                    {
-                        _outgoingMessages.RemoveFirst();
-
-                        OutgoingAsyncBase? outAsync;
-                        if (message.Sent())
-                        {
-                            outAsync = message.OutAsync;
-                            if (outAsync != null)
-                            {
-                                ++_dispatchCount;
-                                return outAsync;
-                            }
-                        }
-                        return null;
-                    }
-                }
-            }
-        }
         private int Send(OutgoingMessage message)
         {
             Debug.Assert(_state < State.Closed);
@@ -1835,7 +1830,7 @@ namespace Ice
             {
                 try
                 {
-                    bool canRead = ioFunc == ReadAndDispatchAsync || _pendingIO == 0;
+                    bool canRead = ioFunc == ReadAsync || _pendingIO == 0;
                     bool canWrite = ioFunc == WriteAsync || _pendingIO == 0;
                     await _transceiver.ClosingAsync(_exception, canRead, canWrite);
                 }
