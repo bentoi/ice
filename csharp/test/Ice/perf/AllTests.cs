@@ -74,7 +74,7 @@ namespace Ice.perf
             System.IO.TextWriter output = helper.GetWriter();
 
 #if DEBUG
-            output.WriteLine("warning: runnig performance test built with DEBUG");
+            output.WriteLine("warning: performance test built with DEBUG");
 #endif
 
             var perf = IPerformancePrx.Parse("perf:" + helper.GetTestEndpoint(0), communicator);

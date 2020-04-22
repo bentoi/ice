@@ -88,8 +88,7 @@ namespace Ice
                     {
                         if (_adapter != null) // The server side has the active role for connection validation.
                         {
-                            // TODO we need a better API for tracing
-                            TraceUtil.TraceSend(_communicator, _validateConnectionMessage, _logger, _traceLevels);
+                            TraceUtil.TraceSend(_communicator, _validateConnectionMessage);
                         }
                     }
                 }
@@ -141,7 +140,7 @@ namespace Ice
                         else
                         {
                             TraceReceivedAndUpdateObserver(readBuffer.Count);
-                            TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                            TraceUtil.TraceRecv(_communicator, readBuffer);
                         }
                     }
 
@@ -165,7 +164,7 @@ namespace Ice
                             s.Append(" connection\n");
                             s.Append(ToString());
                         }
-                        _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
+                        _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
                     }
 
                     if (_acmLastActivity > -1)
@@ -225,7 +224,7 @@ namespace Ice
                     //
                     // Wait until all outstanding requests have been completed.
                     //
-                    while (_asyncRequests.Count != 0)
+                    while (_requests.Count != 0)
                     {
                         System.Threading.Monitor.Wait(this);
                     }
@@ -343,7 +342,7 @@ namespace Ice
                 if (acm.Close != ACMClose.CloseOff && now >= (_acmLastActivity + acm.Timeout))
                 {
                     if (acm.Close == ACMClose.CloseOnIdleForceful ||
-                       (acm.Close != ACMClose.CloseOnIdle && (_asyncRequests.Count > 0)))
+                       (acm.Close != ACMClose.CloseOnIdle && (_requests.Count > 0)))
                     {
                         //
                         // Close the connection if we didn't receive a heartbeat in
@@ -352,7 +351,7 @@ namespace Ice
                         SetState(State.Closed, new ConnectionTimeoutException());
                     }
                     else if (acm.Close != ACMClose.CloseOnInvocation &&
-                            _dispatchCount == 0 && _asyncRequests.Count == 0)
+                            _dispatchCount == 0 && _requests.Count == 0)
                     {
                         //
                         // The connection is idle, close it.
@@ -363,6 +362,9 @@ namespace Ice
             }
         }
 
+        // TODO: Benoit: SendAsyncRequest needs to be changed to be an awaitable method that returns
+        // once the request is sent. The connection code won't have to deal with sent callback anymore,
+        // it will be the job of the caller.
         internal int SendAsyncRequest(OutgoingAsyncBase outgoing, bool compress, bool response)
         {
             lock (this)
@@ -401,14 +403,14 @@ namespace Ice
 
                 List<ArraySegment<byte>> data = outgoing.GetRequestData(requestId);
                 int size = data.GetByteCount();
-                // Ensure the message isn't bigger than what we can send with the
-                // transport.
+
+                // Ensure the message isn't bigger than what we can send with the transport.
                 _transceiver.CheckSendSize(size);
 
                 outgoing.AttachRemoteObserver(InitConnectionInfo(), _endpoint, requestId,
                     size - (Ice1Definitions.HeaderSize + 4));
 
-                int status = OutgoingAsyncBase.AsyncStatusQueued;
+                int status;
                 try
                 {
                     status = Send(new OutgoingMessage(outgoing, data, compress, requestId));
@@ -422,11 +424,9 @@ namespace Ice
 
                 if (response)
                 {
-                    //
-                    // Add to the asynchronous requests map.
-                    //
-                    _asyncRequests[requestId] = outgoing;
+                    _requests[requestId] = outgoing;
                 }
+
                 return status;
             }
         }
@@ -455,7 +455,7 @@ namespace Ice
                             }
                             catch (Exception ex)
                             {
-                                _logger.Error($"connection callback exception:\n{ex}\n{_desc}");
+                                _communicator.Logger.Error($"connection callback exception:\n{ex}\n{_desc}");
                             }
                         });
                     }
@@ -630,7 +630,7 @@ namespace Ice
                 {
                     if (o.RequestId > 0)
                     {
-                        _asyncRequests.Remove(o.RequestId);
+                        _requests.Remove(o.RequestId);
                     }
 
                     //
@@ -655,11 +655,11 @@ namespace Ice
 
                 if (outAsync is OutgoingAsync)
                 {
-                    foreach (KeyValuePair<int, OutgoingAsyncBase> kvp in _asyncRequests)
+                    foreach (KeyValuePair<int, OutgoingAsyncBase> kvp in _requests)
                     {
                         if (kvp.Value == outAsync)
                         {
-                            _asyncRequests.Remove(kvp.Key);
+                            _requests.Remove(kvp.Key);
                             if (outAsync.Exception(ex))
                             {
                                 outAsync.InvokeExceptionAsync();
@@ -838,8 +838,6 @@ namespace Ice
             _endpoint = endpoint;
             _adapter = adapter;
             _communicatorObserver = communicator.Observer;
-            _logger = communicator.Logger; // Cached for better performance.
-            _traceLevels = communicator.TraceLevels; // Cached for better performance.
             _warn = communicator.GetPropertyAsInt("Ice.Warn.Connections") > 0;
             _warnUdp = communicator.GetPropertyAsInt("Ice.Warn.Datagrams") > 0;
 
@@ -960,7 +958,7 @@ namespace Ice
                 {
                     if (_warnUdp)
                     {
-                        _logger.Warning($"maximum datagram size of {readBuffer.Count} exceeded");
+                        _communicator.Logger.Warning($"maximum datagram size of {readBuffer.Count} exceeded");
                     }
                     continue;
                 }
@@ -1031,12 +1029,12 @@ namespace Ice
                     {
                         case Ice1Definitions.MessageType.CloseConnectionMessage:
                         {
-                            TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                            TraceUtil.TraceRecv(_communicator, readBuffer);
                             if (_endpoint.IsDatagram)
                             {
                                 if (_warn)
                                 {
-                                    _logger.Warning(
+                                    _communicator.Logger.Warning(
                                         $"ignoring close connection message for datagram connection:\n{_desc}");
                                 }
                             }
@@ -1061,13 +1059,11 @@ namespace Ice
                             if (_state >= State.Closing)
                             {
                                 TraceUtil.Trace("received request during closing\n" +
-                                                "(ignored by server, client will retry)",
-                                                new InputStream(_communicator, readBuffer),
-                                                _logger, _traceLevels);
+                                    "(ignored by server, client will retry)", _communicator, readBuffer);
                             }
                             else
                             {
-                                TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                                TraceUtil.TraceRecv(_communicator, readBuffer);
                                 readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
                                 int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
                                 var request = new IncomingRequestFrame(_communicator, readBuffer.Slice(4));
@@ -1091,13 +1087,11 @@ namespace Ice
                             if (_state >= State.Closing)
                             {
                                 TraceUtil.Trace("received batch request during closing\n" +
-                                                "(ignored by server, client will retry)",
-                                                new InputStream(_communicator, readBuffer),
-                                                _logger, _traceLevels);
+                                    "(ignored by server, client will retry)", _communicator, readBuffer);
                             }
                             else
                             {
-                                TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                                TraceUtil.TraceRecv(_communicator, readBuffer);
                                 int invokeNum = InputStream.ReadInt(readBuffer.AsSpan(Ice1Definitions.HeaderSize, 4));
                                 if (invokeNum < 0)
                                 {
@@ -1111,12 +1105,12 @@ namespace Ice
 
                         case Ice1Definitions.MessageType.ReplyMessage:
                         {
-                            TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                            TraceUtil.TraceRecv(_communicator, readBuffer);
                             readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
                             int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
-                            if (_asyncRequests.TryGetValue(requestId, out OutgoingAsyncBase? outAsync))
+                            if (_requests.TryGetValue(requestId, out OutgoingAsyncBase? outAsync))
                             {
-                                _asyncRequests.Remove(requestId);
+                                _requests.Remove(requestId);
 
                                 //
                                 // If we just received the reply for a request which isn't acknowledge as
@@ -1150,7 +1144,7 @@ namespace Ice
                                     };
                                 }
 
-                                if (_asyncRequests.Count == 0)
+                                if (_requests.Count == 0)
                                 {
                                     System.Threading.Monitor.PulseAll(this); // Notify threads blocked in close()
                                 }
@@ -1160,7 +1154,7 @@ namespace Ice
 
                         case Ice1Definitions.MessageType.ValidateConnectionMessage:
                         {
-                            TraceUtil.TraceRecv(_communicator, readBuffer, _logger, _traceLevels);
+                            TraceUtil.TraceRecv(_communicator, readBuffer);
                             if (_heartbeatCallback != null)
                             {
                                 var callback = _heartbeatCallback;
@@ -1172,7 +1166,7 @@ namespace Ice
                                     }
                                     catch (Exception ex)
                                     {
-                                        _logger.Error($"connection callback exception:\n{ex}\n{_desc}");
+                                        _communicator.Logger.Error($"connection callback exception:\n{ex}\n{_desc}");
                                     }
                                     return new ValueTask();
                                 };
@@ -1182,8 +1176,8 @@ namespace Ice
 
                         default:
                         {
-                            TraceUtil.Trace("received unknown message\n(invalid, closing connection)",
-                                            new InputStream(_communicator, readBuffer), _logger, _traceLevels);
+                            TraceUtil.Trace("received unknown message\n(invalid, closing connection)", _communicator,
+                                 readBuffer);
                             throw new InvalidDataException(
                                 $"received ice1 frame with unknown message type `{messageType}'");
                         }
@@ -1303,7 +1297,9 @@ namespace Ice
                     {
                         if (_state < State.Closed)
                         {
-                            Send(new OutgoingMessage(response!, compressionStatus > 0, current.RequestId));
+
+                            Send(new OutgoingMessage(Ice1Definitions.GetResponseData(response!, current.RequestId),
+                                compressionStatus > 0));
                         }
                     }
                 }
@@ -1323,20 +1319,20 @@ namespace Ice
                     o.Completed(_exception!);
                     if (o.RequestId > 0) // Make sure Completed isn't called twice.
                     {
-                        _asyncRequests.Remove(o.RequestId);
+                        _requests.Remove(o.RequestId);
                     }
                 }
                 _outgoingMessages.Clear(); // Must be cleared before _requests because of Outgoing* references in OutgoingMessage
             }
 
-            foreach (OutgoingAsyncBase o in _asyncRequests.Values)
+            foreach (OutgoingAsyncBase o in _requests.Values)
             {
                 if (o.Exception(_exception!))
                 {
                     o.InvokeException();
                 }
             }
-            _asyncRequests.Clear();
+            _requests.Clear();
 
             try
             {
@@ -1344,7 +1340,7 @@ namespace Ice
             }
             catch (Exception ex)
             {
-                _logger.Error($"connection callback exception:\n{ex}\n{_desc}");
+                _communicator.Logger.Error($"connection callback exception:\n{ex}\n{_desc}");
             }
 
             _closeCallback = null;
@@ -1487,7 +1483,7 @@ namespace Ice
                                 s.Append(_exception);
                             }
 
-                            _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
+                            _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
                         }
                         break;
                     }
@@ -1508,7 +1504,7 @@ namespace Ice
             }
             catch (System.Exception ex)
             {
-                _logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
+                _communicator.Logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
             }
 
             // We only register with the connection monitor if our new state
@@ -1582,7 +1578,7 @@ namespace Ice
             // reported by Finish).
             if (_state == State.Closed && _pendingIO == 0)
             {
-                if (_outgoingMessages.Count == 0 && _asyncRequests.Count == 0 && _closeCallback == null)
+                if (_outgoingMessages.Count == 0 && _requests.Count == 0 && _closeCallback == null)
                 {
                     // Optimization: if there's no user callbacks to call, finish the connection now.
                     SetState(State.Finished);
@@ -1661,7 +1657,7 @@ namespace Ice
                         return;
                     }
                     message = _outgoingMessages.First!.Value;
-                    TraceUtil.TraceSend(_communicator, message.OutgoingData!, _logger, _traceLevels);
+                    TraceUtil.TraceSend(_communicator, message.OutgoingData!);
                 }
 
                 Func<ValueTask>? dispatch = null;
@@ -1851,19 +1847,15 @@ namespace Ice
             }
         }
 
-        private void Warning(string msg, System.Exception ex) => _logger.Warning($"{msg}:\n{ex}\n{_transceiver}");
+        private void Warning(string msg, System.Exception ex)
+            => _communicator.Logger.Warning($"{msg}:\n{ex}\n{_transceiver}");
 
         private void TraceSentAndUpdateObserver(int length)
         {
             if (_communicator.TraceLevels.Network >= 3 && length > 0)
             {
-                var s = new StringBuilder("sent ");
-                s.Append(length);
-                s.Append(" bytes via ");
-                s.Append(_endpoint.Name);
-                s.Append("\n");
-                s.Append(ToString());
-                _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
+                _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
+                    $"sent {length} bytes via {_endpoint.Name}\n{this}");
             }
 
             if (_observer != null && length > 0)
@@ -1876,13 +1868,8 @@ namespace Ice
         {
             if (_communicator.TraceLevels.Network >= 3 && length > 0)
             {
-                var s = new StringBuilder("received ");
-                s.Append(length);
-                s.Append(" bytes via ");
-                s.Append(_endpoint.Name);
-                s.Append("\n");
-                s.Append(ToString());
-                _logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
+                _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
+                    $"received {length} bytes via {_endpoint.Name}\n{this}");
             }
 
             if (_observer != null && length > 0)
@@ -1891,6 +1878,7 @@ namespace Ice
             }
         }
 
+        // TODO: Benoit: Remove with the refactoring of SendAsyncRequest
         private class OutgoingMessage
         {
             internal OutgoingMessage(List<ArraySegment<byte>> requestData, bool compress)
@@ -1899,20 +1887,14 @@ namespace Ice
                 Compress = compress;
             }
 
-            internal OutgoingMessage(OutgoingAsyncBase outgoing, List<ArraySegment<byte>> data, bool compress, int requestId)
+            internal OutgoingMessage(OutgoingAsyncBase outgoing, List<ArraySegment<byte>> data, bool compress,
+                int requestId)
             {
                 OutAsync = outgoing;
                 OutgoingData = data;
                 Compress = compress;
                 RequestId = requestId;
             }
-
-            internal OutgoingMessage(OutgoingResponseFrame frame, bool compress, int requestId)
-            {
-                OutgoingData = Ice1Definitions.GetResponseData(frame, requestId);
-                Compress = compress;
-            }
-
             internal void Canceled()
             {
                 Debug.Assert(OutAsync != null); // Only requests can timeout.
@@ -1970,8 +1952,6 @@ namespace Ice
         private ObjectAdapter? _adapter;
         private readonly TaskScheduler? _taskScheduler;
 
-        private readonly ILogger _logger;
-        private readonly TraceLevels _traceLevels;
         private readonly bool _warn;
         private readonly bool _warnUdp;
         private long _acmLastActivity;
@@ -1980,7 +1960,7 @@ namespace Ice
 
         private int _nextRequestId;
 
-        private readonly Dictionary<int, OutgoingAsyncBase> _asyncRequests = new Dictionary<int, OutgoingAsyncBase>();
+        private readonly Dictionary<int, OutgoingAsyncBase> _requests = new Dictionary<int, OutgoingAsyncBase>();
 
         private System.Exception? _exception;
 

@@ -17,9 +17,6 @@ namespace IceInternal
         {
             _reference = @ref;
             _adapter = adapter;
-
-            _logger = _reference.Communicator.Logger; // Cached for better performance.
-            _traceLevels = _reference.Communicator.TraceLevels; // Cached for better performance.
             _requestId = 0;
         }
 
@@ -150,11 +147,11 @@ namespace IceInternal
             Ice.Instrumentation.IDispatchObserver? dispatchObserver = null;
             try
             {
-                if (_traceLevels.Protocol >= 1)
+                if (_adapter.Communicator.TraceLevels.Protocol >= 1)
                 {
                     // TODO we need a better API for tracing
                     List<ArraySegment<byte>> requestData = Ice1Definitions.GetRequestData(outgoingRequest, requestId);
-                    TraceUtil.TraceSend(_adapter.Communicator, requestData, _logger, _traceLevels);
+                    TraceUtil.TraceSend(_adapter.Communicator, requestData);
                 }
 
                 var incomingRequest = new IncomingRequestFrame(_adapter.Communicator, outgoingRequest);
@@ -227,9 +224,9 @@ namespace IceInternal
             {
                 var responseBuffer = new ArraySegment<byte>(VectoredBufferExtensions.ToArray(
                         Ice1Definitions.GetResponseData(responseFrame, requestId)));
-                if (_traceLevels.Protocol >= 1)
+                if (_adapter.Communicator.TraceLevels.Protocol >= 1)
                 {
-                    TraceUtil.TraceRecv(_adapter.Communicator, responseBuffer, _logger, _traceLevels);
+                    TraceUtil.TraceRecv(_adapter.Communicator, responseBuffer);
                 }
                 responseBuffer = responseBuffer.Slice(Ice1Definitions.HeaderSize + 4);
                 if (_asyncRequests.TryGetValue(requestId, out outAsync))
@@ -294,13 +291,8 @@ namespace IceInternal
         }
 
         private readonly Reference _reference;
-
         private readonly Ice.ObjectAdapter _adapter;
-        private readonly Ice.ILogger _logger;
-        private readonly TraceLevels _traceLevels;
-
         private int _requestId;
-
         private readonly Dictionary<OutgoingAsyncBase, int> _sendAsyncRequests = new Dictionary<OutgoingAsyncBase, int>();
         private readonly Dictionary<int, OutgoingAsyncBase> _asyncRequests = new Dictionary<int, OutgoingAsyncBase>();
     }
