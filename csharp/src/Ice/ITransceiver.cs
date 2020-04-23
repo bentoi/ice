@@ -96,7 +96,7 @@ namespace IceInternal
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
         async ValueTask InitializeAsync()
         {
-            ArraySegment<byte> readBuffer = default;
+            ArraySegment<byte> readBuffer = ArraySegment<byte>.Empty;
             IList<ArraySegment<byte>> writeBuffer = new List<ArraySegment<byte>>();
             while (true)
             {

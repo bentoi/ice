@@ -145,23 +145,6 @@ namespace Ice.operations
                 TestHelper.Assert(c1!.Identity.Equals(Identity.Parse("test")));
                 TestHelper.Assert(c2!.Identity.Equals(Identity.Parse("noSuchIdentity")));
                 TestHelper.Assert(r!.Identity.Equals(Identity.Parse("test")));
-
-                //
-                // We can't do the callbacks below in connection serialization mode.
-                //
-                if (_communicator!.GetPropertyAsInt("Ice.ThreadPool.Client.Serialize") == 0)
-                {
-                    r.opVoid();
-                    c1.opVoid();
-                    try
-                    {
-                        c2.opVoid();
-                        TestHelper.Assert(false);
-                    }
-                    catch (ObjectNotExistException)
-                    {
-                    }
-                }
                 called();
             }
 
@@ -172,14 +155,6 @@ namespace Ice.operations
                 TestHelper.Assert(rso.s.s.Equals("def"));
                 TestHelper.Assert(so.e == Test.MyEnum.enum3);
                 TestHelper.Assert(so.s.s.Equals("a new string"));
-
-                //
-                // We can't do the callbacks below in connection serialization mode.
-                //
-                if (_communicator!.GetPropertyAsInt("Ice.ThreadPool.Client.Serialize") == 0)
-                {
-                    so.p!.opVoid();
-                }
                 called();
             }
 
