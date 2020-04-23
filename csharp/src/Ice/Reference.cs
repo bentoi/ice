@@ -1210,7 +1210,7 @@ namespace Ice
                 //
                 if (_rr.RouterInfo != null && _rr.RouterInfo.Adapter != null)
                 {
-                    connection.SetAdapter(_rr.RouterInfo.Adapter);
+                    connection.Adapter = _rr.RouterInfo.Adapter;
                 }
                 _callback.SetConnection(connection, compress);
             }

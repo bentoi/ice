@@ -219,7 +219,7 @@ namespace IceInternal
                         {
                             if (connection.Endpoint == endpoint)
                             {
-                                connection.SetAdapter(adapter);
+                                connection.Adapter = adapter;
                             }
                         }
                     }
@@ -240,9 +240,11 @@ namespace IceInternal
                 {
                     foreach (Connection connection in connectionList)
                     {
-                        if (connection.GetAdapter() == adapter)
+                        // TODO: an unlikely scenario but this isn't really thread-safe if the application associates
+                        // another adapter with the connection between the check and the set.
+                        if (connection.Adapter == adapter)
                         {
-                            connection.SetAdapter(null);
+                            connection.Adapter = null;
                         }
                     }
                 }

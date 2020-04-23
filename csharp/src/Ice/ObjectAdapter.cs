@@ -968,15 +968,6 @@ namespace Ice
             }
         }
 
-        internal void ExecuteOnlyWhenActive(System.Action action)
-        {
-            lock (_mutex)
-            {
-                CheckForDeactivation();
-                action(); // called within the synchronization
-            }
-        }
-
         private T CreateIndirectProxyForReplicaGroup<T>(Identity identity, string facet, ProxyFactory<T> factory)
             where T : class, IObjectPrx
         {
