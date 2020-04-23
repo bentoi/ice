@@ -871,43 +871,6 @@ namespace Ice
             _taskScheduler = adapter != null ? adapter.TaskScheduler : communicator.TaskScheduler;
         }
 
-        private struct IncomingMessage
-        {
-            public IncomingMessage(Current current, IncomingRequestFrame request,
-                byte compressionStatus)
-            {
-                IncomingRequest = (current, request, compressionStatus);
-                OutgoingRequestSent = null;
-                OutgoingRequestResponse = null;
-                Heartbeat = null;
-                Serialize = current.Adapter.Serialize;
-            }
-
-            public IncomingMessage(OutgoingAsyncBase? sent, OutgoingAsyncBase? response)
-            {
-                IncomingRequest = null;
-                OutgoingRequestSent = sent;
-                OutgoingRequestResponse = response;
-                Heartbeat = null;
-                Serialize = false;
-            }
-
-            public IncomingMessage(Action<Connection> heartbeat)
-            {
-                IncomingRequest = null;
-                OutgoingRequestSent = null;
-                OutgoingRequestResponse = null;
-                Heartbeat = heartbeat;
-                Serialize = false;
-            }
-
-            public ValueTuple<Current, IncomingRequestFrame, byte>? IncomingRequest;
-            public OutgoingAsyncBase? OutgoingRequestSent;
-            public OutgoingAsyncBase? OutgoingRequestResponse;
-            public Action<Connection>? Heartbeat;
-            public bool Serialize;
-        };
-
         private async ValueTask ReadAsync()
         {
             while (true)
@@ -1075,7 +1038,7 @@ namespace Ice
                                     throw new ObjectNotExistException(request.Identity, request.Facet,
                                         request.Operation);
                                 }
-                                serialize = _adapter!.Serialize;
+                                serialize = _adapter!.SerializeDispatch;
                                 var current = new Current(_adapter!, request, requestId, this);
                                 incoming = async () =>
                                 {
@@ -1115,15 +1078,11 @@ namespace Ice
                             {
                                 _requests.Remove(requestId);
 
-                                //
-                                // If we just received the reply for a request which isn't acknowledge as
-                                // sent yet, we queue the reply instead of processing it right away. It
-                                // will be processed once the write callback is invoked for the message.
-                                //
                                 var response = new IncomingResponseFrame(_communicator, readBuffer.Slice(4));
+
+                                // Check if we need to dispatch the sent progress callback
                                 OutgoingMessage? outgoingMessage = _outgoingMessages.First?.Value;
                                 OutgoingAsyncBase? outAsyncSent = null;
-                                OutgoingAsyncBase? outAsyncResponse = null;
                                 if (outgoingMessage != null && outgoingMessage.OutAsync == outAsync)
                                 {
                                     if (outgoingMessage.Sent())
@@ -1132,6 +1091,8 @@ namespace Ice
                                     }
                                 }
 
+                                // Check if we need to run a response continuation
+                                OutgoingAsyncBase? outAsyncResponse = null;
                                 if (outAsync.Response(response))
                                 {
                                     outAsyncResponse = outAsync;
@@ -1191,6 +1152,7 @@ namespace Ice
                         ++_dispatchCount;
                     }
                 }
+
                 if (incoming != null)
                 {
                     if (serialize)
@@ -1325,7 +1287,8 @@ namespace Ice
                         _requests.Remove(o.RequestId);
                     }
                 }
-                _outgoingMessages.Clear(); // Must be cleared before _requests because of Outgoing* references in OutgoingMessage
+                // Must be cleared before _requests because of Outgoing* references in OutgoingMessage
+                _outgoingMessages.Clear();
             }
 
             foreach (OutgoingAsyncBase o in _requests.Values)
@@ -1345,13 +1308,11 @@ namespace Ice
             {
                 _communicator.Logger.Error($"connection callback exception:\n{ex}\n{_desc}");
             }
-
             _closeCallback = null;
             _heartbeatCallback = null;
 
             //
-            // This must be done last as this will cause waitUntilFinished() to return (and communicator
-            // objects such as the timer might be destroyed too).
+            // This must be done last as this will cause waitUntilFinished() to return.
             //
             lock (this)
             {
@@ -1361,10 +1322,7 @@ namespace Ice
 
         private void SetState(State state, System.Exception ex)
         {
-            //
-            // If setState() is called with an exception, then only closed
-            // and closing State.s are permissible.
-            //
+            // If setState() is called with an exception, then only closed and closing State.s are permissible.
             Debug.Assert(state >= State.Closing);
 
             if (_state == state) // Don't switch twice.
@@ -1374,21 +1332,14 @@ namespace Ice
 
             if (_exception == null)
             {
-                //
                 // If we are in closed state, an exception must be set.
-                //
                 Debug.Assert(_state != State.Closed);
-
                 _exception = ex;
 
-                //
                 // We don't warn if we are not validated.
-                //
                 if (_warn && _validated)
                 {
-                    //
                     // Don't warn about certain expected exceptions.
-                    //
                     if (!(_exception is ConnectionClosedException ||
                          _exception is ConnectionIdleException ||
                          _exception is CommunicatorDestroyedException ||
@@ -1400,29 +1351,22 @@ namespace Ice
                 }
             }
 
-            //
-            // We must set the new state before we notify requests of any
-            // exceptions. Otherwise new requests may retry on a
-            // connection that is not yet marked as closed or closing.
-            //
+            // We must set the new state before we notify requests of any exceptions. Otherwise new requests
+            // may retry on a connection that is not yet marked as closed or closing.
             SetState(state);
         }
 
         private void SetState(State state)
         {
-            //
-            // We don't want to send close connection messages if the endpoint
-            // only supports oneway transmission from client to server.
-            //
+            // We don't want to send close connection messages if the endpoint only supports oneway transmission
+            // from client to server.
             if (_endpoint.IsDatagram && state == State.Closing)
             {
                 state = State.Closed;
             }
 
-            //
-            // Skip graceful shutdown if we are destroyed before validation.
-            //
-            if (_state == State.NotInitialized && state == State.Closing)
+            // Skip graceful shutdown if we are destroyed before active.
+            if (_state < State.Active && state == State.Closing)
             {
                 state = State.Closed;
             }
