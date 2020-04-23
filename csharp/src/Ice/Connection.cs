@@ -67,6 +67,12 @@ namespace Ice
 
     public sealed class Connection : ICancellationHandler
     {
+        /// <summary>Get or set the object adapter that dispatches requests received over this connection.
+        /// A client can invoke an operation on a server using a proxy, and then set an object adapter for the
+        /// outgoing connection used by the proxy in order to receive callbacks. This is useful if the server
+        /// cannot establish a connection back to the client, for example because of firewalls.</summary>
+        /// <returns>The object adapter that dispatches requests for the connection, or null if no adapter is set.
+        /// </returns>
         public ObjectAdapter? Adapter
         {
             get
@@ -201,17 +207,6 @@ namespace Ice
             }
         }
 
-        /// <summary>Get the object adapter that dispatches requests for this connection.</summary>
-        /// <returns>The object adapter that dispatches requests for the connection, or null if no adapter is set.
-        /// </returns>
-        public ObjectAdapter? GetAdapter()
-        {
-            lock (this)
-            {
-                return _adapter;
-            }
-        }
-
         /// <summary>Returns the connection information.</summary>
         /// <returns>The connection information.</returns>
         public ConnectionInfo GetConnectionInfo()
@@ -276,41 +271,6 @@ namespace Ice
                 if (_state == State.Active)
                 {
                     _monitor.Add(this);
-                }
-            }
-        }
-
-        /// <summary>Explicitly sets an object adapter that dispatches requests received over this connection.
-        /// A client can invoke an operation on a server using a proxy, and then set an object adapter for the
-        /// outgoing connection used by the proxy in order to receive callbacks. This is useful if the server
-        /// cannot establish a connection back to the client, for example because of firewalls.</summary>
-        /// <param name="adapter">The object adapter. This object adapter is automatically removed from the
-        /// connection when it is deactivated.</param>.
-        public void SetAdapter(ObjectAdapter? adapter)
-        {
-            if (adapter != null)
-            {
-                // We're locking both the object adapter and this connection (in this order) to ensure the adapter
-                // gets cleared from this connection during the deactivation of the object adapter.
-                adapter.ExecuteOnlyWhenActive(() =>
-                    {
-                        lock (this)
-                        {
-                            _adapter = adapter;
-                        }
-                    });
-            }
-            else
-            {
-                lock (this)
-                {
-                    // Only initialized connections are returned to the user code.
-                    Debug.Assert(_state > State.NotInitialized);
-                    if (_state >= State.Closing)
-                    {
-                        return;
-                    }
-                    _adapter = null;
                 }
             }
         }
@@ -652,7 +612,7 @@ namespace Ice
         {
             try
             {
-                await _transceiver.InitializeAsync();
+                await _transceiver.InitializeAsync().ConfigureAwait(false);
 
                 ArraySegment<byte> readBuffer = default;
                 if (!_endpoint.IsDatagram) // Datagram connections are always implicitly validated.
@@ -748,8 +708,8 @@ namespace Ice
                     SetState(State.Active);
                 }
 
-                Debug.Assert((_taskScheduler ?? TaskScheduler.Default) == TaskScheduler.Current);
-                _ = RunIO(ReadAsync);
+                // Make sure the ReadTask is using the task scheduler if any
+                RunTask(async () => { await RunIO(ReadAsync); });
             }
             catch (Exception ex)
             {

@@ -72,20 +72,20 @@ namespace Ice
         /// <param name="name">The object adapter name. Cannot be empty.</param>
         /// <param name="serializeDispatch">Indicates whether or not this object adapter serializes the dispatching of
         /// of requests received over the same connection.</param>
-        /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
+        /// <param name="taskScheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
         public ObjectAdapter CreateObjectAdapter(string name, bool serializeDispatch = false,
-            TaskScheduler? scheduler = null)
-            => AddObjectAdapter(name, serializeDispatch, scheduler);
+            TaskScheduler? taskScheduler = null)
+            => AddObjectAdapter(name, serializeDispatch, taskScheduler);
 
         /// <summary>Creates a new nameless object adapter. Such an object adapter has no configuration and can be
         /// associated with a bi-directional connection.</summary>
         /// <param name="serializeDispatch">Indicates whether or not this object adapter serializes the dispatching of
         /// of requests received over the same connection.</param>
-        /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
+        /// <param name="taskScheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
-        public ObjectAdapter CreateObjectAdapter(bool serializeDispatch = false, TaskScheduler? scheduler = null)
-            => AddObjectAdapter(serializeDispatch: serializeDispatch, scheduler : scheduler);
+        public ObjectAdapter CreateObjectAdapter(bool serializeDispatch = false, TaskScheduler? taskScheduler = null)
+            => AddObjectAdapter(serializeDispatch: serializeDispatch, taskScheduler : taskScheduler);
 
         /// <summary>Creates a new object adapter with the specified endpoint string. Calling this method is equivalent
         /// to setting the name.Endpoints property and then calling
@@ -94,10 +94,10 @@ namespace Ice
         /// <param name="endpoints">The endpoint string for the object adapter.</param>
         /// <param name="serializeDispatch">Indicates whether or not this object adapter serializes the dispatching of
         /// of requests received over the same connection.</param>
-        /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
+        /// <param name="taskScheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
         public ObjectAdapter CreateObjectAdapterWithEndpoints(string name, string endpoints,
-            bool serializeDispatch = false, TaskScheduler? scheduler = null)
+            bool serializeDispatch = false, TaskScheduler? taskScheduler = null)
         {
             if (name.Length == 0)
             {
@@ -105,7 +105,7 @@ namespace Ice
             }
 
             SetProperty($"{name}.Endpoints", endpoints);
-            return AddObjectAdapter(name, serializeDispatch, scheduler);
+            return AddObjectAdapter(name, serializeDispatch, taskScheduler);
         }
 
         /// <summary>Creates a new object adapter with the specified endpoint string. This method generates a UUID for
@@ -114,11 +114,11 @@ namespace Ice
         /// <param name="endpoints">The endpoint string for the object adapter.</param>
         /// <param name="serializeDispatch">Indicates whether or not this object adapter serializes the dispatching of
         /// of requests received over the same connection.</param>
-        /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
+        /// <param name="taskScheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
         public ObjectAdapter CreateObjectAdapterWithEndpoints(string endpoints, bool serializeDispatch = false,
-            TaskScheduler? scheduler = null)
-            => CreateObjectAdapterWithEndpoints(Guid.NewGuid().ToString(), endpoints, serializeDispatch, scheduler);
+            TaskScheduler? taskScheduler = null)
+            => CreateObjectAdapterWithEndpoints(Guid.NewGuid().ToString(), endpoints, serializeDispatch, taskScheduler);
 
         /// <summary>Creates a new object adapter with the specified router proxy. Calling this method is equivalent
         /// to setting the name.Router property and then calling
@@ -127,10 +127,10 @@ namespace Ice
         /// <param name="router">The proxy to the router.</param>
         /// <param name="serializeDispatch">Indicates whether or not this object adapter serializes the dispatching of
         /// of requests received over the same connection.</param>
-        /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
+        /// <param name="taskScheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
         public ObjectAdapter CreateObjectAdapterWithRouter(string name, IRouterPrx router,
-            bool serializeDispatch = false, TaskScheduler? scheduler = null)
+            bool serializeDispatch = false, TaskScheduler? taskScheduler = null)
         {
             if (name.Length == 0)
             {
@@ -144,7 +144,7 @@ namespace Ice
                 SetProperty(entry.Key, entry.Value);
             }
 
-            return AddObjectAdapter(name, serializeDispatch, scheduler, router);
+            return AddObjectAdapter(name, serializeDispatch, taskScheduler, router);
         }
 
         /// <summary>Creates a new object adapter with the specified router proxy. This method generates a UUID for
@@ -153,11 +153,11 @@ namespace Ice
         /// <param name="router">The proxy to the router.</param>
         /// <param name="serializeDispatch">Indicates whether or not this object adapter serializes the dispatching of
         /// of requests received over the same connection.</param>
-        /// <param name="scheduler">The optional task scheduler to use for dispatching requests.</param>
+        /// <param name="taskScheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
         public ObjectAdapter CreateObjectAdapterWithRouter(IRouterPrx router, bool serializeDispatch = false,
-            TaskScheduler? scheduler = null)
-            => CreateObjectAdapterWithRouter(Guid.NewGuid().ToString(), router, serializeDispatch, scheduler);
+            TaskScheduler? taskScheduler = null)
+            => CreateObjectAdapterWithRouter(Guid.NewGuid().ToString(), router, serializeDispatch, taskScheduler);
 
         internal void RemoveObjectAdapter(ObjectAdapter adapter)
         {
@@ -178,7 +178,7 @@ namespace Ice
         }
 
         private ObjectAdapter AddObjectAdapter(string? name = null, bool serializeDispatch = false,
-            TaskScheduler? scheduler = null, IRouterPrx? router = null)
+            TaskScheduler? taskScheduler = null, IRouterPrx? router = null)
         {
             if (name != null && name.Length == 0)
             {
@@ -208,7 +208,7 @@ namespace Ice
             ObjectAdapter? adapter = null;
             try
             {
-                adapter = new ObjectAdapter(this, name ?? "", serializeDispatch, scheduler ?? TaskScheduler, router);
+                adapter = new ObjectAdapter(this, name ?? "", serializeDispatch, taskScheduler ?? TaskScheduler, router);
                 lock (this)
                 {
                     if (_isShutdown)

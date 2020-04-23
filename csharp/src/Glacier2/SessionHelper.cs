@@ -24,7 +24,7 @@ namespace Glacier2
         /// <param name="properties">Optional properties used for communicator initialization.</param>
         /// <param name="logger">Optional logger used for communicator initialization.</param>
         /// <param name="observer">Optional communicator observer used for communicator initialization.</param>
-        /// <param name="scheduler">Optional task scheduler used for communicator initialization.</param>
+        /// <param name="taskScheduler">Optional task scheduler used for communicator initialization.</param>
         /// <param name="typeIdNamespaces">Optional list of TypeId namespaces used for communicator initialization.
         /// The default is Ice.TypeId.</param>
         /// <param name="finderStr">The stringified Ice.RouterFinder proxy.</param>
@@ -35,7 +35,7 @@ namespace Glacier2
             Dictionary<string, string> properties,
             ILogger? logger = null,
             Ice.Instrumentation.ICommunicatorObserver? observer = null,
-            System.Threading.Tasks.TaskScheduler? scheduler = null,
+            System.Threading.Tasks.TaskScheduler? taskScheduler = null,
             string[]? typeIdNamespaces = null)
         {
             _callback = callback;
@@ -44,7 +44,7 @@ namespace Glacier2
             _properties = properties;
             _logger = logger;
             _observer = observer;
-            _taskScheduler = scheduler;
+            _taskScheduler = taskScheduler;
             _typeIdNamespaces = typeIdNamespaces;
         }
 
@@ -391,7 +391,7 @@ namespace Glacier2
                             properties: _properties,
                             logger: _logger,
                             observer: _observer,
-                            scheduler: _taskScheduler,
+                            taskScheduler: _taskScheduler,
                             typeIdNamespaces: _typeIdNamespaces);
                     }
                 }

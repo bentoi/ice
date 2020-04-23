@@ -214,14 +214,14 @@ namespace Ice
         public Communicator(Dictionary<string, string>? properties,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            TaskScheduler? scheduler = null,
+                            TaskScheduler? taskScheduler = null,
                             string[]? typeIdNamespaces = null) :
             this(ref _emptyArgs,
                  null,
                  properties,
                  logger,
                  observer,
-                 scheduler,
+                 taskScheduler,
                  typeIdNamespaces)
         {
         }
@@ -230,14 +230,14 @@ namespace Ice
                             Dictionary<string, string>? properties,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            TaskScheduler? scheduler = null,
+                            TaskScheduler? taskScheduler = null,
                             string[]? typeIdNamespaces = null) :
             this(ref args,
                  null,
                  properties,
                  logger,
                  observer,
-                 scheduler,
+                 taskScheduler,
                  typeIdNamespaces)
         {
         }
@@ -246,14 +246,14 @@ namespace Ice
                             Dictionary<string, string>? properties = null,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            TaskScheduler? scheduler = null,
+                            TaskScheduler? taskScheduler = null,
                             string[]? typeIdNamespaces = null) :
             this(ref _emptyArgs,
                  appSettings,
                  properties,
                  logger,
                  observer,
-                 scheduler,
+                 taskScheduler,
                  typeIdNamespaces)
         {
         }
@@ -263,13 +263,13 @@ namespace Ice
                             Dictionary<string, string>? properties = null,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            TaskScheduler? scheduler = null,
+                            TaskScheduler? taskScheduler = null,
                             string[]? typeIdNamespaces = null)
         {
             _state = StateActive;
             Logger = logger ?? Util.GetProcessLogger();
             Observer = observer;
-            TaskScheduler = scheduler;
+            TaskScheduler = taskScheduler;
             _typeIdNamespaces = typeIdNamespaces ?? new string[] { "Ice.TypeId" };
             _compactIdNamespaces = new string[] { "IceCompactId" }.Concat(_typeIdNamespaces).ToArray();
 
