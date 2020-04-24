@@ -14,17 +14,15 @@ namespace Ice.threading
         {
             using var communicator = Initialize(ref args);
 
-            var adapter = communicator.CreateObjectAdapter("TestAdapter");
+            var adapter = communicator.CreateObjectAdapter();
             adapter.Add("test", new TestIntf(TaskScheduler.Default));
 
             var schedulerPair = new ConcurrentExclusiveSchedulerPair(TaskScheduler.Default, 2);
 
-            var adapter2 = communicator.CreateObjectAdapter("TestAdapterExclusiveTS",
-                taskScheduler: schedulerPair.ExclusiveScheduler);
+            var adapter2 = communicator.CreateObjectAdapter(taskScheduler: schedulerPair.ExclusiveScheduler);
             adapter2.Add("test", new TestIntf(schedulerPair.ExclusiveScheduler));
 
-            var adapter3 = communicator.CreateObjectAdapterWithEndpoints("TestAdapteConcurrentTS",
-                taskScheduler: schedulerPair.ConcurrentScheduler);
+            var adapter3 = communicator.CreateObjectAdapter(taskScheduler: schedulerPair.ConcurrentScheduler);
             adapter3.Add("test", new TestIntf(schedulerPair.ConcurrentScheduler));
 
             _ = AllTests.allTests(this);

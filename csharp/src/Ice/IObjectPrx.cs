@@ -322,8 +322,10 @@ namespace Ice
                 }
             }
 
-            public override void HandleInvokeResponse(bool ok, OutgoingAsyncBase outgoing) =>
+            public override void HandleInvokeResponse(bool ok, OutgoingAsyncBase outgoing)
+            {
                 SetResult(((ProxyOutgoingAsyncBase)outgoing).ResponseFrame!);
+            }
         }
 
         private static OutgoingRequestWithParam<string, bool>? _iceI_IsARequest;

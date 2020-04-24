@@ -23,7 +23,7 @@ namespace Ice.threading
         {
             if (TaskScheduler.Current != _scheduler)
             {
-                throw new TestFailed("unexpected task scheduler");
+                throw new TestFailedException("unexpected task scheduler from pingSync");
             }
         }
 
@@ -31,12 +31,12 @@ namespace Ice.threading
         {
             if (TaskScheduler.Current != _scheduler)
             {
-                throw new TestFailed("unexpected task scheduler");
+                throw new TestFailedException("unexpected task scheduler from pingAsync before await");
             }
             await Task.Delay(1);
             if (TaskScheduler.Current != _scheduler)
             {
-                throw new TestFailed("unexpected task scheduler");
+                throw new TestFailedException("unexpected task scheduler from pingAsync after await");
             }
         }
 
