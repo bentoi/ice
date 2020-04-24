@@ -137,7 +137,6 @@ namespace Ice
         private readonly Dictionary<int, OutgoingAsyncBase> _requests = new Dictionary<int, OutgoingAsyncBase>();
         private State _state; // The current state.
         private readonly ITransceiver _transceiver;
-        private readonly TaskScheduler? _taskScheduler;
         private bool _validated = false;
         private readonly bool _warn;
         private readonly bool _warnUdp;
@@ -303,7 +302,7 @@ namespace Ice
                 {
                     if (callback != null)
                     {
-                        RunTask(() =>
+                        Task.Factory.StartNew(() =>
                         {
                             try
                             {
@@ -313,7 +312,7 @@ namespace Ice
                             {
                                 _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
                             }
-                        });
+                        }, default, TaskCreationOptions.None, _communicator.TaskScheduler ?? TaskScheduler.Default);
                     }
                 }
                 else
@@ -403,8 +402,6 @@ namespace Ice
             {
                 _compressionLevel = 9;
             }
-
-            _taskScheduler = adapter != null ? adapter.TaskScheduler : communicator.TaskScheduler;
         }
 
         // TODO: Benoit: This needs to be internal, ICancellationHandler needs to be fixed, for another PR.
@@ -708,7 +705,7 @@ namespace Ice
                     SetState(State.Active);
                 }
 
-                RunIOTask(ReadAsync);
+                _ = RunIO(ReadAsync);
             }
             catch (Exception ex)
             {
@@ -941,7 +938,7 @@ namespace Ice
             }
         }
 
-        private async ValueTask<(Func<ValueTask>?, bool)> ReadIncomingAsync()
+        private async ValueTask<(Func<ValueTask>?, TaskScheduler?, bool)> ReadIncomingAsync()
         {
             // Read header
             ArraySegment<byte> readBuffer;
@@ -1033,10 +1030,11 @@ namespace Ice
                 {
                     _communicator.Logger.Warning($"maximum datagram size of {readBuffer.Count} exceeded");
                 }
-                return (null, false);
+                return default;
             }
 
             Func<ValueTask>? incoming = null;
+            TaskScheduler? scheduler = null;
             bool serialize = false;
             lock (this)
             {
@@ -1106,7 +1104,8 @@ namespace Ice
                                 throw new ObjectNotExistException(request.Identity, request.Facet,
                                     request.Operation);
                             }
-                            serialize = _adapter!.SerializeDispatch;
+                            serialize = !_adapter!.SerializeDispatch;
+                            scheduler = _adapter!.TaskScheduler;
                             var current = new Current(_adapter!, request, requestId, this);
                             incoming = async () =>
                             {
@@ -1168,6 +1167,7 @@ namespace Ice
 
                             if (outAsyncSent != null || outAsyncResponse != null)
                             {
+                                scheduler = _communicator.TaskScheduler;
                                 incoming = () =>
                                 {
                                     outAsyncSent?.InvokeSent();
@@ -1190,6 +1190,7 @@ namespace Ice
                         if (_heartbeatCallback != null)
                         {
                             var callback = _heartbeatCallback;
+                            scheduler = _communicator.TaskScheduler;
                             incoming = () =>
                             {
                                 try
@@ -1221,33 +1222,33 @@ namespace Ice
                 }
             }
 
-            return (incoming, serialize);
+            return (incoming, scheduler, serialize);
         }
 
         private async ValueTask ReadAsync()
         {
             while (true)
             {
-                // Read an incoming. Note that we do not configure the awaitable with ConfigureAwait(false) on
-                // purpose. We want the continuation to run on the current task scheduler (which is either the
-                // default scheduler or the custom scheduler set on the communicator or object adapter).
-                var (incoming, serialize) = await ReadIncomingAsync();
-                Debug.Assert(TaskScheduler.Current == (_taskScheduler ?? TaskScheduler.Default));
+                var (incoming, scheduler, serialize) = await ReadIncomingAsync().ConfigureAwait(false);
                 if (incoming != null)
                 {
-                    if (serialize)
+                    if (!serialize)
                     {
-                        // Same here, we want to make sure ReadAsync continuations are still ran on the current
-                        // scheduler.
-                        await DispatchAsync(incoming);
-                        Debug.Assert(TaskScheduler.Current == (_taskScheduler ?? TaskScheduler.Default));
+                        _ = Task.Run(() => RunIO(ReadAsync));
+                    }
+
+                    if (scheduler != null)
+                    {
+                        await Task.Factory.StartNew(() => DispatchAsync(incoming), default, TaskCreationOptions.None,
+                            scheduler).ConfigureAwait(false);
                     }
                     else
                     {
-                        RunIOTask(ReadAsync);
-                        // Here, since we'll exit the long running task, we don't care of continuing on
-                        // another scheduler so it's fine to use ConfigureAwait(false).
                         await DispatchAsync(incoming).ConfigureAwait(false);
+                    }
+
+                    if (!serialize)
+                    {
                         return;
                     }
                 }
@@ -1266,104 +1267,80 @@ namespace Ice
             }
         }
 
-        private void RunTask(Action action)
+        private async ValueTask RunIO(Func<ValueTask> ioFunc)
         {
-            // Use the configured task scheduler to run the task or the default if none is specified.
-            // DenyChildAttach is the default for Task.Run, we use the same here.
-            var scheduler = _taskScheduler ?? TaskScheduler.Default;
-            Task.Factory.StartNew(action, default, TaskCreationOptions.DenyChildAttach, scheduler);
-        }
+            lock (this)
+            {
+                if (_state >= State.ClosingPending)
+                {
+                    // No new IO if we are now just waiting for the peer to close or if already closed.
+                    return;
+                }
 
-        private void RunIOTask(Func<ValueTask> ioFunc)
-        {
-            // The Read task is ran on the configured scheduler to ensure the continuations for Read is only
-            // performed when the scheduler can schedule the task. This way a new Read won't start until
-            // the scheduler decides it. This effectively allows to provide flow control through the scheduler
-            // by limiting the number of tasks that can concurrently run. Connections will start reading new
-            // frames only once the task scheduler starts it.
-            //
-            // The Write task is always ran on the default scheduler however. Outgoings are written using the
-            // default task scheduler and the sent progress callback will be executed using the connection's
-            // task scheduler. The execution of the progress callback don't prevent the writes to continue
-            // on the default scheduler.
-            var scheduler = ioFunc == ReadAsync ? (_taskScheduler ?? TaskScheduler.Default) : TaskScheduler.Default;
+                // We keep track of the number of pending IO tasks to ensure orderly connection
+                // closure. If a connection is forcefully closed while a Write task is running,
+                // we want to make sure the Write returns before notifying the outgoing requests
+                // of the failure. Notifying the requests before the write returns could break
+                // at most once semantics if for example the Write completed bu the request got
+                // notified of the connection closure before.
+                ++_pendingIO;
+            }
 
-            // Start a new IO long running task for reading or writing using the appropriate task scheduler.
-            _ = Task.Factory.StartNew(async () =>
+            try
+            {
+                // Start the long running IO operation.
+                await ioFunc().ConfigureAwait(false);
+            }
+            catch (Exception ex)
             {
                 lock (this)
                 {
-                    if (_state >= State.ClosingPending)
-                    {
-                        // No new IO if we are now just waiting for the peer to close or if already closed.
-                        return;
-                    }
-
-                    // We keep track of the number of pending IO tasks to ensure orderly connection
-                    // closure. If a connection is forcefully closed while a Write task is running,
-                    // we want to make sure the Write returns before notifying the outgoing requests
-                    // of the failure. Notifying the requests before the write returns could break
-                    // at most once semantics if for example the Write completed bu the request got
-                    // notified of the connection closure before.
-                    ++_pendingIO;
+                    SetState(State.Closed, ex);
                 }
+            }
 
+            bool finish = false;
+            bool closing = false;
+            lock (this)
+            {
+                --_pendingIO;
+
+                // TODO: Benoit: Simplify the closing logic with the transport refactoring
+                if (_state == State.ClosingPending && _pendingIO <= 1)
+                {
+                    ++_pendingIO;
+                    closing = true;
+                }
+                else if (_state == State.Closed && _pendingIO == 0)
+                {
+                    // No more pending IO and in the closed state, it's time to terminate the connection
+                    // and notify the pending requests of the connection closure.
+                    finish = true;
+                }
+            }
+
+            if (closing)
+            {
                 try
                 {
-                    // Start the long running IO operation.
-                    await ioFunc().ConfigureAwait(false);
+                    bool canRead = ioFunc == ReadAsync || _pendingIO == 0;
+                    bool canWrite = ioFunc == WriteAsync || _pendingIO == 0;
+                    await _transceiver.ClosingAsync(_exception, canRead, canWrite).ConfigureAwait(false);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    lock (this)
-                    {
-                        SetState(State.Closed, ex);
-                    }
                 }
-
-                bool finish = false;
-                bool closing = false;
                 lock (this)
                 {
-                    --_pendingIO;
-
-                    // TODO: Benoit: Simplify the closing logic with the transport refactoring
-                    if (_state == State.ClosingPending && _pendingIO <= 1)
-                    {
-                        ++_pendingIO;
-                        closing = true;
-                    }
-                    else if (_state == State.Closed && _pendingIO == 0)
-                    {
-                        // No more pending IO and in the closed state, it's time to terminate the connection
-                        // and notify the pending requests of the connection closure.
-                        finish = true;
-                    }
+                    SetState(State.Closed);
+                    finish = --_pendingIO == 0;
                 }
+            }
 
-                if (closing)
-                {
-                    try
-                    {
-                        bool canRead = ioFunc == ReadAsync || _pendingIO == 0;
-                        bool canWrite = ioFunc == WriteAsync || _pendingIO == 0;
-                        await _transceiver.ClosingAsync(_exception, canRead, canWrite).ConfigureAwait(false);
-                    }
-                    catch (Exception)
-                    {
-                    }
-                    lock (this)
-                    {
-                        SetState(State.Closed);
-                        finish = --_pendingIO == 0;
-                    }
-                }
-
-                if (finish)
-                {
-                    Finish();
-                }
-            }, default, TaskCreationOptions.DenyChildAttach, scheduler);
+            if (finish)
+            {
+                Finish();
+            }
         }
 
         private int Send(OutgoingMessage message)
@@ -1374,7 +1351,7 @@ namespace Ice
             _outgoingMessages.AddLast(message);
             if (_outgoingMessages.Count == 1)
             {
-                RunIOTask(WriteAsync);
+                _ = RunIO(WriteAsync);
             }
             return OutgoingAsyncBase.AsyncStatusQueued;
         }
@@ -1596,7 +1573,8 @@ namespace Ice
                 {
                     // Otherwise, schedule a task to call Finish()
                     // TODO: Benoit: is scheduling really still necessary here? Need to review the callers.
-                    RunTask(Finish);
+                    Task.Factory.StartNew(Finish, default, TaskCreationOptions.None,
+                        _communicator.TaskScheduler ?? TaskScheduler.Default);
                 }
             }
         }
@@ -1715,7 +1693,8 @@ namespace Ice
                     // Dispatch the sent callback. The sent callback is a synchronous callback so we can't
                     // call DispatchAsync from the write task or it would potentially block the sending of
                     // queued messages until it returns
-                    RunTask(() => _ = DispatchAsync(dispatch));
+                    _ = Task.Factory.StartNew(() => _ = DispatchAsync(dispatch), default, TaskCreationOptions.None,
+                        _communicator.TaskScheduler ?? TaskScheduler.Default);
                 }
             }
         }

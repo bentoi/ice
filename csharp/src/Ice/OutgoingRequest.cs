@@ -193,7 +193,6 @@ namespace Ice
             static async Task ReadVoidReturnValueAsync(IObjectPrx prx, Task<IncomingResponseFrame> task)
             {
                 IncomingResponseFrame response = await task.ConfigureAwait(false);
-                Console.Error.WriteLine($"response invoke scheduler: {TaskScheduler.Current}");
                 if (!prx.IsOneway)
                 {
                     response.ReadVoidReturnValue();
