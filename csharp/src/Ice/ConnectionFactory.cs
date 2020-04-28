@@ -1009,15 +1009,9 @@ namespace IceInternal
                             $"accepting {_endpoint.Name} connections at {_acceptor}");
                     }
 
-                    if (_adapter.TaskScheduler != null)
-                    {
-                        Task.Factory.StartNew(Accept, default, TaskCreationOptions.DenyChildAttach,
-                            _adapter.TaskScheduler);
-                    }
-                    else
-                    {
-                        _ = Accept();
-                    }
+                    // Start the asynchronous operation from the thread pool to prevent eventually accepting
+                    // synchronously new connections from this thread.
+                    Task.Run(AcceptAsync);
                 }
             }
         }
@@ -1206,7 +1200,7 @@ namespace IceInternal
             }
         }
 
-        private async ValueTask Accept()
+        private async ValueTask AcceptAsync()
         {
             while (true)
             {

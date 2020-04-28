@@ -4,6 +4,7 @@
 
 using Test;
 using Ice.threading.Test;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Ice.threading
@@ -18,7 +19,7 @@ namespace Ice.threading
             adapter.Add("test", new TestIntf(TaskScheduler.Default));
             adapter.Activate();
 
-            var schedulerPair = new ConcurrentExclusiveSchedulerPair(TaskScheduler.Default, 2);
+            var schedulerPair = new ConcurrentExclusiveSchedulerPair(TaskScheduler.Default, 5);
 
             var adapter2 = communicator.CreateObjectAdapterWithEndpoints("TestAdapterExclusiveTS", GetTestEndpoint(1),
                 taskScheduler: schedulerPair.ExclusiveScheduler);
@@ -29,6 +30,13 @@ namespace Ice.threading
                 taskScheduler: schedulerPair.ConcurrentScheduler);
             adapter3.Add("test", new TestIntf(schedulerPair.ConcurrentScheduler));
             adapter3.Activate();
+
+            // Setup 20 worker threads for the .NET thread pool (we setup the minimum to avoid delays from the
+            // thread pool thread creation).
+            // TODO: Why are worker threads used here and not completion port threads? The SocketAsyncEventArgs
+            // Completed event handler is called from the worker thread and not the completion port thread.
+            ThreadPool.SetMinThreads(20, 4);
+            ThreadPool.SetMaxThreads(20, 4);
 
             ServerReady();
             communicator.WaitForShutdown();

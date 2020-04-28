@@ -3,6 +3,7 @@
 //
 
 using Test;
+using Ice.threading.Test;
 
 namespace Ice.threading
 {
@@ -11,7 +12,24 @@ namespace Ice.threading
         public override void Run(string[] args)
         {
             using var communicator = Initialize(ref args);
-            AllTests.allTests(this).Result.shutdown();
+            try
+            {
+                AllTests.allTests(this).Result.shutdown();
+            }
+            catch (System.AggregateException ex)
+            {
+                if (ex.InnerException is TestFailedException failedEx)
+                {
+                    GetWriter().WriteLine("test failed on the server side: " + failedEx.reason);
+                    Assert(false);
+                }
+                throw;
+            }
+            catch (TestFailedException ex)
+            {
+                GetWriter().WriteLine("test failed on the server side: " + ex.reason);
+                Assert(false);
+            }
         }
 
         public static int Main(string[] args) => TestDriver.RunTest<Client>(args);

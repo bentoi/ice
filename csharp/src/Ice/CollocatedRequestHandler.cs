@@ -95,10 +95,11 @@ namespace IceInternal
             }
 
             outAsync.AttachCollocatedObserver(_adapter, requestId, outAsync.RequestFrame.Size);
-            if (!synchronous || outAsync.IsOneway || _reference.InvocationTimeout > 0)
+            if (_adapter.TaskScheduler != null || !synchronous || outAsync.IsOneway || _reference.InvocationTimeout > 0)
             {
-                // Don't invoke from the user thread if async or invocation timeout is set
-                // TODO: why is oneway included in this list?
+                // Don't invoke from the user thread if async or invocation timeout is set. We also don't dispatch
+                // oneway from the user thread to match the non-collocated behavior where the oneway synchronous
+                // request returns as soon as it's sent over the transport.
                 Task.Factory.StartNew(
                     () =>
                     {
@@ -135,7 +136,18 @@ namespace IceInternal
                     return true;
                 }
             }
-            outAsync.InvokeSent();
+
+            // Use the communicator's task scheduler or the default if the adapter and communicator are not
+            // the same.
+            if (_adapter.Communicator.TaskScheduler != _adapter.TaskScheduler)
+            {
+                Task.Factory.StartNew(() => outAsync.InvokeSent(), default, TaskCreationOptions.None,
+                    _adapter.Communicator.TaskScheduler ?? TaskScheduler.Default).Wait();
+            }
+            else
+            {
+                outAsync.InvokeSent();
+            }
             return true;
         }
 
@@ -241,9 +253,10 @@ namespace IceInternal
 
             if (outAsync != null)
             {
-                if (amd)
+                if (amd || _adapter.Communicator.TaskScheduler != _adapter.TaskScheduler)
                 {
-                    outAsync.InvokeResponseAsync();
+                    Task.Factory.StartNew(() => outAsync.InvokeResponse(), default, TaskCreationOptions.None,
+                        _adapter.Communicator.TaskScheduler ?? TaskScheduler.Default);
                 }
                 else
                 {

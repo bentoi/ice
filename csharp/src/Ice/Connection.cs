@@ -134,12 +134,16 @@ namespace Ice
         private IConnectionObserver? _observer;
         private readonly LinkedList<OutgoingMessage> _outgoingMessages = new LinkedList<OutgoingMessage>();
         private int _pendingIO;
+        private readonly Func<ValueTask> _readNoDispatch;
+        private readonly Func<ValueTask> _read;
         private readonly Dictionary<int, OutgoingAsyncBase> _requests = new Dictionary<int, OutgoingAsyncBase>();
         private State _state; // The current state.
         private readonly ITransceiver _transceiver;
         private bool _validated = false;
         private readonly bool _warn;
         private readonly bool _warnUdp;
+        private readonly Func<ValueTask> _write;
+
         private static readonly ConnectionState[] _connectionStateMap = new ConnectionState[] {
             ConnectionState.ConnectionStateValidating,   // State.NotInitialized
             ConnectionState.ConnectionStateActive,       // State.Active
@@ -392,6 +396,9 @@ namespace Ice
             _dispatchCount = 0;
             _pendingIO = 0;
             _state = State.NotInitialized;
+            _read = () => ReadAsync(true);
+            _readNoDispatch = () => ReadAsync(false);
+            _write = () => WriteAsync();
 
             _compressionLevel = communicator.GetPropertyAsInt("Ice.Compression.Level") ?? 1;
             if (_compressionLevel < 1)
@@ -525,8 +532,7 @@ namespace Ice
                         //
                         SetState(State.Closed, new ConnectionTimeoutException());
                     }
-                    else if (acm.Close != ACMClose.CloseOnInvocation &&
-                            _dispatchCount == 0 && _requests.Count == 0)
+                    else if (acm.Close != ACMClose.CloseOnInvocation && _dispatchCount == 0 && _requests.Count == 0)
                     {
                         //
                         // The connection is idle, close it.
@@ -705,7 +711,9 @@ namespace Ice
                     SetState(State.Active);
                 }
 
-                _ = RunIO(ReadAsync);
+                // Start the asynchronous operation from the thread pool to prevent eventually reading
+                // synchronously new frames from this thread.
+                _ = Task.Run(() => RunIO(_read));
             }
             catch (Exception ex)
             {
@@ -863,8 +871,8 @@ namespace Ice
                 if ((Send(new OutgoingMessage(_closeConnectionMessage, false)) &
                     OutgoingAsyncBase.AsyncStatusSent) != 0)
                 {
-                    // TODO: Benoit: Send always returns Queued for now , this will need fixing
-                    // to allow synchronous writes and awaitable SendAsyncRequest
+                    // TODO: Benoit: Send always returns Queued for now , this will need fixing to allow
+                    // synchronous writes and awaitable SendAsyncRequest
                     Debug.Assert(false);
                 }
             }
@@ -1104,13 +1112,16 @@ namespace Ice
                                 throw new ObjectNotExistException(request.Identity, request.Facet,
                                     request.Operation);
                             }
-                            serialize = !_adapter!.SerializeDispatch;
-                            scheduler = _adapter!.TaskScheduler;
-                            var current = new Current(_adapter!, request, requestId, this);
-                            incoming = async () =>
+                            else
                             {
-                                await InvokeAsync(current, request, compressionStatus).ConfigureAwait(false);
-                            };
+                                serialize = _adapter.SerializeDispatch;
+                                scheduler = _adapter.TaskScheduler;
+                                var current = new Current(_adapter, request, requestId, this);
+                                incoming = async () =>
+                                {
+                                    await InvokeAsync(current, request, compressionStatus).ConfigureAwait(false);
+                                };
+                            }
                         }
                         break;
                     }
@@ -1225,30 +1236,46 @@ namespace Ice
             return (incoming, scheduler, serialize);
         }
 
-        private async ValueTask ReadAsync()
+        private async ValueTask ReadAsync(bool dispatchFromThisThread)
         {
+            // Read asynchronously incoming frames and dispatch the incoming if needed. The read will throw
+            // and cause the loop to end when the connection is closed.
             while (true)
             {
                 var (incoming, scheduler, serialize) = await ReadIncomingAsync().ConfigureAwait(false);
                 if (incoming != null)
                 {
-                    if (!serialize)
+                    if (serialize)
                     {
-                        _ = Task.Run(() => RunIO(ReadAsync));
-                    }
-
-                    if (scheduler != null)
-                    {
-                        await Task.Factory.StartNew(() => DispatchAsync(incoming), default, TaskCreationOptions.None,
-                            scheduler).ConfigureAwait(false);
+                        // Run the incoming dispatch and continue reading from this thread.
+                        if (scheduler != null || !dispatchFromThisThread)
+                        {
+                            await Task.Factory.StartNew(() => DispatchAsync(incoming), default,
+                                TaskCreationOptions.None, scheduler ?? TaskScheduler.Default).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await DispatchAsync(incoming).ConfigureAwait(false);
+                        }
                     }
                     else
                     {
-                        await DispatchAsync(incoming).ConfigureAwait(false);
-                    }
-
-                    if (!serialize)
-                    {
+                        // Start a new Read IO task and run the incoming dispatch. The read IO task might read
+                        // synchronously a new incoming frame but we don't allow it to be dispatched before we
+                        // actually dispatch this frame.
+                        if (scheduler != null || !dispatchFromThisThread)
+                        {
+                            _ = Task.Factory.StartNew(() =>
+                            {
+                                _ = RunIO(_readNoDispatch);
+                                _ = DispatchAsync(incoming);
+                            }, default, TaskCreationOptions.None, scheduler ?? TaskScheduler.Default);
+                        }
+                        else
+                        {
+                            _ = RunIO(_readNoDispatch);
+                            _ = DispatchAsync(incoming);
+                        }
                         return;
                     }
                 }
@@ -1273,7 +1300,7 @@ namespace Ice
             {
                 if (_state >= State.ClosingPending)
                 {
-                    // No new IO if we are now just waiting for the peer to close or if already closed.
+                    // Don't start new IO if we are waiting for the peer to close or if already closed.
                     return;
                 }
 
@@ -1323,8 +1350,8 @@ namespace Ice
             {
                 try
                 {
-                    bool canRead = ioFunc == ReadAsync || _pendingIO == 0;
-                    bool canWrite = ioFunc == WriteAsync || _pendingIO == 0;
+                    bool canRead = ioFunc == _read || ioFunc == _readNoDispatch || _pendingIO == 0;
+                    bool canWrite = ioFunc == _write || _pendingIO == 0;
                     await _transceiver.ClosingAsync(_exception, canRead, canWrite).ConfigureAwait(false);
                 }
                 catch (Exception)
@@ -1351,7 +1378,7 @@ namespace Ice
             _outgoingMessages.AddLast(message);
             if (_outgoingMessages.Count == 1)
             {
-                _ = RunIO(WriteAsync);
+                _ = RunIO(_write);
             }
             return OutgoingAsyncBase.AsyncStatusQueued;
         }
@@ -1493,12 +1520,11 @@ namespace Ice
                 _communicator.Logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
             }
 
-            // We only register with the connection monitor if our new state
-            // is State.Active. Otherwise we unregister with the connection
-            // monitor, but only if we were registered before, i.e., if our
-            // old state was State.Active.
-            // TODO: Benoit: we should probably keep using ACM while in the
-            // validation/closing states now that we no longer have timeouts.
+            // We only register with the connection monitor if our new state is State.Active. Otherwise we
+            // unregister with the connection monitor, but only if we were registered before, i.e., if our old
+            // state was State.Active.
+            // TODO: Benoit: we should probably keep using ACM while in the validation/closing states now that
+            //  we no longer have timeouts.
             if (_monitor != null)
             {
                 if (state == State.Active)
@@ -1616,8 +1642,8 @@ namespace Ice
                 {
                     if (_state > State.Closing || _outgoingMessages.Count == 0)
                     {
-                        // If all the messages were sent or the close connection message has been
-                        // sent, we switch to ClosingPending
+                        // If all the messages were sent and we are in the closing state, the close connection
+                        // message has been sent and it's now time to switch to the ClosingPending state.
                         if (_state == State.Closing && _dispatchCount == 0)
                         {
                             SetState(State.ClosingPending);
