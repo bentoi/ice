@@ -82,6 +82,7 @@ namespace Ice
         {
             lock (this)
             {
+                Debug.Assert(_state == StateDestroyInProgress);
                 var keep = new Dictionary<RetryTask, object?>();
                 foreach (RetryTask task in _requests.Keys)
                 {
@@ -108,7 +109,7 @@ namespace Ice
             {
                 if (_requests.Remove(task))
                 {
-                    if (_state == StateDestroyed && _requests.Count == 0)
+                    if (_state > StateActive && _requests.Count == 0)
                     {
                         // If we are destroying the queue, destroy is probably waiting on the queue to be empty.
                         System.Threading.Monitor.Pulse(this);

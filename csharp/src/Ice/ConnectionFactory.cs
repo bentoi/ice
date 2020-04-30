@@ -240,12 +240,7 @@ namespace IceInternal
                 {
                     foreach (Connection connection in connectionList)
                     {
-                        // TODO: an unlikely scenario but this isn't really thread-safe if the application associates
-                        // another adapter with the connection between the check and the set.
-                        if (connection.Adapter == adapter)
-                        {
-                            connection.Adapter = null;
-                        }
+                        connection.ClearAdapter(adapter);
                     }
                 }
             }
@@ -912,27 +907,7 @@ namespace IceInternal
 
                         // TODO: Connection establishement code needs to be re-factored to use async/await
                         Connection connection = _factory.CreateConnection(connector.Connector.Connect(), connector);
-                        var task = connection.StartAsync().AsTask();
-
-                        int timeout = _factory._communicator.OverrideConnectTimeout ?? connector.Endpoint.Timeout;
-                        if (timeout > 0)
-                        {
-                            var cancellationTokenSource = new CancellationTokenSource();
-                            var timeoutTask = Task.Delay(timeout, cancellationTokenSource.Token);
-                            if (await Task.WhenAny(task, timeoutTask).ConfigureAwait(false) == task)
-                            {
-                                cancellationTokenSource.Cancel();
-                                await task.ConfigureAwait(false); // Propagate exceptions
-                            }
-                            else
-                            {
-                                throw new ConnectTimeoutException();
-                            }
-                        }
-                        else
-                        {
-                            await task.ConfigureAwait(false);
-                        }
+                        await connection.StartAsync().ConfigureAwait(false);
 
                         if (_observer != null)
                         {
@@ -994,135 +969,18 @@ namespace IceInternal
         private int _pendingConnectCount;
     }
 
-    public sealed class IncomingConnectionFactory
+    internal sealed class IncomingConnectionFactory
     {
-        public void Activate()
-        {
-            lock (this)
-            {
-                Debug.Assert(!_destroyed);
-                if (_acceptor != null)
-                {
-                    if (_communicator.TraceLevels.Network >= 1)
-                    {
-                        _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
-                            $"accepting {_endpoint.Name} connections at {_acceptor}");
-                    }
-
-                    // Start the asynchronous operation from the thread pool to prevent eventually accepting
-                    // synchronously new connections from this thread.
-                    Task.Run(AcceptAsync);
-                }
-            }
-        }
-
-        public void Destroy()
-        {
-            lock (this)
-            {
-                Debug.Assert(!_destroyed);
-                if (_acceptor != null)
-                {
-                    if (_communicator.TraceLevels.Network >= 1)
-                    {
-                        _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
-                            $"stopping to accept {_endpoint.Name} connections at {_acceptor}");
-                    }
-
-                    _acceptor!.Close();
-                }
-
-                foreach (Connection connection in _connections)
-                {
-                    connection.Destroy(new ObjectAdapterDeactivatedException(_adapter.Name));
-                }
-
-                _destroyed = true;
-                System.Threading.Monitor.PulseAll(this);
-            }
-        }
-
-        public void UpdateConnectionObservers()
-        {
-            lock (this)
-            {
-                foreach (Connection connection in _connections)
-                {
-                    connection.UpdateObserver();
-                }
-            }
-        }
-
-        public void WaitUntilFinished()
-        {
-            lock (this)
-            {
-                // First we wait until the factory is destroyed. If we are using
-                // an acceptor, we also wait for it to be closed.
-                while (!_destroyed)
-                {
-                    System.Threading.Monitor.Wait(this);
-                }
-            }
-
-            // _connections is immutable in this state
-            foreach (Connection connection in _connections)
-            {
-                connection.WaitUntilFinished();
-            }
-
-            // Ensure all the connections are finished and reaped.
-            if (_transceiver == null)
-            {
-#if DEBUG
-                IEnumerable<Connection> cons = _monitor.SwapReapedConnections();
-                Debug.Assert(cons.Count() == _connections.Count);
-#else
-                _monitor.SwapReapedConnections();
-#endif
-            }
-            _connections.Clear();
-
-            // Must be destroyed outside the synchronization since this might block waiting for
-            // a timer task to execute.
-            _monitor.Destroy();
-        }
-
-        public bool IsLocal(Endpoint endpoint)
-        {
-            if (_publishedEndpoint != null && endpoint.Equivalent(_publishedEndpoint))
-            {
-                return true;
-            }
-            lock (this)
-            {
-                return endpoint.Equivalent(_endpoint);
-            }
-        }
-
-        public Endpoint Endpoint()
-        {
-            if (_publishedEndpoint != null)
-            {
-                return _publishedEndpoint;
-            }
-            lock (this)
-            {
-                return _endpoint;
-            }
-        }
-
-        public override string ToString()
-        {
-            if (_transceiver != null)
-            {
-                return _transceiver.ToString()!;
-            }
-            else
-            {
-                return _acceptor!.ToString();
-            }
-        }
+        private readonly IAcceptor? _acceptor;
+        private readonly ObjectAdapter _adapter;
+        private readonly Communicator _communicator;
+        private readonly HashSet<Connection> _connections = new HashSet<Connection>();
+        private readonly Endpoint _endpoint;
+        private readonly FactoryACMMonitor _monitor;
+        private readonly Endpoint? _publishedEndpoint;
+        private bool _destroyed;
+        private readonly ITransceiver? _transceiver;
+        private readonly bool _warn;
 
         public IncomingConnectionFactory(Ice.ObjectAdapter adapter, Endpoint endpoint, Endpoint? publish,
                                          ACMConfig acmConfig)
@@ -1200,6 +1058,133 @@ namespace IceInternal
             }
         }
 
+        public void Activate()
+        {
+            lock (this)
+            {
+                Debug.Assert(!_destroyed);
+                if (_acceptor != null)
+                {
+                    if (_communicator.TraceLevels.Network >= 1)
+                    {
+                        _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
+                            $"accepting {_endpoint.Name} connections at {_acceptor}");
+                    }
+
+                    // Start the asynchronous operation from the thread pool to prevent eventually accepting
+                    // synchronously new connections from this thread.
+                    Task.Run(AcceptAsync);
+                }
+            }
+        }
+
+        public void Destroy()
+        {
+            lock (this)
+            {
+                Debug.Assert(!_destroyed);
+                if (_acceptor != null)
+                {
+                    if (_communicator.TraceLevels.Network >= 1)
+                    {
+                        _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat,
+                            $"stopping to accept {_endpoint.Name} connections at {_acceptor}");
+                    }
+
+                    _acceptor!.Close();
+                }
+
+                foreach (Connection connection in _connections)
+                {
+                    connection.Destroy(new ObjectAdapterDeactivatedException(_adapter.Name));
+                }
+
+                _destroyed = true;
+                System.Threading.Monitor.PulseAll(this);
+            }
+        }
+
+        public Endpoint Endpoint()
+        {
+            if (_publishedEndpoint != null)
+            {
+                return _publishedEndpoint;
+            }
+            lock (this)
+            {
+                return _endpoint;
+            }
+        }
+        public bool IsLocal(Endpoint endpoint)
+        {
+            if (_publishedEndpoint != null && endpoint.Equivalent(_publishedEndpoint))
+            {
+                return true;
+            }
+            lock (this)
+            {
+                return endpoint.Equivalent(_endpoint);
+            }
+        }
+
+        public override string ToString()
+        {
+            if (_transceiver != null)
+            {
+                return _transceiver.ToString()!;
+            }
+            else
+            {
+                return _acceptor!.ToString();
+            }
+        }
+
+        public void UpdateConnectionObservers()
+        {
+            lock (this)
+            {
+                foreach (Connection connection in _connections)
+                {
+                    connection.UpdateObserver();
+                }
+            }
+        }
+
+        public void WaitUntilFinished()
+        {
+            lock (this)
+            {
+                // First we wait until the factory is destroyed. If we are using
+                // an acceptor, we also wait for it to be closed.
+                while (!_destroyed)
+                {
+                    System.Threading.Monitor.Wait(this);
+                }
+            }
+
+            // _connections is immutable in this state
+            foreach (Connection connection in _connections)
+            {
+                connection.WaitUntilFinished();
+            }
+
+            // Ensure all the connections are finished and reaped.
+            if (_transceiver == null)
+            {
+#if DEBUG
+                IEnumerable<Connection> cons = _monitor.SwapReapedConnections();
+                Debug.Assert(cons.Count() == _connections.Count);
+#else
+                _monitor.SwapReapedConnections();
+#endif
+            }
+            _connections.Clear();
+
+            // Must be destroyed outside the synchronization since this might block waiting for
+            // a timer task to execute.
+            _monitor.Destroy();
+        }
+
         private async ValueTask AcceptAsync()
         {
             while (true)
@@ -1207,7 +1192,7 @@ namespace IceInternal
                 ITransceiver transceiver;
                 try
                 {
-                     transceiver = await _acceptor!.AcceptAsync().ConfigureAwait(false);
+                    transceiver = await _acceptor!.AcceptAsync().ConfigureAwait(false);
                 }
                 catch (System.Exception ex)
                 {
@@ -1280,13 +1265,13 @@ namespace IceInternal
                     _connections.Add(connection);
                 }
 
-                // TODO: is awaiting on StartAsync really useful? This will return once the connection
-                // validation message is sent. We might just a well return immediately ignoring when
-                // the write for the connection validation message.
                 Debug.Assert(connection != null);
                 try
                 {
-                    await connection.StartAsync();
+                    // We don't wait for the connection to be activated. This could take a while for some transprots
+                    // such as TLS based transports where the handshake requires few round trips between the client
+                    // and server.
+                    _ = connection.StartAsync();
                 }
                 catch (ObjectAdapterDeactivatedException)
                 {
@@ -1302,17 +1287,5 @@ namespace IceInternal
                 }
             }
         }
-
-        private readonly IAcceptor? _acceptor;
-        private readonly ObjectAdapter _adapter;
-        private readonly Communicator _communicator;
-        private readonly HashSet<Connection> _connections = new HashSet<Connection>();
-        private readonly Endpoint _endpoint;
-        private readonly FactoryACMMonitor _monitor;
-        private readonly Endpoint? _publishedEndpoint;
-        private bool _destroyed;
-        private readonly ITransceiver? _transceiver;
-        private readonly bool _warn;
     }
-
 }

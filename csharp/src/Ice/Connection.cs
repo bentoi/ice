@@ -471,6 +471,17 @@ namespace Ice
             }
         }
 
+        internal void ClearAdapter(ObjectAdapter adapter)
+        {
+            lock (this)
+            {
+                if (_adapter == adapter)
+                {
+                    _adapter = null;
+                }
+            }
+        }
+
         internal void Destroy(Exception ex)
         {
             lock (this)
@@ -483,26 +494,21 @@ namespace Ice
         {
             lock (this)
             {
-                if (_state != State.Active)
+                if (_state < State.Active || _state >= State.Closed)
                 {
                     return;
                 }
 
+                // We send a heartbeat if there was no activity in the last (timeout / 4) period. Sending a heartbeat
+                // sooner than really needed is safer to ensure that the receiver will receive the heartbeat in time.
+                // Sending the heartbeat if there was no activity in the last (timeout / 2) period isn't enough since
+                // monitor() is called only every (timeout / 2) period.
                 //
-                // We send a heartbeat if there was no activity in the last
-                // (timeout / 4) period. Sending a heartbeat sooner than
-                // really needed is safer to ensure that the receiver will
-                // receive the heartbeat in time. Sending the heartbeat if
-                // there was no activity in the last (timeout / 2) period
-                // isn't enough since monitor() is called only every (timeout
-                // / 2) period.
-                //
-                // Note that this doesn't imply that we are sending 4 heartbeats
-                // per timeout period because the monitor() method is still only
-                // called every (timeout / 2) period.
-                //
-                if (acm.Heartbeat == ACMHeartbeat.HeartbeatAlways ||
-                   (acm.Heartbeat != ACMHeartbeat.HeartbeatOff && now >= (_acmLastActivity + (acm.Timeout / 4))))
+                // Note that this doesn't imply that we are sending 4 heartbeats per timeout period because the
+                // monitor() method is still only called every (timeout / 2) period.
+                if (_state == State.Active &&
+                    (acm.Heartbeat == ACMHeartbeat.HeartbeatAlways ||
+                    (acm.Heartbeat != ACMHeartbeat.HeartbeatOff && now >= (_acmLastActivity + (acm.Timeout / 4)))))
                 {
                     if (acm.Heartbeat != ACMHeartbeat.HeartbeatOnDispatch || _dispatchCount > 0)
                     {
@@ -521,14 +527,22 @@ namespace Ice
                     }
                 }
 
-                if (acm.Close != ACMClose.CloseOff && now >= (_acmLastActivity + acm.Timeout))
+                // TODO: We still rely on the endpoint timeout here, remove and change the override close timeout?
+                int timeout = acm.Timeout;
+                if (_state >= State.Closing)
+                {
+                    timeout = _communicator.OverrideCloseTimeout ?? _endpoint.Timeout;
+                }
+
+                // ACM close is always enabled when in the closing state for connection close timeouts.
+                if ((_state >= State.Closing || acm.Close != ACMClose.CloseOff) && now >= (_acmLastActivity + timeout))
                 {
                     if (acm.Close == ACMClose.CloseOnIdleForceful ||
                        (acm.Close != ACMClose.CloseOnIdle && (_requests.Count > 0)))
                     {
                         //
-                        // Close the connection if we didn't receive a heartbeat in
-                        // the last period.
+                        // Close the connection if we didn't receive a heartbeat or if read/write didn't update the
+                        // ACM activity in the last period.
                         //
                         SetState(State.Closed, new ConnectionTimeoutException());
                     }
@@ -615,7 +629,13 @@ namespace Ice
         {
             try
             {
-                await _transceiver.InitializeAsync().ConfigureAwait(false);
+                // TODO: for now, we continue using the endpoint timeout as the default connect timeout. Note that
+                // this is useful for both the client and server side (client connection establishemnent and server
+                // connection accept). We could consider having a server side specific timeout for accept?
+                int timeout = _communicator.OverrideConnectTimeout ?? _endpoint.Timeout;
+
+                // Initialize the transport
+                await AwaitWithTimeout(_transceiver.InitializeAsync().AsTask(), timeout);
 
                 ArraySegment<byte> readBuffer = default;
                 if (!_endpoint.IsDatagram) // Datagram connections are always implicitly validated.
@@ -625,7 +645,9 @@ namespace Ice
                         int offset = 0;
                         while (offset < _validateConnectionMessage.GetByteCount())
                         {
-                            offset += await _transceiver.WriteAsync(_validateConnectionMessage).ConfigureAwait(false);
+                            var writeTask = _transceiver.WriteAsync(_validateConnectionMessage).AsTask();
+                            await AwaitWithTimeout(writeTask, timeout);
+                            offset += writeTask.Result;
                         }
                         Debug.Assert(offset == _validateConnectionMessage.GetByteCount());
                     }
@@ -635,7 +657,9 @@ namespace Ice
                         int offset = 0;
                         while (offset < Ice1Definitions.HeaderSize)
                         {
-                            offset += await _transceiver.ReadAsync(readBuffer, offset).ConfigureAwait(false);
+                            var readTask = _transceiver.ReadAsync(readBuffer, offset).AsTask();
+                            await AwaitWithTimeout(readTask, timeout);
+                            offset += readTask.Result;
                         }
 
                         Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
@@ -722,6 +746,29 @@ namespace Ice
                     SetState(State.Closed, ex);
                 }
                 throw;
+            }
+
+            // Helper to await task with timeout
+            static async ValueTask AwaitWithTimeout(Task task, int timeout)
+            {
+                if (timeout < 0)
+                {
+                    await task.ConfigureAwait(false);
+                }
+                else
+                {
+                    var cancelTimeout = new CancellationTokenSource();
+                    var t = await Task.WhenAny(Task.Delay(timeout, cancelTimeout.Token), task).ConfigureAwait(false);
+                    if (t == task)
+                    {
+                        cancelTimeout.Cancel();
+                        await t.ConfigureAwait(false); // Unwrap the exception if it failed
+                    }
+                    else
+                    {
+                        throw new ConnectTimeoutException();
+                    }
+                }
             }
         }
 
@@ -1520,11 +1567,9 @@ namespace Ice
                 _communicator.Logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
             }
 
-            // We only register with the connection monitor if our new state is State.Active. Otherwise we
-            // unregister with the connection monitor, but only if we were registered before, i.e., if our old
-            // state was State.Active.
-            // TODO: Benoit: we should probably keep using ACM while in the validation/closing states now that
-            //  we no longer have timeouts.
+            // We register with the connection monitor if our new state is State.Active. ACM monitors the connection
+            // once it's initalized and validated and until it's closed. Timeouts for connection establishement and
+            // validation are implemented with a timer instead and setup in the outgoing connection factory.
             if (_monitor != null)
             {
                 if (state == State.Active)
@@ -1535,7 +1580,7 @@ namespace Ice
                     }
                     _monitor.Add(this);
                 }
-                else if (_state == State.Active)
+                else if (state == State.Closed)
                 {
                     _monitor.Remove(this);
                 }
@@ -1598,7 +1643,6 @@ namespace Ice
                 else
                 {
                     // Otherwise, schedule a task to call Finish()
-                    // TODO: Benoit: is scheduling really still necessary here? Need to review the callers.
                     Task.Factory.StartNew(Finish, default, TaskCreationOptions.None,
                         _communicator.TaskScheduler ?? TaskScheduler.Default);
                 }
