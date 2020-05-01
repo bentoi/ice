@@ -129,22 +129,12 @@ namespace IceInternal
         }
 
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
-        async ValueTask ClosingAsync(System.Exception? ex, bool canRead, bool canWrite)
+        async ValueTask ClosingAsync(System.Exception ex)
         {
-            ArraySegment<byte> readBuffer = new ArraySegment<byte>(new byte[128]);
             IList<ArraySegment<byte>> writeBuffer = new List<ArraySegment<byte>>();
             bool initiator = !(ex is ConnectionClosedByPeerException);
             int status = Closing(initiator, ex);
-            if (status == SocketOperation.Read && !initiator && canRead)
-            {
-                ArraySegment<byte> received = default;
-                do
-                {
-                    received = await ReadAsyncImpl(readBuffer, received.Count);
-                }
-                while (received.Count < readBuffer.Count);
-            }
-            else if (status == SocketOperation.Write && canWrite)
+            if (status == SocketOperation.Write)
             {
                 int offset = 0;
                 do
@@ -153,6 +143,7 @@ namespace IceInternal
                 }
                 while (offset != writeBuffer.GetByteCount());
             }
+            // If state == Read, we rely on the connection always performing a ReadAsync operation for the reading
         }
 
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring

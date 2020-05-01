@@ -1013,7 +1013,7 @@ namespace Ice
 
             lock (this)
             {
-                if (_state >= State.ClosingPending)
+                if (_state >= State.Closed)
                 {
                     Debug.Assert(_exception != null);
                     throw _exception;
@@ -1024,6 +1024,13 @@ namespace Ice
                 {
                     _acmLastActivity = Time.CurrentMonotonicTimeMillis();
                 }
+
+                //
+                // Connection is validated on first message. This is only used by setState() to check wether or
+                // not we can print a connection warning (a client might close the connection forcefully if the
+                // connection isn't validated, we don't want to print a warning in this case).
+                //
+                _validated = true;
             }
 
             // Check header
@@ -1065,7 +1072,7 @@ namespace Ice
                     // of data here.
                     lock (this)
                     {
-                        if (_state >= State.ClosingPending)
+                        if (_state >= State.Closed)
                         {
                             Debug.Assert(_exception != null);
                             throw _exception;
@@ -1128,14 +1135,7 @@ namespace Ice
                         }
                         else
                         {
-                            if (_state == State.ClosingPending)
-                            {
-                                SetState(State.Closed);
-                            }
-                            else
-                            {
-                                SetState(State.ClosingPending, new ConnectionClosedByPeerException());
-                            }
+                            SetState(State.ClosingPending, new ConnectionClosedByPeerException());
                             throw _exception!;
                         }
                         break;
@@ -1297,8 +1297,9 @@ namespace Ice
                         // Run the incoming dispatch and continue reading from this thread.
                         if (scheduler != null || !dispatchFromThisThread)
                         {
-                            await Task.Factory.StartNew(() => DispatchAsync(incoming), default,
-                                TaskCreationOptions.None, scheduler ?? TaskScheduler.Default).ConfigureAwait(false);
+                            await Task.Factory.StartNew(async () => await DispatchAsync(incoming), default,
+                                TaskCreationOptions.None, scheduler ?? TaskScheduler.Default
+                                ).Unwrap().ConfigureAwait(false);
                         }
                         else
                         {
@@ -1312,16 +1313,17 @@ namespace Ice
                         // actually dispatch this frame.
                         if (scheduler != null || !dispatchFromThisThread)
                         {
-                            _ = Task.Factory.StartNew(() =>
-                            {
-                                _ = RunIO(_readNoDispatch);
-                                _ = DispatchAsync(incoming);
-                            }, default, TaskCreationOptions.None, scheduler ?? TaskScheduler.Default);
+                            await Task.Factory.StartNew(async () =>
+                                {
+                                    _ = RunIO(_readNoDispatch);
+                                    await DispatchAsync(incoming);
+                                }, default, TaskCreationOptions.None, scheduler ?? TaskScheduler.Default
+                                ).Unwrap().ConfigureAwait(false);
                         }
                         else
                         {
                             _ = RunIO(_readNoDispatch);
-                            _ = DispatchAsync(incoming);
+                            await DispatchAsync(incoming).ConfigureAwait(false);
                         }
                         return;
                     }
@@ -1345,9 +1347,8 @@ namespace Ice
         {
             lock (this)
             {
-                if (_state >= State.ClosingPending)
+                if (_state >= State.Closed)
                 {
-                    // Don't start new IO if we are waiting for the peer to close or if already closed.
                     return;
                 }
 
@@ -1382,7 +1383,6 @@ namespace Ice
                 // TODO: Benoit: Simplify the closing logic with the transport refactoring
                 if (_state == State.ClosingPending && _pendingIO <= 1)
                 {
-                    ++_pendingIO;
                     closing = true;
                 }
                 else if (_state == State.Closed && _pendingIO == 0)
@@ -1397,17 +1397,17 @@ namespace Ice
             {
                 try
                 {
-                    bool canRead = ioFunc == _read || ioFunc == _readNoDispatch || _pendingIO == 0;
-                    bool canWrite = ioFunc == _write || _pendingIO == 0;
-                    await _transceiver.ClosingAsync(_exception, canRead, canWrite).ConfigureAwait(false);
+                    await _transceiver.ClosingAsync(_exception!).ConfigureAwait(false);
                 }
                 catch (Exception)
                 {
                 }
                 lock (this)
                 {
-                    SetState(State.Closed);
-                    finish = --_pendingIO == 0;
+                    if (_pendingIO == 0)
+                    {
+                        SetState(State.Closed);
+                    }
                 }
             }
 
