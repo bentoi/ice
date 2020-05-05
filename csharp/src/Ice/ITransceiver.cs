@@ -132,53 +132,6 @@ namespace IceInternal
                     }
                 }
             }
-
-            static async Task<int> Write(ITransceiver self, IList<ArraySegment<byte>> buffer, int offset)
-            {
-                var result = new TaskCompletionSource<int>();
-                void WriteCallback(object state)
-                {
-                    try
-                    {
-                        var transceiver = (ITransceiver)state;
-                        transceiver.FinishWrite(buffer, ref offset);
-                        result.SetResult(offset);
-                    }
-                    catch (System.Exception ex)
-                    {
-                        result.SetException(ex);
-                    }
-                };
-                if (self.StartWrite(buffer, offset, WriteCallback, self, out bool completed))
-                {
-                    WriteCallback(self);
-                }
-                return await result.Task.ConfigureAwait(false);
-            }
-
-            static async Task<ArraySegment<byte>> Read(ITransceiver self, ArraySegment<byte> buffer, int offset)
-            {
-                var result = new TaskCompletionSource<ArraySegment<byte>>();
-                var p = new ArraySegmentAndOffset(buffer, offset);
-                void ReadCallback(object state)
-                {
-                    try
-                    {
-                        var transceiver = (ITransceiver)state;
-                        transceiver.FinishRead(ref p.buffer, ref p.offset);
-                        result.SetResult(new ArraySegment<byte>(p.buffer.Array!, 0, p.offset));
-                    }
-                    catch (System.Exception ex)
-                    {
-                        result.SetException(ex);
-                    }
-                }
-                if (self.StartRead(ref p.buffer, ref p.offset, ReadCallback, self))
-                {
-                    ReadCallback(self);
-                }
-                return await result.Task.ConfigureAwait(false);
-            }
         }
 
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
