@@ -1038,7 +1038,6 @@ namespace Ice
                     _acmLastActivity = Time.CurrentMonotonicTimeMillis();
                 }
 
-                //
                 // Connection is validated on first message. This is only used by setState() to check wether or
                 // not we can print a connection warning (a client might close the connection forcefully if the
                 // connection isn't validated, we don't want to print a warning in this case).
@@ -1399,16 +1398,21 @@ namespace Ice
 
             if (closing)
             {
+                bool completed;
                 try
                 {
-                    await _transceiver.ClosingAsync(_exception!).ConfigureAwait(false);
+                    completed = await _transceiver.ClosingAsync(_exception!).ConfigureAwait(false);
                 }
                 catch (Exception)
                 {
+                    completed = true;
                 }
-                lock (this)
+                if (completed)
                 {
-                    SetState(State.Closed);
+                    lock (this)
+                    {
+                        SetState(State.Closed);
+                    }
                 }
             }
 

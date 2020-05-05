@@ -135,19 +135,24 @@ namespace IceInternal
         }
 
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
-        async ValueTask ClosingAsync(System.Exception ex)
+        async ValueTask<bool> ClosingAsync(System.Exception ex)
         {
             bool initiator = !(ex is ConnectionClosedByPeerException);
             int status = Closing(initiator, ex);
-            if (status == SocketOperation.Read && !initiator) // If initiator, ReadAsync is already pending
+            if (status == SocketOperation.Read)
             {
-                //await ReadAsync();
+                if (initiator)
+                {
+                    // If initiator, ReadAsync is already pending
+                    return false;
+                }
                 await ReadAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0);
             }
             else if (status == SocketOperation.Write)
             {
                 await WriteAsync(new List<ArraySegment<byte>>());
             }
+            return true;
         }
 
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
@@ -166,7 +171,7 @@ namespace IceInternal
                         transceiver.FinishWrite(buffer, ref offset);
                         if ((transceiver.Write(buffer, ref offset) & SocketOperation.Read) != 0)
                         {
-                            await transceiver.ReadAsync().ConfigureAwait(false);
+                            await transceiver.ReadAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0);
                         }
                         result.SetResult(offset);
                     }
