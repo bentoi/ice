@@ -141,7 +141,8 @@ namespace IceInternal
             int status = Closing(initiator, ex);
             if (status == SocketOperation.Read && !initiator) // If initiator, ReadAsync is already pending
             {
-                await ReadAsync();
+                //await ReadAsync();
+                await ReadAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0);
             }
             else if (status == SocketOperation.Write)
             {

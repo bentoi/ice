@@ -1136,7 +1136,7 @@ namespace Ice
                         }
                         else
                         {
-                            SetState(State.Closing, new ConnectionClosedByPeerException());
+                            SetState(State.ClosingPending, new ConnectionClosedByPeerException());
                             throw _exception!;
                         }
                         break;
@@ -1362,10 +1362,15 @@ namespace Ice
                 ++_pendingIO;
             }
 
+            bool closing = false;
             try
             {
                 // Start the long running IO operation.
                 await ioFunc().ConfigureAwait(false);
+            }
+            catch (ConnectionClosedByPeerException)
+            {
+                closing = true;
             }
             catch (Exception ex)
             {
@@ -1376,13 +1381,10 @@ namespace Ice
             }
 
             bool finish = false;
-            bool closing = false;
             lock (this)
             {
                 --_pendingIO;
-
-                // TODO: Benoit: Simplify the closing logic with the transport refactoring
-                if (_state == State.Closing && _pendingIO <= 1 && _dispatchCount == 0 && _outgoingMessages.Count == 0)
+                if (_state == State.Closing && _dispatchCount == 0 && _outgoingMessages.Count == 0)
                 {
                     SetState(State.ClosingPending);
                     closing = true;
@@ -1406,10 +1408,7 @@ namespace Ice
                 }
                 lock (this)
                 {
-                    if (_pendingIO == 0)
-                    {
-                        SetState(State.Closed);
-                    }
+                    SetState(State.Closed);
                 }
             }
 
