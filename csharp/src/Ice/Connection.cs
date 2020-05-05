@@ -631,7 +631,8 @@ namespace Ice
             {
                 // TODO: for now, we continue using the endpoint timeout as the default connect timeout. Note that
                 // this is useful for both the client and server side (client connection establishemnent and server
-                // connection accept). We could consider having a server side specific timeout for accept?
+                // connection accept). We could consider having a server side specific timeout for accept: the
+                // AcceptTimeout.
                 int timeout = _communicator.OverrideConnectTimeout ?? _endpoint.Timeout;
 
                 // Initialize the transport
@@ -964,8 +965,7 @@ namespace Ice
                         }
                         else
                         {
-                            actualEx = new UnhandledException(current.Identity, current.Facet, current.Operation,
-                                ex);
+                            actualEx = new UnhandledException(current.Identity, current.Facet, current.Operation, ex);
                         }
                         Incoming.ReportException(actualEx, dispatchObserver, current);
                         response = new OutgoingResponseFrame(current, actualEx);
@@ -1011,6 +1011,19 @@ namespace Ice
                 }
             }
 
+            // Check header
+            Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
+            int size = InputStream.ReadInt(readBuffer.Slice(10, 4));
+            if (size < Ice1Definitions.HeaderSize)
+            {
+                throw new InvalidDataException($"received ice1 frame with only {size} bytes");
+            }
+
+            if (size > _messageSizeMax)
+            {
+                throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
+            }
+
             lock (this)
             {
                 if (_state >= State.Closed)
@@ -1029,21 +1042,9 @@ namespace Ice
                 // Connection is validated on first message. This is only used by setState() to check wether or
                 // not we can print a connection warning (a client might close the connection forcefully if the
                 // connection isn't validated, we don't want to print a warning in this case).
-                //
+                // TODO: cancel the AcceptTimeout timer here? This requires to keep track of the cancel token setup
+                // from StartAsync.
                 _validated = true;
-            }
-
-            // Check header
-            Ice1Definitions.CheckHeader(readBuffer.AsSpan(0, 8));
-            int size = InputStream.ReadInt(readBuffer.Slice(10, 4));
-            if (size < Ice1Definitions.HeaderSize)
-            {
-                throw new InvalidDataException($"received ice1 frame with only {size} bytes");
-            }
-
-            if (size > _messageSizeMax)
-            {
-                throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
             }
 
             // Read the reminder of the message if needed
@@ -1135,7 +1136,7 @@ namespace Ice
                         }
                         else
                         {
-                            SetState(State.ClosingPending, new ConnectionClosedByPeerException());
+                            SetState(State.Closing, new ConnectionClosedByPeerException());
                             throw _exception!;
                         }
                         break;
@@ -1381,8 +1382,9 @@ namespace Ice
                 --_pendingIO;
 
                 // TODO: Benoit: Simplify the closing logic with the transport refactoring
-                if (_state == State.ClosingPending && _pendingIO <= 1)
+                if (_state == State.Closing && _pendingIO <= 1 && _dispatchCount == 0 && _outgoingMessages.Count == 0)
                 {
+                    SetState(State.ClosingPending);
                     closing = true;
                 }
                 else if (_state == State.Closed && _pendingIO == 0)
@@ -1686,12 +1688,6 @@ namespace Ice
                 {
                     if (_state > State.Closing || _outgoingMessages.Count == 0)
                     {
-                        // If all the messages were sent and we are in the closing state, the close connection
-                        // message has been sent and it's now time to switch to the ClosingPending state.
-                        if (_state == State.Closing && _dispatchCount == 0)
-                        {
-                            SetState(State.ClosingPending);
-                        }
                         return;
                     }
                     message = _outgoingMessages.First!.Value;
