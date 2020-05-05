@@ -138,7 +138,11 @@ namespace IceInternal
         async ValueTask<bool> ClosingAsync(System.Exception ex)
         {
             bool initiator = !(ex is ConnectionClosedByPeerException);
-            int status = Closing(initiator, ex);
+            int status;
+            lock (this)
+            {
+                status = Closing(initiator, ex);
+            }
             if (status == SocketOperation.Read)
             {
                 if (initiator)
@@ -168,8 +172,13 @@ namespace IceInternal
                     try
                     {
                         var transceiver = (ITransceiver)state;
-                        transceiver.FinishWrite(buffer, ref offset);
-                        if ((transceiver.Write(buffer, ref offset) & SocketOperation.Read) != 0)
+                        int status;
+                        lock (transceiver)
+                        {
+                            transceiver.FinishWrite(buffer, ref offset);
+                            status = transceiver.Write(buffer, ref offset);
+                        }
+                        if((status & SocketOperation.Read) != 0)
                         {
                             await transceiver.ReadAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0);
                         }
@@ -181,9 +190,12 @@ namespace IceInternal
                     }
                 };
 
-                if (self.StartWrite(buffer, offset, WriteCallback, self, out bool completed))
+                lock (self)
                 {
-                    WriteCallback(self);
+                    if (self.StartWrite(buffer, offset, WriteCallback, self, out bool completed))
+                    {
+                        WriteCallback(self);
+                    }
                 }
                 return await result.Task.ConfigureAwait(false);
             }
@@ -227,8 +239,13 @@ namespace IceInternal
                     try
                     {
                         var transceiver = (ITransceiver)state;
-                        transceiver.FinishRead(ref p.buffer, ref p.offset);
-                        if ((transceiver.Read(ref p.buffer, ref p.offset) & SocketOperation.Write) != 0)
+                        int status;
+                        lock (transceiver)
+                        {
+                            transceiver.FinishRead(ref p.buffer, ref p.offset);
+                            status = transceiver.Read(ref p.buffer, ref p.offset);
+                        }
+                        if ((status & SocketOperation.Write) != 0)
                         {
                             await transceiver.WriteAsync(new List<ArraySegment<byte>>()).ConfigureAwait(false);
                         }
@@ -240,9 +257,12 @@ namespace IceInternal
                     }
                 }
 
-                if (self.StartRead(ref p.buffer, ref p.offset, ReadCallback, self))
+                lock (self)
                 {
-                    ReadCallback(self);
+                    if (self.StartRead(ref p.buffer, ref p.offset, ReadCallback, self))
+                    {
+                        ReadCallback(self);
+                    }
                 }
                 return await result.Task.ConfigureAwait(false);
             }
