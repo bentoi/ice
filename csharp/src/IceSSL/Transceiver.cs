@@ -88,6 +88,7 @@ namespace IceSSL
             if (_sslStream != null)
             {
                 _sslStream.Close(); // Closing the stream also closes the socket.
+                _sslStream = null;
             }
 
             _delegate.Close();

@@ -48,6 +48,12 @@ namespace Ice.threading
         {
             lock(_mutex)
             {
+                if(_level == -1)
+                {
+                    // Test is done, just return.
+                    return;
+                }
+
                 ++_level;
                 if (_level < level)
                 {
@@ -56,7 +62,8 @@ namespace Ice.threading
                 }
                 else if (_level > level)
                 {
-                    return;
+                    Monitor.Wait(_mutex);
+                    throw new TestFailedException($"task scheduler concurrency level exceeded {_level} > {level}");
                 }
             }
 
@@ -67,20 +74,16 @@ namespace Ice.threading
             lock (_mutex)
             {
                 Monitor.PulseAll(_mutex); // Free waiting threads
-                if(_level > level)
-                {
-                    throw new TestFailedException("task scheduler concurrency level exceeded");
-                }
-                else
-                {
-                    _level = 0;
-                }
+                _level = -1;
             }
         }
 
-        public void reset()
+        public void reset(Current current)
         {
-
+            lock (_mutex)
+            {
+                _level = 0;
+            }
         }
 
         public void shutdown(Current current) => current.Adapter.Communicator.Shutdown();

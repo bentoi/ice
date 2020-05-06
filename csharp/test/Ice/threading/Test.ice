@@ -18,6 +18,7 @@ interface TestIntf
     void pingSync();
     ["amd"] void ping();
     void concurrent(int level);
+    void reset();
     void shutdown();
 }
 

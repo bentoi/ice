@@ -105,7 +105,12 @@ namespace IceInternal
                 IList<ArraySegment<byte>> writeBuffer = new List<ArraySegment<byte>>();
                 while (true)
                 {
-                    int status = self.Initialize(ref readBuffer, writeBuffer);
+                    int status;
+                    lock (self)
+                    {
+                        status = self.Initialize(ref readBuffer, writeBuffer);
+                    }
+
                     if (status == SocketOperation.Read)
                     {
                         ArraySegmentAndOffset result;
@@ -141,11 +146,11 @@ namespace IceInternal
                     // If initiator, ReadAsync is already pending
                     return false;
                 }
-                await ReadImplAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0, false);
+                await ReadImplAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0, false).ConfigureAwait(false);
             }
             else if (status == SocketOperation.Write)
             {
-                await WriteImplAsync(new List<ArraySegment<byte>>(), 0, false);
+                await WriteImplAsync(new List<ArraySegment<byte>>(), 0, false).ConfigureAwait(false);
             }
             return true;
         }

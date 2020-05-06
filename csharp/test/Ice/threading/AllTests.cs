@@ -105,8 +105,8 @@ namespace Ice.threading
             using (var comm = new Communicator(properties, taskScheduler: schedulers.ConcurrentScheduler))
             {
                 TestHelper.Assert(comm.TaskScheduler == schedulers.ConcurrentScheduler);
-                _ = Task.Factory.StartNew(async () => await allTestsWithCommunicator(helper, comm), default,
-                    TaskCreationOptions.None, comm.TaskScheduler);
+                Task.Factory.StartNew(async () => await allTestsWithCommunicator(helper, comm), default,
+                    TaskCreationOptions.None, comm.TaskScheduler).Wait();
             }
             output.WriteLine("ok");
 
@@ -115,18 +115,29 @@ namespace Ice.threading
             using (var comm = new Communicator(properties, taskScheduler: schedulers.ExclusiveScheduler))
             {
                 TestHelper.Assert(comm.TaskScheduler == schedulers.ExclusiveScheduler);
-                _ = Task.Factory.StartNew(async () => await allTestsWithCommunicator(helper, comm), default,
-                    TaskCreationOptions.None, comm.TaskScheduler);
+                Task.Factory.StartNew(async () => await allTestsWithCommunicator(helper, comm), default,
+                    TaskCreationOptions.None, comm.TaskScheduler).Wait();
             }
             output.WriteLine("ok");
 
             output.Write("testing server-side default task scheduler concurrency... ");
             {
                 // With the default task scheduler, the concurrency is limited to the number of .NET thread pool
-                // threads. The server sets up at least 50 threads in the .NET Thread pool we test this level
+                // threads. The server sets up at least 20 threads in the .NET Thread pool we test this level
                 // of concurrency but in theory it could be much higher.
                 var proxy = ITestIntfPrx.Parse("test:" + helper.GetTestEndpoint(0), communicator);
-                Task.WaitAll(Enumerable.Range(0, 200).Select(idx => proxy.concurrentAsync(20)).ToArray());
+                try
+                {
+                    Task.WaitAll(Enumerable.Range(0, 25).Select(idx => proxy.concurrentAsync(20)).ToArray());
+                }
+                catch(AggregateException ex)
+                {
+                    // On Windows, it's not un-common that the .NET thread pool creates one or two additional threads
+                    // and doesn't striclty respect the number of configured maximum threads. So we tolerate a lest
+                    // 2 additional concurrent calls.
+                    TestHelper.Assert(ex.InnerExceptions.Count < 3);
+                }
+                proxy.reset();
             }
             output.WriteLine("ok");
 

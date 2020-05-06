@@ -34,7 +34,8 @@ namespace Ice.threading
             // Setup 20 worker threads for the .NET thread pool (we setup the minimum to avoid delays from the
             // thread pool thread creation).
             // TODO: Why are worker threads used here and not completion port threads? The SocketAsyncEventArgs
-            // Completed event handler is called from the worker thread and not the completion port thread.
+            // Completed event handler is called from the worker thread and not the completion port thread. This
+            // might require fixing once we use Async socket primitives.
             ThreadPool.SetMinThreads(20, 4);
             ThreadPool.SetMaxThreads(20, 4);
 
