@@ -135,15 +135,12 @@ namespace Ice
         private IConnectionObserver? _observer;
         private readonly LinkedList<OutgoingMessage> _outgoingMessages = new LinkedList<OutgoingMessage>();
         private int _pendingIO;
-        private readonly Func<ValueTask> _readNoDispatch;
-        private readonly Func<ValueTask> _read;
         private readonly Dictionary<int, OutgoingAsyncBase> _requests = new Dictionary<int, OutgoingAsyncBase>();
         private State _state; // The current state.
         private readonly ITransceiver _transceiver;
         private bool _validated = false;
         private readonly bool _warn;
         private readonly bool _warnUdp;
-        private readonly Func<ValueTask> _write;
 
         private static readonly ConnectionState[] _connectionStateMap = new ConnectionState[] {
             ConnectionState.ConnectionStateValidating,   // State.NotInitialized
@@ -397,9 +394,6 @@ namespace Ice
             _dispatchCount = 0;
             _pendingIO = 0;
             _state = State.NotInitialized;
-            _read = () => ReadAsync(true);
-            _readNoDispatch = () => ReadAsync(false);
-            _write = () => WriteAsync();
 
             _compressionLevel = communicator.GetPropertyAsInt("Ice.Compression.Level") ?? 1;
             if (_compressionLevel < 1)
@@ -739,7 +733,7 @@ namespace Ice
 
                 // Start the asynchronous operation from the thread pool to prevent eventually reading
                 // synchronously new frames from this thread.
-                _ = Task.Run(() => RunIO(_read));
+                _ = Task.Run(() => RunIO(ReadAsync));
             }
             catch (Exception ex)
             {
@@ -1258,7 +1252,7 @@ namespace Ice
                                 {
                                     _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
                                 }
-                                return new ValueTask();
+                                return default;
                             };
                         }
                         break;
@@ -1282,7 +1276,7 @@ namespace Ice
             return (incoming, scheduler, serialize);
         }
 
-        private async ValueTask ReadAsync(bool dispatchFromThisThread)
+        private async ValueTask ReadAsync()
         {
             // Read asynchronously incoming frames and dispatch the incoming if needed. The read will throw
             // and cause the loop to end when the connection is closed.
@@ -1293,12 +1287,10 @@ namespace Ice
                 {
                     if (serialize)
                     {
-                        // Run the incoming dispatch and continue reading from this thread.
-                        if (scheduler != null || !dispatchFromThisThread)
+                        // Run the incoming dispatch and continue reading from this task after the dispatch completes.
+                        if (scheduler != null)
                         {
-                            await Task.Factory.StartNew(async () => await DispatchAsync(incoming), default,
-                                TaskCreationOptions.None, scheduler ?? TaskScheduler.Default
-                                ).Unwrap().ConfigureAwait(false);
+                            await TaskRun(() => DispatchAsync(incoming), scheduler).ConfigureAwait(false);
                         }
                         else
                         {
@@ -1307,26 +1299,35 @@ namespace Ice
                     }
                     else
                     {
-                        // Start a new Read IO task and run the incoming dispatch. The read IO task might read
-                        // synchronously a new incoming frame but we don't allow it to be dispatched before we
-                        // actually dispatch this frame.
-                        if (scheduler != null || !dispatchFromThisThread)
+                        // Start a new Read IO task and run the incoming dispatch. We start the new ReadAsync from
+                        // a separate task because the ReadAsync could complete synchronously and we don't want the
+                        // dispatch from this read to run before we actually ran the dispatch from this block.
+                        if (scheduler != null)
                         {
-                            await Task.Factory.StartNew(async () =>
+                            await TaskRun(() =>
                                 {
-                                    _ = RunIO(_readNoDispatch);
-                                    await DispatchAsync(incoming);
-                                }, default, TaskCreationOptions.None, scheduler ?? TaskScheduler.Default
-                                ).Unwrap().ConfigureAwait(false);
+                                    _ = Task.Run(() => RunIO(ReadAsync));
+                                    return DispatchAsync(incoming);
+                                }, scheduler).ConfigureAwait(false);
                         }
                         else
                         {
-                            _ = RunIO(_readNoDispatch);
+                            _ = Task.Run(() => RunIO(ReadAsync));
                             await DispatchAsync(incoming).ConfigureAwait(false);
                         }
                         return;
                     }
                 }
+            }
+
+            static async ValueTask TaskRun(Func<ValueTask> func, TaskScheduler? scheduler)
+            {
+                // First await for the dispach async to be ran on the task scheduler.
+                ValueTask task = await Task.Factory.StartNew(func, default, TaskCreationOptions.None,
+                    scheduler ?? TaskScheduler.Default).ConfigureAwait(false);
+
+                // Now wait for the async dispatch to complete.
+                await task.ConfigureAwait(false);
             }
         }
 
@@ -1429,7 +1430,7 @@ namespace Ice
             _outgoingMessages.AddLast(message);
             if (_outgoingMessages.Count == 1)
             {
-                _ = RunIO(_write);
+                _ = RunIO(WriteAsync);
             }
             return OutgoingAsyncBase.AsyncStatusQueued;
         }
