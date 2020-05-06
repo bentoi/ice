@@ -101,7 +101,7 @@ namespace Ice
         /// Get the timeout for the connection.
         /// </summary>
         /// <returns>The connection's timeout.</returns>
-        // TODO: Remove Timeout, it's no longer used by the connection
+        // TODO: Remove Timeout after reviewing its usages, it's no longer used by the connection
         public int Timeout => _endpoint.Timeout; // No mutex protection necessary, _endpoint is immutable.
 
         internal IConnector Connector => _connector!;
@@ -528,7 +528,8 @@ namespace Ice
                     }
                 }
 
-                // TODO: We still rely on the endpoint timeout here, remove and change the override close timeout?
+                // TODO: We still rely on the endpoint timeout here, remove and change the override close timeout to
+                // Ice.CloseTimeout (or just rely on ACM timeout?)
                 int timeout = acm.Timeout;
                 if (_state >= State.Closing)
                 {
@@ -630,10 +631,9 @@ namespace Ice
         {
             try
             {
-                // TODO: for now, we continue using the endpoint timeout as the default connect timeout. Note that
-                // this is useful for both the client and server side (client connection establishemnent and server
-                // connection accept). We could consider having a server side specific timeout for accept: the
-                // AcceptTimeout.
+                // TODO: for now, we continue using the endpoint timeout as the default connect timeout. This is
+                // use for both connect/accept timeouts. We're leaning toward adding Ice.ConnectTimeout for
+                // connection establishemnt and using the ACM timeout for accepting connections.
                 int timeout = _communicator.OverrideConnectTimeout ?? _endpoint.Timeout;
 
                 // Initialize the transport
@@ -981,7 +981,7 @@ namespace Ice
                     {
                         if (_state < State.Closed)
                         {
-                            // TODO: await on Send when Send is async?
+                            // TODO: should we await on Send for the response when Send is async?
                             Send(new OutgoingMessage(Ice1Definitions.GetResponseData(response!, current.RequestId),
                                 compressionStatus > 0));
                         }
@@ -1042,8 +1042,6 @@ namespace Ice
                 // Connection is validated on first message. This is only used by setState() to check wether or
                 // not we can print a connection warning (a client might close the connection forcefully if the
                 // connection isn't validated, we don't want to print a warning in this case).
-                // TODO: cancel the AcceptTimeout timer here? This requires to keep track of the cancel token setup
-                // from StartAsync.
                 _validated = true;
             }
 
@@ -1701,8 +1699,8 @@ namespace Ice
                 List<ArraySegment<byte>> writeBuffer = message.OutgoingData!;
 
                 // Compress the frame if needed and possible
-                // TODO: Benoit: we should consider doing this at an earlier stage from the application thread instead
-                // of the WriteAsync task continuation
+                // TODO: Benoit: we should consider doing the compression at an earlier stage from the application
+                // user thread instead of the WriteAsync task continuation?
                 int size = writeBuffer.GetByteCount();
                 if (BZip2.IsLoaded && message.Compress)
                 {
