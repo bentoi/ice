@@ -77,14 +77,14 @@ namespace Ice
         {
             get
             {
-                lock (this)
+                lock (_mutex)
                 {
                     return _adapter;
                 }
             }
             set
             {
-                lock (this)
+                lock (_mutex)
                 {
                     _adapter = value;
                 }
@@ -110,7 +110,7 @@ namespace Ice
         {
             get
             {
-                lock (this)
+                lock (_mutex)
                 {
                     return _state > State.NotInitialized && _state < State.Closing;
                 }
@@ -130,6 +130,7 @@ namespace Ice
         private ConnectionInfo? _info;
         private readonly int _messageSizeMax;
         private IACMMonitor? _monitor;
+        private readonly object _mutex = new object();
         private int _nextRequestId;
         private IConnectionObserver? _observer;
         private readonly LinkedList<OutgoingMessage> _outgoingMessages = new LinkedList<OutgoingMessage>();
@@ -162,7 +163,7 @@ namespace Ice
         /// <param name="mode">Determines how the connection will be closed.</param>
         public void Close(ConnectionClose mode)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (mode == ConnectionClose.Forcefully)
                 {
@@ -181,7 +182,7 @@ namespace Ice
                     //
                     while (_requests.Count != 0)
                     {
-                        System.Threading.Monitor.Wait(this);
+                        System.Threading.Monitor.Wait(_mutex);
                     }
 
                     SetState(State.Closing, new ConnectionClosedLocallyException("connection closed gracefully"));
@@ -204,7 +205,7 @@ namespace Ice
         /// <returns>The ACM parameters.</returns>
         public ACM GetACM()
         {
-            lock (this)
+            lock (_mutex)
             {
                 return _monitor != null ? _monitor.GetACM() : new ACM(0, ACMClose.CloseOff, ACMHeartbeat.HeartbeatOff);
             }
@@ -214,7 +215,7 @@ namespace Ice
         /// <returns>The connection information.</returns>
         public ConnectionInfo GetConnectionInfo()
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
@@ -244,7 +245,7 @@ namespace Ice
         /// <param name="heartbeat">The heartbeat condition</param>
         public void SetACM(int? timeout, ACMClose? close, ACMHeartbeat? heartbeat)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (timeout is int timeoutValue && timeoutValue < 0)
                 {
@@ -283,7 +284,7 @@ namespace Ice
         /// <param name="sndSize">The connection send buffer size.</param>
         public void SetBufferSize(int rcvSize, int sndSize)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
@@ -300,7 +301,7 @@ namespace Ice
         /// <param name="callback">The close callback object.</param>
         public void SetCloseCallback(Action<Connection> callback)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
@@ -331,7 +332,7 @@ namespace Ice
         /// <param name="callback">The heartbeat callback object.</param>
         public void SetHeartbeatCallback(Action<Connection> callback)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
@@ -347,7 +348,7 @@ namespace Ice
         /// operation does nothing if the connection is not yet closed.</summary>
         public void ThrowException()
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_exception != null)
                 {
@@ -418,7 +419,7 @@ namespace Ice
             // NOTE: This isn't called from a thread pool thread.
             //
 
-            lock (this)
+            lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
@@ -473,7 +474,7 @@ namespace Ice
 
         internal void ClearAdapter(ObjectAdapter adapter)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_adapter == adapter)
                 {
@@ -484,7 +485,7 @@ namespace Ice
 
         internal void Destroy(Exception ex)
         {
-            lock (this)
+            lock (_mutex)
             {
                 SetState(State.Closing, ex);
             }
@@ -492,7 +493,7 @@ namespace Ice
 
         internal void Monitor(long now, ACMConfig acm)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state < State.Active || _state >= State.Closed)
                 {
@@ -562,7 +563,7 @@ namespace Ice
         // it will be the job of the caller.
         internal int SendAsyncRequest(OutgoingAsyncBase outgoing, bool compress, bool response)
         {
-            lock (this)
+            lock (_mutex)
             {
                 //
                 // If the exception is thrown before we even have a chance
@@ -646,7 +647,7 @@ namespace Ice
                         int offset = 0;
                         while (offset < _validateConnectionMessage.GetByteCount())
                         {
-                            var writeTask = _transceiver.WriteAsync(_validateConnectionMessage).AsTask();
+                            var writeTask = _transceiver.WriteAsync(_validateConnectionMessage, offset).AsTask();
                             await AwaitWithTimeout(writeTask, timeout);
                             offset += writeTask.Result;
                         }
@@ -680,7 +681,7 @@ namespace Ice
                     }
                 }
 
-                lock (this)
+                lock (_mutex)
                 {
                     if (_state >= State.Closed)
                     {
@@ -742,7 +743,7 @@ namespace Ice
             }
             catch (Exception ex)
             {
-                lock (this)
+                lock (_mutex)
                 {
                     SetState(State.Closed, ex);
                 }
@@ -775,7 +776,7 @@ namespace Ice
 
         internal void UpdateObserver()
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state < State.NotInitialized || _state > State.Closed)
                 {
@@ -793,7 +794,7 @@ namespace Ice
 
         internal void WaitUntilFinished()
         {
-            lock (this)
+            lock (_mutex)
             {
                 //
                 // We wait indefinitely until the connection is finished and all
@@ -803,7 +804,7 @@ namespace Ice
                 //
                 while (_state < State.Finished || _dispatchCount > 0)
                 {
-                    System.Threading.Monitor.Wait(this);
+                    System.Threading.Monitor.Wait(_mutex);
                 }
             }
         }
@@ -816,7 +817,7 @@ namespace Ice
             }
             finally
             {
-                lock (this)
+                lock (_mutex)
                 {
                     Debug.Assert(_dispatchCount > 0);
                     if (--_dispatchCount == 0)
@@ -836,7 +837,7 @@ namespace Ice
                         {
                             Reap();
                         }
-                        System.Threading.Monitor.PulseAll(this);
+                        System.Threading.Monitor.PulseAll(_mutex);
                     }
                 }
             }
@@ -878,7 +879,7 @@ namespace Ice
             _closeCallback = null;
             _heartbeatCallback = null;
 
-            lock (this)
+            lock (_mutex)
             {
                 // This must be done last as this will cause waitUntilFinished() to return.
                 SetState(State.Finished);
@@ -976,7 +977,7 @@ namespace Ice
                 {
                     dispatchObserver?.Reply(response!.Size);
 
-                    lock (this)
+                    lock (_mutex)
                     {
                         if (_state < State.Closed)
                         {
@@ -1024,7 +1025,7 @@ namespace Ice
                 throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
             }
 
-            lock (this)
+            lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
@@ -1070,7 +1071,7 @@ namespace Ice
 
                     // Trace the receival progress within the loop as we might be receiving significant amount
                     // of data here.
-                    lock (this)
+                    lock (_mutex)
                     {
                         if (_state >= State.Closed)
                         {
@@ -1098,7 +1099,7 @@ namespace Ice
             Func<ValueTask>? incoming = null;
             TaskScheduler? scheduler = null;
             bool serialize = false;
-            lock (this)
+            lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
@@ -1236,7 +1237,7 @@ namespace Ice
 
                             if (_requests.Count == 0)
                             {
-                                System.Threading.Monitor.PulseAll(this); // Notify threads blocked in close()
+                                System.Threading.Monitor.PulseAll(_mutex); // Notify threads blocked in close()
                             }
                         }
                         break;
@@ -1345,7 +1346,7 @@ namespace Ice
 
         private async ValueTask RunIO(Func<ValueTask> ioFunc)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
@@ -1373,14 +1374,14 @@ namespace Ice
             }
             catch (Exception ex)
             {
-                lock (this)
+                lock (_mutex)
                 {
                     SetState(State.Closed, ex);
                 }
             }
 
             bool finish = false;
-            lock (this)
+            lock (_mutex)
             {
                 --_pendingIO;
                 if (_state == State.Closing && _dispatchCount == 0 && _outgoingMessages.Count == 0)
@@ -1409,7 +1410,7 @@ namespace Ice
                 }
                 if (completed)
                 {
-                    lock (this)
+                    lock (_mutex)
                     {
                         SetState(State.Closed);
                     }
@@ -1618,7 +1619,7 @@ namespace Ice
             }
             _state = state;
 
-            System.Threading.Monitor.PulseAll(this);
+            System.Threading.Monitor.PulseAll(_mutex);
 
             if (_state == State.Closing && _dispatchCount == 0)
             {
@@ -1687,7 +1688,7 @@ namespace Ice
             while (true)
             {
                 OutgoingMessage message;
-                lock (this)
+                lock (_mutex)
                 {
                     if (_state > State.Closing || _outgoingMessages.Count == 0)
                     {
@@ -1730,7 +1731,7 @@ namespace Ice
                 {
                     int bytesSent = await _transceiver.WriteAsync(writeBuffer, offset).ConfigureAwait(false);
                     offset += bytesSent;
-                    lock (this)
+                    lock (_mutex)
                     {
                         Debug.Assert(_state < State.Finished); // Finish is only called once WriteAsync returns
                         TraceSentAndUpdateObserver(bytesSent);

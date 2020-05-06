@@ -108,22 +108,13 @@ namespace IceInternal
                     int status = self.Initialize(ref readBuffer, writeBuffer);
                     if (status == SocketOperation.Read)
                     {
-                        var received = new ArraySegmentAndOffset(readBuffer, 0);
-                        do
-                        {
-                            received = await self.ReadAsyncImpl(received.buffer, received.offset).ConfigureAwait(false);
-                        }
-                        while (received.offset < received.buffer.Count);
-                        readBuffer = received.buffer;
+                        ArraySegmentAndOffset result;
+                        result = await self.ReadImplAsync(readBuffer, 0, false).ConfigureAwait(false);
+                        readBuffer = result.buffer;
                     }
                     else if (status == SocketOperation.Write)
                     {
-                        int offset = 0;
-                        do
-                        {
-                            offset += await self.WriteAsync(writeBuffer, offset).ConfigureAwait(false);
-                        }
-                        while (offset < writeBuffer.GetByteCount());
+                        await self.WriteImplAsync(writeBuffer, 0, false).ConfigureAwait(false);
                     }
                     else
                     {
@@ -150,21 +141,27 @@ namespace IceInternal
                     // If initiator, ReadAsync is already pending
                     return false;
                 }
-                await ReadAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0);
+                await ReadImplAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0, false);
             }
             else if (status == SocketOperation.Write)
             {
-                await WriteAsync(new List<ArraySegment<byte>>());
+                await WriteImplAsync(new List<ArraySegment<byte>>(), 0, false);
             }
             return true;
         }
 
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
-        async ValueTask<int> WriteAsync(IList<ArraySegment<byte>> buffer, int offset = 0)
+        ValueTask<int> WriteAsync(IList<ArraySegment<byte>> buffer, int offset)
         {
-            return await Write(this, buffer, offset).ConfigureAwait(false) - offset;
+            return WriteImplAsync(buffer, offset, true);
+        }
 
-            static async Task<int> Write(ITransceiver self, IList<ArraySegment<byte>> buffer, int offset)
+        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
+        private async ValueTask<int> WriteImplAsync(IList<ArraySegment<byte>> buffer, int offset, bool partial)
+        {
+            return await Write(this, buffer, offset, partial).ConfigureAwait(false) - offset;
+
+            static async Task<int> Write(ITransceiver self, IList<ArraySegment<byte>> buffer, int offset, bool partial)
             {
                 var result = new TaskCompletionSource<int>();
                 async void WriteCallback(object state)
@@ -178,11 +175,22 @@ namespace IceInternal
                             transceiver.FinishWrite(buffer, ref offset);
                             status = transceiver.Write(buffer, ref offset);
                         }
-                        if((status & SocketOperation.Read) != 0)
+                        if ((status & SocketOperation.Read) != 0)
                         {
-                            await transceiver.ReadAsync(new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0);
+                            await transceiver.ReadImplAsync(
+                                new ArraySegment<byte>(new byte[Ice1Definitions.HeaderSize]), 0,
+                                partial).ConfigureAwait(false);
                         }
-                        result.SetResult(offset);
+
+                        if ((status & SocketOperation.Write) != 0 && !partial)
+                        {
+                            result.SetResult(await transceiver.WriteImplAsync(buffer, offset,
+                                false).ConfigureAwait(false));
+                        }
+                        else
+                        {
+                            result.SetResult(offset);
+                        }
                     }
                     catch (System.Exception ex)
                     {
@@ -201,6 +209,7 @@ namespace IceInternal
             }
         }
 
+        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
         private class ArraySegmentAndOffset
         {
             public ArraySegmentAndOffset(ArraySegment<byte> buffer, int offset)
@@ -212,25 +221,28 @@ namespace IceInternal
             public int offset;
         };
 
+        // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
         async ValueTask<ArraySegment<byte>> ReadAsync()
         {
-            var received = await ReadAsyncImpl(ArraySegment<byte>.Empty, 0).ConfigureAwait(false);
+            var received = await ReadImplAsync(ArraySegment<byte>.Empty, 0, true).ConfigureAwait(false);
             return received.buffer;
         }
 
         // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
         async ValueTask<int> ReadAsync(ArraySegment<byte> buffer, int offset)
         {
-            var received = await ReadAsyncImpl(buffer, offset).ConfigureAwait(false);
+            var received = await ReadImplAsync(buffer, offset, true).ConfigureAwait(false);
             return received.offset - offset;
         }
 
          // TODO: Benoit: temporary hack, it will be removed with the transport refactoring
-        private async ValueTask<ArraySegmentAndOffset> ReadAsyncImpl(ArraySegment<byte> buffer, int offset)
+        private async ValueTask<ArraySegmentAndOffset> ReadImplAsync(ArraySegment<byte> buffer, int offset,
+            bool partial)
         {
-            return await Read(this, buffer, offset).ConfigureAwait(false);
+            return await Read(this, buffer, offset, partial).ConfigureAwait(false);
 
-            static async Task<ArraySegmentAndOffset> Read(ITransceiver self, ArraySegment<byte> buffer, int offset = 0)
+            static async Task<ArraySegmentAndOffset> Read(ITransceiver self, ArraySegment<byte> buffer, int offset,
+                bool partial)
             {
                 var result = new TaskCompletionSource<ArraySegmentAndOffset>();
                 var p = new ArraySegmentAndOffset(buffer, offset);
@@ -247,9 +259,18 @@ namespace IceInternal
                         }
                         if ((status & SocketOperation.Write) != 0)
                         {
-                            await transceiver.WriteAsync(new List<ArraySegment<byte>>()).ConfigureAwait(false);
+                            await transceiver.WriteImplAsync(
+                                new List<ArraySegment<byte>>(), 0, partial).ConfigureAwait(false);
                         }
-                        result.SetResult(p);
+                        if ((status & SocketOperation.Read) != 0 && !partial)
+                        {
+                            result.SetResult(await transceiver.ReadImplAsync(p.buffer, p.offset,
+                                false).ConfigureAwait(false));
+                        }
+                        else
+                        {
+                            result.SetResult(p);
+                        }
                     }
                     catch (System.Exception ex)
                     {
