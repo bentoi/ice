@@ -36,25 +36,6 @@ namespace IceInternal
             Debug.Assert(false); // Must be overridden by request that can handle responses
             return false;
         }
-
-        public void InvokeSentAsync()
-        {
-            Task.Factory.StartNew(InvokeSent, default, TaskCreationOptions.DenyChildAttach,
-                Communicator.TaskScheduler ?? TaskScheduler.Default);
-        }
-
-        public void InvokeExceptionAsync()
-        {
-            Task.Factory.StartNew(InvokeException, default, TaskCreationOptions.DenyChildAttach,
-                Communicator.TaskScheduler ?? TaskScheduler.Default);
-        }
-
-        public void InvokeResponseAsync()
-        {
-            Task.Factory.StartNew(InvokeResponse, default, TaskCreationOptions.DenyChildAttach,
-                Communicator.TaskScheduler ?? TaskScheduler.Default);
-        }
-
         public void InvokeSent()
         {
             try
@@ -349,8 +330,8 @@ namespace IceInternal
     {
         public OutgoingRequestFrame RequestFrame { get; protected set; }
         public IncomingResponseFrame? ResponseFrame { get; protected set; }
-        public abstract int InvokeRemote(Connection connection, bool compress, bool response);
-        public abstract int InvokeCollocated(CollocatedRequestHandler handler);
+        public abstract void InvokeRemote(Connection connection, bool compress, bool response);
+        public abstract void InvokeCollocated(CollocatedRequestHandler handler);
 
         public override List<ArraySegment<byte>> GetRequestData(int requestId) =>
             Ice1Definitions.GetRequestData(RequestFrame, requestId);
@@ -408,7 +389,7 @@ namespace IceInternal
             {
                 if (Exception(ex))
                 {
-                    InvokeExceptionAsync();
+                    Task.Run(InvokeException);
                 }
             }
         }
@@ -419,7 +400,7 @@ namespace IceInternal
             Debug.Assert(ChildObserver == null);
             if (ExceptionImpl(ex))
             {
-                InvokeExceptionAsync();
+                Task.Run(InvokeException);
             }
             else if (ex is CommunicatorDestroyedException)
             {
@@ -466,26 +447,7 @@ namespace IceInternal
                     try
                     {
                         _sent = false;
-                        Handler = Proxy.IceReference.GetRequestHandler();
-                        int status = Handler.SendAsyncRequest(this);
-                        if ((status & AsyncStatusSent) != 0)
-                        {
-                            if (userThread)
-                            {
-                                SentSynchronously = true;
-                                if ((status & AsyncStatusInvokeSentCallback) != 0)
-                                {
-                                    InvokeSent(); // Call the sent callback from the user thread.
-                                }
-                            }
-                            else
-                            {
-                                if ((status & AsyncStatusInvokeSentCallback) != 0)
-                                {
-                                    InvokeSentAsync(); // Call the sent callback from a client thread pool thread.
-                                }
-                            }
-                        }
+                        Proxy.IceReference.GetRequestHandler().SendAsyncRequest(this);
                         return; // We're done!
                     }
                     catch (RetryException)
@@ -529,7 +491,7 @@ namespace IceInternal
                 }
                 else if (ExceptionImpl(ex)) // No retries, we're done
                 {
-                    InvokeExceptionAsync();
+                    Task.Run(InvokeException);
                 }
             }
         }
@@ -674,13 +636,13 @@ namespace IceInternal
             }
         }
 
-        public override int InvokeRemote(Connection connection, bool compress, bool response)
+        public override void InvokeRemote(Connection connection, bool compress, bool response)
         {
             CachedConnection = connection;
-            return connection.SendAsyncRequest(this, compress, response);
+            connection.SendAsyncRequest(this, compress, response);
         }
 
-        public override int InvokeCollocated(CollocatedRequestHandler handler)
+        public override void InvokeCollocated(CollocatedRequestHandler handler)
         {
             // The stream cannot be cached if the proxy is not a twoway or there is an invocation timeout set.
             if (IsOneway || Proxy.IceReference.InvocationTimeout != -1)
@@ -688,7 +650,7 @@ namespace IceInternal
                 // Disable caching by marking the streams as cached!
                 State |= StateCachedBuffers;
             }
-            return handler.InvokeAsyncRequest(this, Synchronous);
+            handler.InvokeAsyncRequest(this, Synchronous);
         }
 
         public new void Abort(Exception ex)
@@ -770,23 +732,21 @@ namespace IceInternal
         public ProxyGetConnection(IObjectPrx prx, IOutgoingAsyncCompletionCallback completionCallback)
             : base(prx, completionCallback, null!) => IsIdempotent = false;
 
-        public override int InvokeRemote(Connection connection, bool compress, bool response)
+        public override void InvokeRemote(Connection connection, bool compress, bool response)
         {
             CachedConnection = connection;
             if (ResponseImpl(false, true, true))
             {
-                InvokeResponseAsync();
+                InvokeResponse();
             }
-            return AsyncStatusSent;
         }
 
-        public override int InvokeCollocated(CollocatedRequestHandler handler)
+        public override void InvokeCollocated(CollocatedRequestHandler handler)
         {
             if (ResponseImpl(false, true, true))
             {
-                InvokeResponseAsync();
+                InvokeResponse();
             }
-            return AsyncStatusSent;
         }
 
         public Connection? GetConnection() => CachedConnection;

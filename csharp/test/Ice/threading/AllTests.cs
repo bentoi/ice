@@ -17,107 +17,120 @@ namespace Ice.threading
     {
         class Progress : IProgress<bool>
         {
-            public TaskScheduler? Scheduler { get; private set; }
-            private ManualResetEvent _event = new ManualResetEvent(false);
-
-            public void WaitSent()
-            {
-                _event.WaitOne();
+            public TaskScheduler Scheduler {
+                get
+                {
+                    _event.WaitOne();
+                    return _scheduler!;
+                }
             }
+
+            private TaskScheduler? _scheduler;
+
+            private ManualResetEvent _event = new ManualResetEvent(false);
 
             void IProgress<bool>.Report(bool value)
             {
-                Scheduler = TaskScheduler.Current;
+                _scheduler = TaskScheduler.Current;
                 _event.Set();
             }
         }
-        public static async ValueTask allTestsWithCommunicator(TestHelper helper, Ice.Communicator communicator)
+        public static async ValueTask allTestsWithServer(TestHelper helper, bool collocated, int server)
         {
             System.IO.TextWriter output = helper.GetWriter();
 
-            // Scheduler expected to be the current scheduler for continuations
-            TaskScheduler scheduler = communicator.TaskScheduler ?? TaskScheduler.Default;
+            var scheduler = TaskScheduler.Current;
 
-            TestHelper.Assert(TaskScheduler.Current == scheduler);
+            var proxy = ITestIntfPrx.Parse("test:" + helper.GetTestEndpoint(server), helper.Communicator()!);
 
-            // Run tests on the 3 server endpoints where each endpoint matches an object adapter with different
-            // scheduler settings
-            for(int i = 0; i < 3; ++i)
+            if(collocated)
             {
-                var proxy = ITestIntfPrx.Parse("test:" + helper.GetTestEndpoint(i), communicator);
-
+                // With collocation, synchronous calls dispatched on an object adapter which doesn't set a task
+                // scheduler are dispatched from the client invocation task scheduler.
+                var context = new Dictionary<string, string>() { { "scheduler", scheduler.Id.ToString() } };
+                proxy.pingSync(context);
+                proxy.ping(context);
+            }
+            else
+            {
                 proxy.pingSync();
                 proxy.ping();
+            }
 
-                await proxy.pingSyncAsync();
-                TestHelper.Assert(TaskScheduler.Current == scheduler);
-                await proxy.pingAsync();
-                TestHelper.Assert(TaskScheduler.Current == scheduler);
+            // Ensure the continuation is ran on the current task scheduler
+            await proxy.pingSyncAsync();
+            TestHelper.Assert(TaskScheduler.Current == scheduler);
+            await proxy.pingAsync();
+            TestHelper.Assert(TaskScheduler.Current == scheduler);
 
-                // The continuation set with ContinueWith is expected to be ran on the communicator's
-                // task scheduler, ditto for the IProgress<bool> sent callbacks.
-                Action<Task> checkScheduler = t =>
+            // The continuation set with ContinueWith are expected to be ran on the Current task
+            // scheduler if no task scheduler is provided to ContinueWith.
+            Func<string, Action<Task>> checkScheduler = (op) =>
+            {
+                return t =>
                 {
-                    if(TaskScheduler.Current != scheduler)
+                    if (TaskScheduler.Current != scheduler)
                     {
-                        throw new TestFailedException("unexpected scheduler");
+                        throw new TestFailedException(
+                            $"unexpected scheduler for {op} ContinueWith {TaskScheduler.Current}");
                     }
                 };
-                Progress progress;
+            };
+            await proxy.pingSyncAsync().ContinueWith(checkScheduler("pingSyncAsync"));
+            TestHelper.Assert(TaskScheduler.Current == scheduler);
+            await proxy.pingAsync().ContinueWith(checkScheduler("pingAsyncAsync"));
+            TestHelper.Assert(TaskScheduler.Current == scheduler);
 
-                progress = new Progress();
-                await proxy.pingSyncAsync(progress: progress).ContinueWith(checkScheduler,
-                    TaskContinuationOptions.ExecuteSynchronously).ConfigureAwait(false);
-                progress.WaitSent();
-                TestHelper.Assert(progress.Scheduler == scheduler);
-                // The continuation of the awaitable setup with ConfigureAwait(false) is ran by the default
-                // scheduler, not the communicator's scheduler.
-                TestHelper.Assert(TaskScheduler.Current == TaskScheduler.Default);
+            // The progress Report callback is always called from the default task scheduler right now.
+            Progress progress;
+            progress = new Progress();
+            await proxy.pingSyncAsync(progress: progress);
+            TestHelper.Assert(progress.Scheduler == TaskScheduler.Default);
+            progress = new Progress();
+            await proxy.pingAsync(progress: progress);
+            TestHelper.Assert(progress.Scheduler == TaskScheduler.Default);
 
-                progress = new Progress();
-                await proxy.pingAsync(progress: progress).ContinueWith(checkScheduler,
-                    TaskContinuationOptions.ExecuteSynchronously).ConfigureAwait(false);
-                progress.WaitSent();
-                TestHelper.Assert(progress.Scheduler == scheduler);
-                // The continuation of the awaitable setup with ConfigureAwait(false) is ran by the default
-                // scheduler, not the communicator's scheduler.
-                TestHelper.Assert(TaskScheduler.Current == TaskScheduler.Default);
-            }
+            // The continuation of an awaitable setup with ConfigureAwait(false) is ran with the default
+            // scheduler.
+            await proxy.pingSyncAsync().ConfigureAwait(false);
+            TestHelper.Assert(TaskScheduler.Current == TaskScheduler.Default);
+            await proxy.pingAsync().ConfigureAwait(false);
+            TestHelper.Assert(TaskScheduler.Current == TaskScheduler.Default);
         }
 
-        public static async ValueTask<ITestIntfPrx> allTests(TestHelper helper)
+        public static async ValueTask<ITestIntfPrx> allTests(TestHelper helper, bool collocated)
         {
             Communicator communicator = helper.Communicator()!;
             TestHelper.Assert(communicator != null);
 
             var schedulers = new ConcurrentExclusiveSchedulerPair(TaskScheduler.Default, 2);
-            var properties = communicator.GetProperties();
-
-            // Use the Default task scheduler
+            Dictionary<string, string> properties = communicator.GetProperties();
             System.IO.TextWriter output = helper.GetWriter();
+
+            // Use the Default task scheduler to run continuations tests with the 3 object adpaters
+            // setup by the server, each object adapter uses a different task scheduler.
             output.Write("testing continuations with default task scheduler... ");
-            TestHelper.Assert(communicator.TaskScheduler == null);
-            await allTestsWithCommunicator(helper, communicator);
+            {
+                await allTestsWithServer(helper, collocated, 0); // Test with server endpoint 0
+                await allTestsWithServer(helper, collocated, 1); // Test with server endpoint 1
+                await allTestsWithServer(helper, collocated, 2); // Test with server endpoint 2
+            }
             output.WriteLine("ok");
 
             // Use the concurrent task scheduler
             output.Write("testing continuations with concurrent task scheduler... ");
-            using (var comm = new Communicator(properties, taskScheduler: schedulers.ConcurrentScheduler))
+            await Task.Factory.StartNew(async () =>
             {
-                TestHelper.Assert(comm.TaskScheduler == schedulers.ConcurrentScheduler);
-                Task.Factory.StartNew(async () => await allTestsWithCommunicator(helper, comm), default,
-                    TaskCreationOptions.None, comm.TaskScheduler).Wait();
-            }
+                await allTestsWithServer(helper, collocated, 0);
+            } , default, TaskCreationOptions.None, schedulers.ConcurrentScheduler).Unwrap();
             output.WriteLine("ok");
 
             // Use the exclusive task scheduler
             output.Write("testing continuations with exclusive task scheduler... ");
-            using (var comm = new Communicator(properties, taskScheduler: schedulers.ExclusiveScheduler))
+            await Task.Factory.StartNew(async () =>
             {
-                TestHelper.Assert(comm.TaskScheduler == schedulers.ExclusiveScheduler);
-                Task.Factory.StartNew(async () => await allTestsWithCommunicator(helper, comm), default,
-                    TaskCreationOptions.None, comm.TaskScheduler).Wait();
-            }
+                await allTestsWithServer(helper, collocated, 0);
+            }, default, TaskCreationOptions.None, schedulers.ExclusiveScheduler).Unwrap();
             output.WriteLine("ok");
 
             output.Write("testing server-side default task scheduler concurrency... ");

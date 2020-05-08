@@ -27,7 +27,6 @@ namespace Glacier2
         /// <param name="properties">Optional properties used for communicator initialization.</param>
         /// <param name="logger">Optional logger used for communicator initialization.</param>
         /// <param name="observer">Optional communicator observer used for communicator initialization.</param>
-        /// <param name="scheduler">Optional task scheduler used for communicator initialization.</param>
         /// <param name="typeIdNamespaces">Optional list of TypeId namespaces used for communicator initialization.
         /// The default is Ice.TypeId.</param>
         public
@@ -35,14 +34,12 @@ namespace Glacier2
                              Dictionary<string, string> properties,
                              Ice.ILogger? logger = null,
                              Ice.Instrumentation.ICommunicatorObserver? observer = null,
-                             System.Threading.Tasks.TaskScheduler? scheduler = null,
                              string[]? typeIdNamespaces = null)
         {
             _callback = callback;
             _properties = properties;
             _logger = logger;
             _observer = observer;
-            _taskScheduler = scheduler;
             _typeIdNamespaces = typeIdNamespaces;
 
             setDefaultProperties();
@@ -255,7 +252,6 @@ namespace Glacier2
                     CreateProperties(),
                     _logger,
                     _observer,
-                    _taskScheduler,
                     _typeIdNamespaces);
                 session.Connect(_context);
                 return session;
@@ -283,7 +279,6 @@ namespace Glacier2
                     CreateProperties(),
                     _logger,
                     _observer,
-                    _taskScheduler,
                     _typeIdNamespaces);
                 session.Connect(username, password, _context);
                 return session;
@@ -347,7 +342,6 @@ namespace Glacier2
         private Dictionary<string, string> _properties;
         private Ice.ILogger? _logger;
         private Ice.Instrumentation.ICommunicatorObserver? _observer;
-        private System.Threading.Tasks.TaskScheduler? _taskScheduler;
         private string[]? _typeIdNamespaces;
 
         private string _routerHost = "localhost";

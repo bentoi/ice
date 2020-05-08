@@ -4,6 +4,7 @@
 
 using Test;
 using Ice.threading.Test;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -15,8 +16,8 @@ namespace Ice.threading
         {
             using var communicator = Initialize(ref args);
 
-            var adapter = communicator.CreateObjectAdapterWithEndpoints("TestAdapter", GetTestEndpoint(0));
-            adapter.Add("test", new TestIntf(TaskScheduler.Default));
+            var adapter1 = communicator.CreateObjectAdapterWithEndpoints("TestAdapter", GetTestEndpoint(0));
+            adapter1.Add("test", new TestIntf(TaskScheduler.Default));
 
             var schedulerPair = new ConcurrentExclusiveSchedulerPair(TaskScheduler.Default, 5);
 
@@ -38,20 +39,20 @@ namespace Ice.threading
 
             try
             {
-                AllTests.allTests(this).AsTask().Wait();
+                AllTests.allTests(this, true).AsTask().Wait();
             }
-            catch (System.AggregateException ex)
+            catch (AggregateException ex)
             {
                 if (ex.InnerException is TestFailedException failedEx)
                 {
-                    GetWriter().WriteLine("test failed on the server side: " + failedEx.reason);
+                    GetWriter().WriteLine($"test failed: {failedEx.reason}");
                     Assert(false);
                 }
                 throw;
             }
             catch (TestFailedException ex)
             {
-                GetWriter().WriteLine("test failed on the server side: " + ex.reason);
+                GetWriter().WriteLine($"test failed: {ex.reason}");
                 Assert(false);
             }
         }

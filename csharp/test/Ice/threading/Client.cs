@@ -4,6 +4,8 @@
 
 using Test;
 using Ice.threading.Test;
+using System;
+using System.Threading.Tasks;
 
 namespace Ice.threading
 {
@@ -14,20 +16,20 @@ namespace Ice.threading
             using var communicator = Initialize(ref args);
             try
             {
-                AllTests.allTests(this).Result.shutdown();
+                AllTests.allTests(this, false).Result.shutdown();
             }
-            catch (System.AggregateException ex)
+            catch (AggregateException ex)
             {
                 if (ex.InnerException is TestFailedException failedEx)
                 {
-                    GetWriter().WriteLine("test failed on the server side: " + failedEx.reason);
+                    GetWriter().WriteLine($"test failed: {failedEx.reason}");
                     Assert(false);
                 }
                 throw;
             }
             catch (TestFailedException ex)
             {
-                GetWriter().WriteLine("test failed on the server side: " + ex.reason);
+                GetWriter().WriteLine($"test failed: {ex.reason}");
                 Assert(false);
             }
         }

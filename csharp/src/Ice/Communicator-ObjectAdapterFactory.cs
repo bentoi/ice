@@ -208,7 +208,7 @@ namespace Ice
             ObjectAdapter? adapter = null;
             try
             {
-                adapter = new ObjectAdapter(this, name ?? "", serializeDispatch, taskScheduler ?? TaskScheduler, router);
+                adapter = new ObjectAdapter(this, name ?? "", serializeDispatch, taskScheduler, router);
                 lock (this)
                 {
                     if (_isShutdown)

@@ -5,6 +5,7 @@
 using IceInternal;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace Ice
 {
@@ -40,7 +41,7 @@ namespace Ice
                 }
                 if (_outAsync.Exception(ex))
                 {
-                    _outAsync.InvokeExceptionAsync();
+                    Task.Run(_outAsync.InvokeException);
                 }
             }
         }

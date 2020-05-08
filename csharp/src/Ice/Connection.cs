@@ -304,7 +304,7 @@ namespace Ice
                 {
                     if (callback != null)
                     {
-                        Task.Factory.StartNew(() =>
+                        Task.Run(() =>
                         {
                             try
                             {
@@ -314,7 +314,7 @@ namespace Ice
                             {
                                 _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
                             }
-                        }, default, TaskCreationOptions.None, _communicator.TaskScheduler ?? TaskScheduler.Default);
+                        });
                     }
                 }
                 else
@@ -432,18 +432,14 @@ namespace Ice
                     // If the request is being sent, don't remove it from the send streams,
                     // it will be removed once the sending is finished.
                     //
-                    if (o == _outgoingMessages.First!.Value)
+                    if (o != _outgoingMessages.First!.Value)
                     {
-                        o.Canceled();
-                    }
-                    else
-                    {
-                        o.Canceled();
                         _outgoingMessages.Remove(o);
                     }
+                    o.OutAsync = null;
                     if (outAsync.Exception(ex))
                     {
-                        outAsync.InvokeExceptionAsync();
+                        Task.Run(outAsync.InvokeException);
                     }
                     return;
                 }
@@ -457,7 +453,7 @@ namespace Ice
                             _requests.Remove(kvp.Key);
                             if (outAsync.Exception(ex))
                             {
-                                outAsync.InvokeExceptionAsync();
+                                Task.Run(outAsync.InvokeException);
                             }
                             return;
                         }
@@ -556,7 +552,7 @@ namespace Ice
         // TODO: Benoit: SendAsyncRequest needs to be changed to be an awaitable method that returns
         // once the request is sent. The connection code won't have to deal with sent callback anymore,
         // it will be the job of the caller.
-        internal int SendAsyncRequest(OutgoingAsyncBase outgoing, bool compress, bool response)
+        internal void SendAsyncRequest(OutgoingAsyncBase outgoing, bool compress, bool response)
         {
             lock (_mutex)
             {
@@ -601,10 +597,9 @@ namespace Ice
                 outgoing.AttachRemoteObserver(InitConnectionInfo(), _endpoint, requestId,
                     size - (Ice1Definitions.HeaderSize + 4));
 
-                int status;
                 try
                 {
-                    status = Send(new OutgoingMessage(outgoing, data, compress, requestId));
+                    Send(new OutgoingMessage(outgoing, data, compress, requestId));
                 }
                 catch (Exception ex)
                 {
@@ -616,8 +611,6 @@ namespace Ice
                 {
                     _requests[requestId] = outgoing;
                 }
-
-                return status;
             }
         }
 
@@ -631,7 +624,7 @@ namespace Ice
                 int timeout = _communicator.OverrideConnectTimeout ?? _endpoint.Timeout;
 
                 // Initialize the transport
-                await AwaitWithTimeout(_transceiver.InitializeAsync().AsTask(), timeout);
+                await AwaitWithTimeout(_transceiver.InitializeAsync().AsTask(), timeout).ConfigureAwait(false);
 
                 ArraySegment<byte> readBuffer = default;
                 if (!_endpoint.IsDatagram) // Datagram connections are always implicitly validated.
@@ -642,7 +635,7 @@ namespace Ice
                         while (offset < _validateConnectionMessage.GetByteCount())
                         {
                             var writeTask = _transceiver.WriteAsync(_validateConnectionMessage, offset).AsTask();
-                            await AwaitWithTimeout(writeTask, timeout);
+                            await AwaitWithTimeout(writeTask, timeout).ConfigureAwait(false);
                             offset += writeTask.Result;
                         }
                         Debug.Assert(offset == _validateConnectionMessage.GetByteCount());
@@ -654,7 +647,7 @@ namespace Ice
                         while (offset < Ice1Definitions.HeaderSize)
                         {
                             var readTask = _transceiver.ReadAsync(readBuffer, offset).AsTask();
-                            await AwaitWithTimeout(readTask, timeout);
+                            await AwaitWithTimeout(readTask, timeout).ConfigureAwait(false);
                             offset += readTask.Result;
                         }
 
@@ -803,47 +796,16 @@ namespace Ice
             }
         }
 
-        private async ValueTask DispatchAsync(Func<ValueTask> incoming)
-        {
-            try
-            {
-                await incoming().ConfigureAwait(false);
-            }
-            finally
-            {
-                lock (_mutex)
-                {
-                    Debug.Assert(_dispatchCount > 0);
-                    if (--_dispatchCount == 0)
-                    {
-                        if (_state == State.Closing)
-                        {
-                            try
-                            {
-                                InitiateShutdown();
-                            }
-                            catch (Exception ex)
-                            {
-                                SetState(State.Closed, ex);
-                            }
-                        }
-                        else if (_state == State.Finished)
-                        {
-                            Reap();
-                        }
-                        System.Threading.Monitor.PulseAll(_mutex);
-                    }
-                }
-            }
-        }
-
         private void Finish()
         {
             if (_outgoingMessages.Count > 0)
             {
                 foreach (OutgoingMessage o in _outgoingMessages)
                 {
-                    o.Completed(_exception!);
+                    if (o.OutAsync != null && o.OutAsync.Exception(_exception!))
+                    {
+                        o.OutAsync.InvokeException();
+                    }
                     if (o.RequestId > 0) // Make sure Completed isn't called twice.
                     {
                         _requests.Remove(o.RequestId);
@@ -924,6 +886,7 @@ namespace Ice
         private async ValueTask InvokeAsync(Current current, IncomingRequestFrame request, byte compressionStatus)
         {
             IDispatchObserver? dispatchObserver = null;
+            OutgoingResponseFrame? response = null;
             try
             {
                 // Notify and set dispatch observer, if any.
@@ -934,7 +897,6 @@ namespace Ice
                     dispatchObserver?.Attach();
                 }
 
-                OutgoingResponseFrame? response = null;
                 try
                 {
                     IObject? servant = current.Adapter.Find(current.Identity, current.Facet);
@@ -967,28 +929,51 @@ namespace Ice
                     }
                 }
 
-                if (current.RequestId != 0)
+                if (response != null)
                 {
-                    dispatchObserver?.Reply(response!.Size);
-
-                    lock (_mutex)
-                    {
-                        if (_state < State.Closed)
-                        {
-                            // TODO: should we await on Send for the response when Send is async?
-                            Send(new OutgoingMessage(Ice1Definitions.GetResponseData(response!, current.RequestId),
-                                compressionStatus > 0));
-                        }
-                    }
+                    dispatchObserver?.Reply(response.Size);
                 }
             }
             finally
             {
+                lock (_mutex)
+                {
+                    // Send the response if there's a response
+                    if (_state < State.Closed && response != null)
+                    {
+                        // TODO: should we await on Send for the response when Send is async?
+                        Send(new OutgoingMessage(Ice1Definitions.GetResponseData(response, current.RequestId),
+                             compressionStatus > 0));
+                    }
+
+                    // Decrease the dispatch count
+                    Debug.Assert(_dispatchCount > 0);
+                    if (--_dispatchCount == 0)
+                    {
+                        if (_state == State.Closing)
+                        {
+                            try
+                            {
+                                InitiateShutdown();
+                            }
+                            catch (Exception ex)
+                            {
+                                SetState(State.Closed, ex);
+                            }
+                        }
+                        else if (_state == State.Finished)
+                        {
+                            Reap();
+                        }
+                        System.Threading.Monitor.PulseAll(_mutex);
+                    }
+                }
+
                 dispatchObserver?.Detach();
             }
         }
 
-        private async ValueTask<(Func<ValueTask>?, TaskScheduler?, bool)> ReadIncomingAsync()
+        private async ValueTask<(Func<ValueTask>?, ObjectAdapter?)> ReadIncomingAsync()
         {
             // Read header
             ArraySegment<byte> readBuffer;
@@ -1089,8 +1074,7 @@ namespace Ice
             }
 
             Func<ValueTask>? incoming = null;
-            TaskScheduler? scheduler = null;
-            bool serialize = false;
+            ObjectAdapter? adapter = null;
             lock (_mutex)
             {
                 if (_state >= State.Closed)
@@ -1154,13 +1138,10 @@ namespace Ice
                             }
                             else
                             {
-                                serialize = _adapter.SerializeDispatch;
-                                scheduler = _adapter.TaskScheduler;
+                                adapter = _adapter;
                                 var current = new Current(_adapter, request, requestId, this);
-                                incoming = async () =>
-                                {
-                                    await InvokeAsync(current, request, compressionStatus).ConfigureAwait(false);
-                                };
+                                incoming = () => InvokeAsync(current, request, compressionStatus);
+                                ++_dispatchCount;
                             }
                         }
                         break;
@@ -1196,35 +1177,9 @@ namespace Ice
                         {
                             _requests.Remove(requestId);
 
-                            var response = new IncomingResponseFrame(_communicator, readBuffer.Slice(4));
-
-                            // Check if we need to dispatch the sent progress callback
-                            OutgoingMessage? outgoingMessage = _outgoingMessages.First?.Value;
-                            OutgoingAsyncBase? outAsyncSent = null;
-                            if (outgoingMessage != null && outgoingMessage.OutAsync == outAsync)
+                            if (outAsync.Response(new IncomingResponseFrame(_communicator, readBuffer.Slice(4))))
                             {
-                                if (outgoingMessage.Sent())
-                                {
-                                    outAsyncSent = outAsync;
-                                }
-                            }
-
-                            // Check if we need to run a response continuation
-                            OutgoingAsyncBase? outAsyncResponse = null;
-                            if (outAsync.Response(response))
-                            {
-                                outAsyncResponse = outAsync;
-                            }
-
-                            if (outAsyncSent != null || outAsyncResponse != null)
-                            {
-                                scheduler = _communicator.TaskScheduler;
-                                incoming = () =>
-                                {
-                                    outAsyncSent?.InvokeSent();
-                                    outAsyncResponse?.InvokeResponse();
-                                    return new ValueTask();
-                                };
+                                incoming = () => { outAsync.InvokeResponse(); return default; };
                             }
 
                             if (_requests.Count == 0)
@@ -1241,7 +1196,6 @@ namespace Ice
                         if (_heartbeatCallback != null)
                         {
                             var callback = _heartbeatCallback;
-                            scheduler = _communicator.TaskScheduler;
                             incoming = () =>
                             {
                                 try
@@ -1266,14 +1220,9 @@ namespace Ice
                             $"received ice1 frame with unknown message type `{messageType}'");
                     }
                 }
-
-                if (incoming != null)
-                {
-                    ++_dispatchCount;
-                }
             }
 
-            return (incoming, scheduler, serialize);
+            return (incoming, adapter);
         }
 
         private async ValueTask ReadAsync()
@@ -1282,38 +1231,38 @@ namespace Ice
             // and cause the loop to end when the connection is closed.
             while (true)
             {
-                var (incoming, scheduler, serialize) = await ReadIncomingAsync().ConfigureAwait(false);
+                var (incoming, adapter) = await ReadIncomingAsync().ConfigureAwait(false);
                 if (incoming != null)
                 {
-                    if (serialize)
+                    if (adapter != null && adapter.SerializeDispatch)
                     {
                         // Run the incoming dispatch and continue reading from this task after the dispatch completes.
-                        if (scheduler != null)
+                        if (adapter.TaskScheduler != null)
                         {
-                            await TaskRun(() => DispatchAsync(incoming), scheduler).ConfigureAwait(false);
+                            await TaskRun(incoming, adapter.TaskScheduler).ConfigureAwait(false);
                         }
                         else
                         {
-                            await DispatchAsync(incoming).ConfigureAwait(false);
+                            await incoming().ConfigureAwait(false);
                         }
                     }
                     else
                     {
                         // Start a new Read IO task and run the incoming dispatch. We start the new ReadAsync from
-                        // a separate task because the ReadAsync could complete synchronously and we don't want the
+                        // a separate task because ReadAsync could complete synchronously and we don't want the
                         // dispatch from this read to run before we actually ran the dispatch from this block.
-                        if (scheduler != null)
+                        if (adapter?.TaskScheduler != null)
                         {
                             await TaskRun(() =>
-                                {
-                                    _ = Task.Run(() => RunIO(ReadAsync));
-                                    return DispatchAsync(incoming);
-                                }, scheduler).ConfigureAwait(false);
+                            {
+                                _ = Task.Run(() => RunIO(ReadAsync));
+                                return incoming();
+                            }, adapter.TaskScheduler).ConfigureAwait(false);
                         }
                         else
                         {
                             _ = Task.Run(() => RunIO(ReadAsync));
-                            await DispatchAsync(incoming).ConfigureAwait(false);
+                            await incoming().ConfigureAwait(false);
                         }
                         return;
                     }
@@ -1430,7 +1379,7 @@ namespace Ice
             _outgoingMessages.AddLast(message);
             if (_outgoingMessages.Count == 1)
             {
-                _ = RunIO(WriteAsync);
+                Task.Run(() => _ = RunIO(WriteAsync));
             }
             return OutgoingAsyncBase.AsyncStatusQueued;
         }
@@ -1648,8 +1597,7 @@ namespace Ice
                 else
                 {
                     // Otherwise, schedule a task to call Finish()
-                    Task.Factory.StartNew(Finish, default, TaskCreationOptions.None,
-                        _communicator.TaskScheduler ?? TaskScheduler.Default);
+                    Task.Run(Finish);
                 }
             }
         }
@@ -1724,7 +1672,6 @@ namespace Ice
                 }
 
                 // Write the frame
-                Func<ValueTask>? dispatch = null;
                 int offset = 0;
                 while (offset < size)
                 {
@@ -1743,27 +1690,14 @@ namespace Ice
                         {
                             _outgoingMessages.RemoveFirst();
 
-                            OutgoingAsyncBase? outAsync;
-                            if (message.Sent())
+                            if (message.OutAsync != null && message.OutAsync.Sent())
                             {
-                                outAsync = message.OutAsync;
-                                if (outAsync != null)
-                                {
-                                    ++_dispatchCount;
-                                    dispatch = () => { outAsync.InvokeSent(); return new ValueTask(); };
-                                }
+                                // The progress callback is a synchronous callback, we can't call it directly
+                                // from this thread since it could block further writes.
+                                Task.Run(message.OutAsync.InvokeSent);
                             }
                         }
                     }
-                }
-
-                if (dispatch != null)
-                {
-                    // Dispatch the sent callback. The sent callback is a synchronous callback so we can't
-                    // call DispatchAsync from the write task or it would potentially block the sending of
-                    // queued messages until it returns
-                    _ = Task.Factory.StartNew(() => _ = DispatchAsync(dispatch), default, TaskCreationOptions.None,
-                        _communicator.TaskScheduler ?? TaskScheduler.Default);
                 }
             }
         }
@@ -1781,29 +1715,20 @@ namespace Ice
             {
                 try
                 {
-                    int status = _connection.SendAsyncRequest(this, false, false);
-
-                    if ((status & AsyncStatusSent) != 0)
-                    {
-                        SentSynchronously = true;
-                        if ((status & AsyncStatusInvokeSentCallback) != 0)
-                        {
-                            InvokeSent();
-                        }
-                    }
+                    _connection.SendAsyncRequest(this, false, false);
                 }
                 catch (RetryException ex)
                 {
                     if (Exception(ex.InnerException!))
                     {
-                        InvokeExceptionAsync();
+                        InvokeException();
                     }
                 }
                 catch (Exception ex)
                 {
                     if (Exception(ex))
                     {
-                        InvokeExceptionAsync();
+                        InvokeException();
                     }
                 }
             }
@@ -1838,40 +1763,11 @@ namespace Ice
                 Compress = compress;
                 RequestId = requestId;
             }
-            internal void Canceled()
-            {
-                Debug.Assert(OutAsync != null); // Only requests can timeout.
-                OutAsync = null;
-            }
-
-            internal bool Sent()
-            {
-                OutgoingData = null;
-                if (OutAsync != null && !InvokeSent)
-                {
-                    InvokeSent = OutAsync.Sent();
-                    return InvokeSent;
-                }
-                return false;
-            }
-
-            internal void Completed(Exception ex)
-            {
-                if (OutAsync != null)
-                {
-                    if (OutAsync.Exception(ex))
-                    {
-                        OutAsync.InvokeException();
-                    }
-                }
-                OutgoingData = null;
-            }
 
             internal List<ArraySegment<byte>>? OutgoingData;
             internal OutgoingAsyncBase? OutAsync;
             internal bool Compress;
             internal int RequestId;
-            internal bool InvokeSent;
         }
 
         private enum State

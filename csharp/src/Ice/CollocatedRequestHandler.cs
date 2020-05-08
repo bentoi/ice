@@ -23,7 +23,7 @@ namespace IceInternal
         public IRequestHandler? Update(IRequestHandler previousHandler, IRequestHandler? newHandler) =>
             previousHandler == this ? newHandler : this;
 
-        public int SendAsyncRequest(ProxyOutgoingAsyncBase outAsync) => outAsync.InvokeCollocated(this);
+        public void SendAsyncRequest(ProxyOutgoingAsyncBase outAsync) => outAsync.InvokeCollocated(this);
 
         public void AsyncRequestCanceled(OutgoingAsyncBase outAsync, Exception ex)
         {
@@ -38,7 +38,7 @@ namespace IceInternal
                     _sendAsyncRequests.Remove(outAsync);
                     if (outAsync.Exception(ex))
                     {
-                        outAsync.InvokeExceptionAsync();
+                        Task.Run(outAsync.InvokeException);
                     }
                     _adapter.DecDirectCount(); // invokeAll won't be called, decrease the direct count.
                     return;
@@ -53,7 +53,7 @@ namespace IceInternal
                             _asyncRequests.Remove(e.Key);
                             if (outAsync.Exception(ex))
                             {
-                                outAsync.InvokeExceptionAsync();
+                                Task.Run(outAsync.InvokeException);
                             }
                             return;
                         }
@@ -137,17 +137,7 @@ namespace IceInternal
                 }
             }
 
-            // Use the communicator's task scheduler or the default if the adapter and communicator are not
-            // the same.
-            if (_adapter.Communicator.TaskScheduler != _adapter.TaskScheduler)
-            {
-                Task.Factory.StartNew(() => outAsync.InvokeSent(), default, TaskCreationOptions.None,
-                    _adapter.Communicator.TaskScheduler ?? TaskScheduler.Default).Wait();
-            }
-            else
-            {
-                outAsync.InvokeSent();
-            }
+            Task.Run(outAsync.InvokeSent);
             return true;
         }
 
@@ -177,24 +167,21 @@ namespace IceInternal
                     dispatchObserver?.Attach();
                 }
 
-                bool amd = true;
                 try
                 {
                     IObject? servant = current.Adapter.Find(current.Identity, current.Facet);
 
                     if (servant == null)
                     {
-                        amd = false;
                         throw new ObjectNotExistException(current.Identity, current.Facet, current.Operation);
                     }
 
                     ValueTask<OutgoingResponseFrame> vt = servant.DispatchAsync(incomingRequest, current);
-                    amd = !vt.IsCompleted;
                     if (requestId != 0)
                     {
                         OutgoingResponseFrame response = await vt.ConfigureAwait(false);
                         dispatchObserver?.Reply(response.Size);
-                        SendResponse(requestId, response, amd);
+                        SendResponse(requestId, response);
                     }
                 }
                 catch (Exception ex)
@@ -214,13 +201,13 @@ namespace IceInternal
                         Incoming.ReportException(actualEx, dispatchObserver, current);
                         var response = new OutgoingResponseFrame(current, actualEx);
                         dispatchObserver?.Reply(response.Size);
-                        SendResponse(requestId, response, amd);
+                        SendResponse(requestId, response);
                     }
                 }
             }
             catch (Exception ex)
             {
-                HandleException(requestId, ex, false);
+                HandleException(requestId, ex);
             }
             finally
             {
@@ -229,7 +216,7 @@ namespace IceInternal
             }
         }
 
-        private void SendResponse(int requestId, OutgoingResponseFrame responseFrame, bool amd)
+        private void SendResponse(int requestId, OutgoingResponseFrame responseFrame)
         {
             OutgoingAsyncBase? outAsync;
             lock (this)
@@ -253,19 +240,11 @@ namespace IceInternal
 
             if (outAsync != null)
             {
-                if (amd || _adapter.Communicator.TaskScheduler != _adapter.TaskScheduler)
-                {
-                    Task.Factory.StartNew(() => outAsync.InvokeResponse(), default, TaskCreationOptions.None,
-                        _adapter.Communicator.TaskScheduler ?? TaskScheduler.Default);
-                }
-                else
-                {
-                    outAsync.InvokeResponse();
-                }
+                outAsync.InvokeResponse();
             }
         }
 
-        private void HandleException(int requestId, Exception ex, bool amd)
+        private void HandleException(int requestId, Exception ex)
         {
             if (requestId == 0)
             {
@@ -287,19 +266,7 @@ namespace IceInternal
 
             if (outAsync != null)
             {
-                //
-                // If called from an AMD dispatch, invoke asynchronously
-                // the completion callback since this might be called from
-                // the user code.
-                //
-                if (amd)
-                {
-                    outAsync.InvokeExceptionAsync();
-                }
-                else
-                {
-                    outAsync.InvokeException();
-                }
+                outAsync.InvokeException();
             }
         }
 

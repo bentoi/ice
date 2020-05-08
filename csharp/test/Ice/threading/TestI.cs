@@ -14,8 +14,7 @@ namespace Ice.threading
     public sealed class TestIntf : ITestIntf
     {
         private TaskScheduler _scheduler;
-        private SemaphoreSlim _semaphore = new SemaphoreSlim(0);
-        private volatile int _level;
+        private int _level;
         private object _mutex = new object();
 
         public TestIntf(TaskScheduler scheduler)
@@ -25,23 +24,25 @@ namespace Ice.threading
 
         public void pingSync(Current current)
         {
-            if (TaskScheduler.Current != _scheduler)
+            if (TaskScheduler.Current != _scheduler &&
+                (!current.Context.TryGetValue("scheduler", out string? id) ||
+                 TaskScheduler.Current.Id.ToString() != id!))
             {
-                throw new TestFailedException("unexpected task scheduler from pingSync");
+                throw new TestFailedException(
+                    $"unexpected task scheduler from pingSync dispatch: {TaskScheduler.Current}");
             }
         }
 
         public async ValueTask pingAsync(Current current)
         {
-            if (TaskScheduler.Current != _scheduler)
+            if (TaskScheduler.Current != _scheduler &&
+                (!current.Context.TryGetValue("scheduler", out string? id) ||
+                 TaskScheduler.Current.Id.ToString() != id!))
             {
-                throw new TestFailedException("unexpected task scheduler from pingAsync before await");
+                throw new TestFailedException(
+                    $"unexpected task scheduler from pingAsync dispatch: {TaskScheduler.Current}");
             }
-            await Task.Delay(1);
-            if (TaskScheduler.Current != _scheduler)
-            {
-                throw new TestFailedException("unexpected task scheduler from pingAsync after await");
-            }
+            await Task.Delay(1).ConfigureAwait(false);
         }
 
         public void concurrent(int level, Current current)
