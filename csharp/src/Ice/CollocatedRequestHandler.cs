@@ -108,7 +108,7 @@ namespace IceInternal
                             ValueTask vt = InvokeAllAsync(outAsync.RequestFrame, requestId);
                             // TODO: do something with the value task
                         }
-                    }, default, TaskCreationOptions.DenyChildAttach, _adapter.TaskScheduler ?? TaskScheduler.Default);
+                    }, default, TaskCreationOptions.None, _adapter.TaskScheduler ?? TaskScheduler.Default);
             }
             else // Optimization: directly call invokeAll
             {
@@ -135,8 +135,7 @@ namespace IceInternal
                     return true;
                 }
             }
-
-            Task.Run(outAsync.InvokeSent);
+            outAsync.InvokeSent();
             return true;
         }
 

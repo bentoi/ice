@@ -1268,7 +1268,7 @@ namespace IceInternal
                 Debug.Assert(connection != null);
                 try
                 {
-                    // We don't wait for the connection to be activated. This could take a while for some transprots
+                    // We don't wait for the connection to be activated. This could take a while for some tranports
                     // such as TLS based transports where the handshake requires few round trips between the client
                     // and server.
                     _ = connection.StartAsync();
