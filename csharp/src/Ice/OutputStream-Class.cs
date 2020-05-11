@@ -193,7 +193,7 @@ namespace Ice
         {
             if (v != null)
             {
-                WriteTaggedParamHeader(tag, OptionalFormat.Class);
+                WriteTaggedParamHeader(tag, EncodingDefinitions.TagFormat.Class);
                 WriteClass(v);
             }
         }
@@ -318,6 +318,10 @@ namespace Ice
             internal InstanceData(InstanceType instanceType) => InstanceType = instanceType;
         }
 
-        private enum InstanceType { Class, Exception }
+        private enum InstanceType
+        {
+            Class,
+            Exception
+        }
     }
 }

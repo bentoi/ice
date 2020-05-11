@@ -4,11 +4,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Test;
 
 namespace Ice.operations
 {
-    class Twoways
+    public class Twoways
     {
         internal static void twoways(TestHelper helper, Test.IMyClassPrx p)
         {
@@ -16,82 +17,82 @@ namespace Ice.operations
             TestHelper.Assert(communicator != null);
             string[] literals = p.opStringLiterals();
 
-            TestHelper.Assert(Test.s0.value.Equals("\\") &&
-                    Test.s0.value.Equals(Test.sw0.value) &&
-                    Test.s0.value.Equals(literals[0]) &&
-                    Test.s0.value.Equals(literals[11]));
+            TestHelper.Assert(Test.Constants.s0.Equals("\\") &&
+                    Test.Constants.s0.Equals(Test.Constants.sw0) &&
+                    Test.Constants.s0.Equals(literals[0]) &&
+                    Test.Constants.s0.Equals(literals[11]));
 
-            TestHelper.Assert(Test.s1.value.Equals("A") &&
-                    Test.s1.value.Equals(Test.sw1.value) &&
-                    Test.s1.value.Equals(literals[1]) &&
-                    Test.s1.value.Equals(literals[12]));
+            TestHelper.Assert(Test.Constants.s1.Equals("A") &&
+                    Test.Constants.s1.Equals(Test.Constants.sw1) &&
+                    Test.Constants.s1.Equals(literals[1]) &&
+                    Test.Constants.s1.Equals(literals[12]));
 
-            TestHelper.Assert(Test.s2.value.Equals("Ice") &&
-                    Test.s2.value.Equals(Test.sw2.value) &&
-                    Test.s2.value.Equals(literals[2]) &&
-                    Test.s2.value.Equals(literals[13]));
+            TestHelper.Assert(Test.Constants.s2.Equals("Ice") &&
+                    Test.Constants.s2.Equals(Test.Constants.sw2) &&
+                    Test.Constants.s2.Equals(literals[2]) &&
+                    Test.Constants.s2.Equals(literals[13]));
 
-            TestHelper.Assert(Test.s3.value.Equals("A21") &&
-                    Test.s3.value.Equals(Test.sw3.value) &&
-                    Test.s3.value.Equals(literals[3]) &&
-                    Test.s3.value.Equals(literals[14]));
+            TestHelper.Assert(Test.Constants.s3.Equals("A21") &&
+                    Test.Constants.s3.Equals(Test.Constants.sw3) &&
+                    Test.Constants.s3.Equals(literals[3]) &&
+                    Test.Constants.s3.Equals(literals[14]));
 
-            TestHelper.Assert(Test.s4.value.Equals("\\u0041 \\U00000041") &&
-                    Test.s4.value.Equals(Test.sw4.value) &&
-                    Test.s4.value.Equals(literals[4]) &&
-                    Test.s4.value.Equals(literals[15]));
+            TestHelper.Assert(Test.Constants.s4.Equals("\\u0041 \\U00000041") &&
+                    Test.Constants.s4.Equals(Test.Constants.sw4) &&
+                    Test.Constants.s4.Equals(literals[4]) &&
+                    Test.Constants.s4.Equals(literals[15]));
 
-            TestHelper.Assert(Test.s5.value.Equals("\u00FF") &&
-                    Test.s5.value.Equals(Test.sw5.value) &&
-                    Test.s5.value.Equals(literals[5]) &&
-                    Test.s5.value.Equals(literals[16]));
+            TestHelper.Assert(Test.Constants.s5.Equals("\u00FF") &&
+                    Test.Constants.s5.Equals(Test.Constants.sw5) &&
+                    Test.Constants.s5.Equals(literals[5]) &&
+                    Test.Constants.s5.Equals(literals[16]));
 
-            TestHelper.Assert(Test.s6.value.Equals("\u03FF") &&
-                    Test.s6.value.Equals(Test.sw6.value) &&
-                    Test.s6.value.Equals(literals[6]) &&
-                    Test.s6.value.Equals(literals[17]));
+            TestHelper.Assert(Test.Constants.s6.Equals("\u03FF") &&
+                    Test.Constants.s6.Equals(Test.Constants.sw6) &&
+                    Test.Constants.s6.Equals(literals[6]) &&
+                    Test.Constants.s6.Equals(literals[17]));
 
-            TestHelper.Assert(Test.s7.value.Equals("\u05F0") &&
-                    Test.s7.value.Equals(Test.sw7.value) &&
-                    Test.s7.value.Equals(literals[7]) &&
-                    Test.s7.value.Equals(literals[18]));
+            TestHelper.Assert(Test.Constants.s7.Equals("\u05F0") &&
+                    Test.Constants.s7.Equals(Test.Constants.sw7) &&
+                    Test.Constants.s7.Equals(literals[7]) &&
+                    Test.Constants.s7.Equals(literals[18]));
 
-            TestHelper.Assert(Test.s8.value.Equals("\U00010000") &&
-                    Test.s8.value.Equals(Test.sw8.value) &&
-                    Test.s8.value.Equals(literals[8]) &&
-                    Test.s8.value.Equals(literals[19]));
+            TestHelper.Assert(Test.Constants.s8.Equals("\U00010000") &&
+                    Test.Constants.s8.Equals(Test.Constants.sw8) &&
+                    Test.Constants.s8.Equals(literals[8]) &&
+                    Test.Constants.s8.Equals(literals[19]));
 
-            TestHelper.Assert(Test.s9.value.Equals("\U0001F34C") &&
-                    Test.s9.value.Equals(Test.sw9.value) &&
-                    Test.s9.value.Equals(literals[9]) &&
-                    Test.s9.value.Equals(literals[20]));
+            TestHelper.Assert(Test.Constants.s9.Equals("\U0001F34C") &&
+                    Test.Constants.s9.Equals(Test.Constants.sw9) &&
+                    Test.Constants.s9.Equals(literals[9]) &&
+                    Test.Constants.s9.Equals(literals[20]));
 
-            TestHelper.Assert(Test.s10.value.Equals("\u0DA7") &&
-                    Test.s10.value.Equals(Test.sw10.value) &&
-                    Test.s10.value.Equals(literals[10]) &&
-                    Test.s10.value.Equals(literals[21]));
+            TestHelper.Assert(Test.Constants.s10.Equals("\u0DA7") &&
+                    Test.Constants.s10.Equals(Test.Constants.sw10) &&
+                    Test.Constants.s10.Equals(literals[10]) &&
+                    Test.Constants.s10.Equals(literals[21]));
 
-            TestHelper.Assert(Test.ss0.value.Equals("\'\"\u003f\\\a\b\f\n\r\t\v\u0006") &&
-                    Test.ss0.value.Equals(Test.ss1.value) &&
-                    Test.ss0.value.Equals(Test.ss2.value) &&
-                    Test.ss0.value.Equals(literals[22]) &&
-                    Test.ss0.value.Equals(literals[23]) &&
-                    Test.ss0.value.Equals(literals[24]));
+            TestHelper.Assert(Test.Constants.ss0.Equals("\'\"\u003f\\\a\b\f\n\r\t\v\u0006") &&
+                    Test.Constants.ss0.Equals(Test.Constants.ss1) &&
+                    Test.Constants.ss0.Equals(Test.Constants.ss2) &&
+                    Test.Constants.ss0.Equals(literals[22]) &&
+                    Test.Constants.ss0.Equals(literals[23]) &&
+                    Test.Constants.ss0.Equals(literals[24]));
 
-            TestHelper.Assert(Test.ss3.value.Equals("\\\\U\\u\\") &&
-                    Test.ss3.value.Equals(literals[25]));
+            TestHelper.Assert(Test.Constants.ss3.Equals("\\\\U\\u\\") &&
+                    Test.Constants.ss3.Equals(literals[25]));
 
-            TestHelper.Assert(Test.ss4.value.Equals("\\A\\") &&
-                Test.ss4.value.Equals(literals[26]));
+            TestHelper.Assert(Test.Constants.ss4.Equals("\\A\\") &&
+                Test.Constants.ss4.Equals(literals[26]));
 
-            TestHelper.Assert(Test.ss5.value.Equals("\\u0041\\") &&
-                    Test.ss5.value.Equals(literals[27]));
+            TestHelper.Assert(Test.Constants.ss5.Equals("\\u0041\\") &&
+                    Test.Constants.ss5.Equals(literals[27]));
 
-            TestHelper.Assert(Test.su0.value.Equals(Test.su1.value) &&
-                    Test.su0.value.Equals(Test.su2.value) &&
-                    Test.su0.value.Equals(literals[28]) &&
-                    Test.su0.value.Equals(literals[29]) &&
-                    Test.su0.value.Equals(literals[30]));
+            TestHelper.Assert(Test.Constants.su0.Equals(Test.Constants.su1) &&
+                    Test.Constants.su0.Equals(Test.Constants.su2) &&
+                    Test.Constants.su0.Equals(literals[28]) &&
+                    Test.Constants.su0.Equals(literals[29]) &&
+                    Test.Constants.su0.Equals(literals[30]));
 
             p.IcePing();
 
@@ -627,7 +628,7 @@ namespace Ice.operations
 
                 var (ro, _do) = p.opByteBoolD(di1, di2);
 
-                TestHelper.Assert(Collections.Equals(_do, di1));
+                TestHelper.Assert(_do.DictionaryEqual(di1));
                 TestHelper.Assert(ro.Count == 4);
                 TestHelper.Assert(ro[10] == true);
                 TestHelper.Assert(ro[11] == false);
@@ -646,7 +647,7 @@ namespace Ice.operations
 
                 var (ro, _do) = p.opShortIntD(di1, di2);
 
-                TestHelper.Assert(Collections.Equals(_do, di1));
+                TestHelper.Assert(_do.DictionaryEqual(di1));
                 TestHelper.Assert(ro.Count == 4);
                 TestHelper.Assert(ro[110] == -1);
                 TestHelper.Assert(ro[111] == -100);
@@ -665,7 +666,7 @@ namespace Ice.operations
 
                 var (ro, _do) = p.opLongFloatD(di1, di2);
 
-                TestHelper.Assert(Collections.Equals(_do, di1));
+                TestHelper.Assert(_do.DictionaryEqual(di1));
                 TestHelper.Assert(ro.Count == 4);
                 TestHelper.Assert(ro[999999110L] == -1.1f);
                 TestHelper.Assert(ro[999999120L] == -100.4f);
@@ -684,7 +685,7 @@ namespace Ice.operations
 
                 var (ro, _do) = p.opStringStringD(di1, di2);
 
-                TestHelper.Assert(Collections.Equals(_do, di1));
+                TestHelper.Assert(_do.DictionaryEqual(di1));
                 TestHelper.Assert(ro.Count == 4);
                 TestHelper.Assert(ro["foo"].Equals("abc -1.1"));
                 TestHelper.Assert(ro["FOO"].Equals("abc -100.4"));
@@ -703,7 +704,7 @@ namespace Ice.operations
 
                 var (ro, _do) = p.opStringMyEnumD(di1, di2);
 
-                TestHelper.Assert(Collections.Equals(_do, di1));
+                TestHelper.Assert(_do.DictionaryEqual(di1));
                 TestHelper.Assert(ro.Count == 4);
                 TestHelper.Assert(ro["abc"] == Test.MyEnum.enum1);
                 TestHelper.Assert(ro["qwerty"] == Test.MyEnum.enum3);
@@ -720,7 +721,7 @@ namespace Ice.operations
 
                 var (ro, _do) = p.opMyEnumStringD(di1, di2);
 
-                TestHelper.Assert(Collections.Equals(_do, di1));
+                TestHelper.Assert(_do.DictionaryEqual(di1));
                 TestHelper.Assert(ro.Count == 3);
                 TestHelper.Assert(ro[Test.MyEnum.enum1].Equals("abc"));
                 TestHelper.Assert(ro[Test.MyEnum.enum2].Equals("Hello!!"));
@@ -743,7 +744,7 @@ namespace Ice.operations
 
                 var (ro, _do) = p.opMyStructMyEnumD(di1, di2);
 
-                TestHelper.Assert(Collections.Equals(_do, di1));
+                TestHelper.Assert(_do.DictionaryEqual(di1));
                 TestHelper.Assert(ro.Count == 4);
                 TestHelper.Assert(ro[s11] == Test.MyEnum.enum1);
                 TestHelper.Assert(ro[s12] == Test.MyEnum.enum2);
@@ -1351,15 +1352,15 @@ namespace Ice.operations
                 }
                 {
                     Dictionary<string, string> r = p.opContext(ctx);
-                    TestHelper.Assert(Collections.Equals(r, ctx));
+                    TestHelper.Assert(r.DictionaryEqual(ctx));
                 }
                 {
                     var p2 = p.Clone(context: ctx);
-                    TestHelper.Assert(Collections.Equals(p2.Context, ctx));
+                    TestHelper.Assert(p2.Context.DictionaryEqual(ctx));
                     Dictionary<string, string> r = p2.opContext();
-                    TestHelper.Assert(Collections.Equals(r, ctx));
+                    TestHelper.Assert(r.DictionaryEqual(ctx));
                     r = p2.opContext(ctx);
-                    TestHelper.Assert(Collections.Equals(r, ctx));
+                    TestHelper.Assert(r.DictionaryEqual(ctx));
                 }
             }
 
@@ -1370,7 +1371,7 @@ namespace Ice.operations
                 communicator.CurrentContext["three"] = "THREE";
 
                 var p3 = Test.IMyClassPrx.Parse($"test:{helper.GetTestEndpoint(0)}", communicator);
-                TestHelper.Assert(Collections.Equals(p3.opContext(), communicator.CurrentContext));
+                TestHelper.Assert(p3.opContext().DictionaryEqual(communicator.CurrentContext));
 
                 Dictionary<string, string> prxContext = new Dictionary<string, string>();
                 prxContext["one"] = "UN";
@@ -1393,16 +1394,16 @@ namespace Ice.operations
                 TestHelper.Assert(communicator.DefaultContext.Count == 0);
                 communicator.DefaultContext = prxContext;
                 TestHelper.Assert(communicator.DefaultContext != prxContext); // it's a copy
-                TestHelper.Assert(Collections.Equals(communicator.DefaultContext, prxContext));
+                TestHelper.Assert(communicator.DefaultContext.DictionaryEqual(prxContext));
 
                 p3 = Test.IMyClassPrx.Parse($"test:{helper.GetTestEndpoint(0)}", communicator);
                 var ctx = new Dictionary<string, string>(communicator.CurrentContext);
 
                 communicator.CurrentContext.Clear();
-                TestHelper.Assert(Collections.Equals(p3.opContext(), prxContext));
+                TestHelper.Assert(p3.opContext().DictionaryEqual(prxContext));
 
                 communicator.CurrentContext = ctx;
-                TestHelper.Assert(Collections.Equals(p3.opContext(), combined));
+                TestHelper.Assert(p3.opContext().DictionaryEqual(combined));
 
                 // Cleanup
                 communicator.CurrentContext.Clear();
@@ -1420,6 +1421,9 @@ namespace Ice.operations
             {
                 // expected
             }
+
+            // This is invoked as a oneway, despite using a twoway proxy.
+            p.opOnewayMetadata();
 
             {
                 TestHelper.Assert(p.opByte1(0xFF) == 0xFF);
@@ -1443,10 +1447,7 @@ namespace Ice.operations
                 TestHelper.Assert(s.tesT.Equals("MyStruct1.s"));
                 TestHelper.Assert(s.myClass == null);
                 TestHelper.Assert(s.myStruct1.Equals("MyStruct1.myStruct1"));
-                Test.MyClass1? c = new Test.MyClass1();
-                c.tesT = "MyClass1.testT";
-                c.myClass = null;
-                c.myClass1 = "MyClass1.myClass1";
+                Test.MyClass1? c = new Test.MyClass1("MyClass1.testT", null, "MyClass1.myClass1");
                 c = d.opMyClass1(c);
                 TestHelper.Assert(c != null);
                 TestHelper.Assert(c.tesT.Equals("MyClass1.testT"));
@@ -1469,7 +1470,7 @@ namespace Ice.operations
                 p1[0] = "test";
                 string[] p2, p3;
                 (p3, p2) = p.opMSeq2(p1);
-                TestHelper.Assert(Collections.Equals(p2, p1) && Collections.Equals(p3, p1));
+                TestHelper.Assert(p2.SequenceEqual(p1) && p3.SequenceEqual(p1));
             }
 
             {
@@ -1479,7 +1480,7 @@ namespace Ice.operations
                 p1["test"] = "test";
                 Dictionary<string, string> p2, p3;
                 (p3, p2) = p.opMDict2(p1);
-                TestHelper.Assert(Collections.Equals(p2, p1) && Collections.Equals(p3, p1));
+                TestHelper.Assert(p2.DictionaryEqual(p1) && p3.DictionaryEqual(p1));
             }
         }
     }

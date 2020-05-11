@@ -2,6 +2,8 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
+using Ice;
+
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -544,13 +546,13 @@ namespace IceInternal
                 mapProps = communicator.GetProperties(forPrefix: mapPrefix);
             }
 
-            if (communicator.GetPropertyAsInt($"{mapPrefix}Disabled") > 0)
+            if (communicator.GetPropertyAsBool($"{mapPrefix}Disabled") ?? false)
             {
                 // This map is disabled for this view.
                 return _maps.Remove(mapName);
             }
 
-            if (_maps.TryGetValue(mapName, out IMetricsMap? m) && Ice.Collections.Equals(m.GetProperties(), mapProps))
+            if (_maps.TryGetValue(mapName, out IMetricsMap? m) && m.GetProperties().DictionaryEqual(mapProps))
             {
                 return false; // The map configuration didn't change, no need to re-create.
             }
@@ -650,7 +652,7 @@ namespace IceInternal
                 }
             }
 
-            if (unknownProps.Count != 0 && (communicator.GetPropertyAsInt("Ice.Warn.UnknownProperties") ?? 1) > 0)
+            if (unknownProps.Count != 0 && (communicator.GetPropertyAsBool("Ice.Warn.UnknownProperties") ?? true))
             {
                 var message = new StringBuilder("found unknown IceMX properties for `");
                 message.Append(prefix[0..^1]);
@@ -716,7 +718,7 @@ namespace IceInternal
 
                     ValidateProperties($"{viewsPrefix}{viewName}.", _communicator);
 
-                    if (_communicator.GetPropertyAsInt($"{viewsPrefix}{viewName}.Disabled") > 0)
+                    if (_communicator.GetPropertyAsBool($"{viewsPrefix}{viewName}.Disabled") ?? false)
                     {
                         _disabledViews.Add(viewName);
                         continue; // The view is disabled

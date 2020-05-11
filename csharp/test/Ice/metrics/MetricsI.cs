@@ -23,7 +23,7 @@ public sealed class Controller : IController
 
     public void resume(Ice.Current current) => _adapter.Activate();
 
-    readonly private Func<Ice.ObjectAdapter> _factory;
+    private readonly Func<Ice.ObjectAdapter> _factory;
     private Ice.ObjectAdapter _adapter;
 };
 
@@ -37,7 +37,7 @@ public sealed class Metrics : IMetrics
 
     public void opWithUserException(Ice.Current current) => throw new UserEx();
 
-    public void opWithRequestFailedException(Ice.Current current) => throw new Ice.ObjectNotExistException();
+    public void opWithRequestFailedException(Ice.Current current) => throw new Ice.ObjectNotExistException(current);
 
     public void opWithLocalException(Ice.Current current) => throw new Ice.InvalidConfigurationException("fake");
 

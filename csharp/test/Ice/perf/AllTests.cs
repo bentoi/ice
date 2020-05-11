@@ -69,8 +69,8 @@ namespace Ice.perf
             var perf = IPerformancePrx.Parse("perf:" + helper.GetTestEndpoint(0), communicator);
 
             RunTest(output, 100000, "latency", () => perf.IcePing());
-            RunTest<byte>(output, 1000, "sending byte sequence", v => perf.sendBytes(v), ByteSeqSize.value);
-            RunTest<byte>(output, 1000, "received byte sequence", sz => perf.receiveBytes(sz), ByteSeqSize.value);
+            RunTest<byte>(output, 1000, "sending byte sequence", v => perf.sendBytes(v), Constants.ByteSeqSize);
+            RunTest<byte>(output, 1000, "received byte sequence", sz => perf.receiveBytes(sz), Constants.ByteSeqSize);
 
             return perf;
         }

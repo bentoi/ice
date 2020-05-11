@@ -84,7 +84,7 @@ namespace Ice.acm
             }
         }
 
-        class HeartbeatCallbackI
+        public class HeartbeatCallbackI
         {
             public void Heartbeat()
             {

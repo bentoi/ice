@@ -24,7 +24,7 @@ namespace Ice
         public ILocatorPrx? Locator
         {
             get => _locatorInfo?.Locator;
-            set => _locatorInfo = (value != null) ? Communicator.GetLocatorInfo(value) : null;
+            set => _locatorInfo = (value != null) ? Communicator.GetLocatorInfo(value, value.Encoding) : null;
         }
 
         /// <summary>Returns the name of this object adapter. This name is used as prefix for the object adapter's
@@ -132,7 +132,7 @@ namespace Ice
                 throw;
             }
 
-            if (Communicator.GetPropertyAsInt("Ice.PrintAdapterReady") > 0 && Name.Length > 0)
+            if ((Communicator.GetPropertyAsBool("Ice.PrintAdapterReady") ?? false) && Name.Length > 0)
             {
                 Console.Out.WriteLine($"{Name} ready");
             }
@@ -291,8 +291,7 @@ namespace Ice
         {
             lock (_mutex)
             {
-                IObject? servant;
-                if (!_identityServantMap.TryGetValue(new IdentityPlusFacet(identity, facet), out servant))
+                if (!_identityServantMap.TryGetValue(new IdentityPlusFacet(identity, facet), out IObject? servant))
                 {
                     if (!_categoryServantMap.TryGetValue(new CategoryPlusFacet(identity.Category, facet), out servant))
                     {
@@ -439,8 +438,7 @@ namespace Ice
             lock (_mutex)
             {
                 var key = new IdentityPlusFacet(identity, facet);
-                IObject? servant;
-                if (_identityServantMap.TryGetValue(key, out servant))
+                if (_identityServantMap.TryGetValue(key, out IObject? servant))
                 {
                     _identityServantMap.Remove(key);
                 }
@@ -485,8 +483,7 @@ namespace Ice
             lock (_mutex)
             {
                 var key = new CategoryPlusFacet(category, facet);
-                IObject? servant;
-                if (_categoryServantMap.TryGetValue(key, out servant))
+                if (_categoryServantMap.TryGetValue(key, out IObject? servant))
                 {
                     _categoryServantMap.Remove(key);
                 }
@@ -520,8 +517,7 @@ namespace Ice
         {
             lock (_mutex)
             {
-                IObject? servant;
-                if (_defaultServantMap.TryGetValue(facet, out servant))
+                if (_defaultServantMap.TryGetValue(facet, out IObject? servant))
                 {
                     _defaultServantMap.Remove(facet);
                 }
@@ -550,7 +546,7 @@ namespace Ice
             }
             else
             {
-                return CreateIndirectProxyForReplicaGroup(identity, facet, factory);
+                return factory(CreateReference(identity, facet, _replicaGroupId));
             }
         }
 
@@ -596,15 +592,7 @@ namespace Ice
         /// desired proxy type.</param>
         /// <returns>A proxy for the object with the given identity and facet.</returns>
         public T CreateDirectProxy<T>(Identity identity, string facet, ProxyFactory<T> factory)
-            where T : class, IObjectPrx
-        {
-            CheckIdentity(identity);
-            lock (_mutex)
-            {
-                CheckForDeactivation();
-                return factory(Communicator.CreateReference(identity, facet, _reference!, _publishedEndpoints));
-            }
-        }
+            where T : class, IObjectPrx => factory(CreateReference(identity, facet, ""));
 
         /// <summary>Creates a direct proxy for the object with the given identity. The returned proxy contains this
         /// object adapter's published endpoints.</summary>
@@ -642,15 +630,7 @@ namespace Ice
         /// desired proxy type.</param>
         /// <returns>A proxy for the object with the given identity and facet.</returns>
         public T CreateIndirectProxy<T>(Identity identity, string facet, ProxyFactory<T> factory)
-            where T : class, IObjectPrx
-        {
-            CheckIdentity(identity);
-            lock (_mutex)
-            {
-                CheckForDeactivation();
-                return factory(Communicator.CreateReference(identity, facet, _reference!, _id));
-            }
-        }
+            where T : class, IObjectPrx => factory(CreateReference(identity, facet, _id));
 
         /// <summary>Creates an indirect proxy for the object with the given identity.</summary>
         /// <param name="identity">The object's identity.</param>
@@ -786,7 +766,7 @@ namespace Ice
             {
                 _id = "";
                 _replicaGroupId = "";
-                _reference = Communicator.CreateReference("dummy -t", "");
+                _reference = Reference.Parse("dummy -t", Communicator);
                 _acm = Communicator.ServerACM;
                 return;
             }
@@ -794,7 +774,7 @@ namespace Ice
             (bool noProps, List<string> unknownProps) = FilterProperties();
 
             // Warn about unknown object adapter properties.
-            if (unknownProps.Count != 0 && (Communicator.GetPropertyAsInt("Ice.Warn.UnknownProperties") ?? 1) > 0)
+            if (unknownProps.Count != 0 && (Communicator.GetPropertyAsBool("Ice.Warn.UnknownProperties") ?? true))
             {
                 var message = new StringBuilder("found unknown properties for object adapter `");
                 message.Append(Name);
@@ -820,7 +800,7 @@ namespace Ice
             // Setup a reference to be used to get the default proxy options when creating new proxies. By default,
             // create twoway proxies.
             string proxyOptions = Communicator.GetProperty($"{Name}.ProxyOptions") ?? "-t";
-            _reference = Communicator.CreateReference($"dummy {proxyOptions}", "");
+            _reference = Reference.Parse($"dummy {proxyOptions}", Communicator);
 
             _acm = new ACMConfig(Communicator, Communicator.Logger, $"{Name}.ACM", Communicator.ServerACM);
             {
@@ -843,6 +823,7 @@ namespace Ice
                 if (router != null)
                 {
                     _routerInfo = Communicator.GetRouterInfo(router);
+                    Debug.Assert(_routerInfo != null);
 
                     // Make sure this router is not already registered with another adapter.
                     if (_routerInfo.Adapter != null)
@@ -949,7 +930,6 @@ namespace Ice
             lock (_mutex)
             {
                 CheckForDeactivation();
-
                 Debug.Assert(_directCount >= 0);
                 ++_directCount;
             }
@@ -968,17 +948,6 @@ namespace Ice
             }
         }
 
-        private T CreateIndirectProxyForReplicaGroup<T>(Identity identity, string facet, ProxyFactory<T> factory)
-            where T : class, IObjectPrx
-        {
-            CheckIdentity(identity);
-            lock (_mutex)
-            {
-                CheckForDeactivation();
-                return factory(Communicator.CreateReference(identity, facet, _reference!, _replicaGroupId));
-            }
-        }
-
         private void CheckForDeactivation()
         {
             // Must be called with _mutex locked.
@@ -993,6 +962,24 @@ namespace Ice
             if (ident.Name.Length == 0)
             {
                 throw new ArgumentException("identity name cannot be empty", nameof(ident));
+            }
+        }
+
+        private Reference CreateReference(Identity identity, string facet, string adapterId)
+        {
+            CheckIdentity(identity);
+            lock (_mutex)
+            {
+                CheckForDeactivation();
+                Debug.Assert(_reference != null);
+                return new Reference(adapterId: adapterId,
+                                     communicator: Communicator,
+                                     encoding: _reference.Encoding,
+                                     endpoints: adapterId.Length == 0 ? _publishedEndpoints : Array.Empty<Endpoint>(),
+                                     facet: facet,
+                                     identity: identity,
+                                     invocationMode: _reference.InvocationMode,
+                                     protocol: _reference.Protocol);
             }
         }
 
@@ -1065,13 +1052,7 @@ namespace Ice
                 }
 
                 string s = endpts[beg..end];
-                Endpoint? endp = Communicator.CreateEndpoint(s, oaEndpoints);
-                if (endp == null)
-                {
-                    throw new FormatException($"invalid object adapter endpoint `{s}'");
-                }
-                endpoints.Add(endp);
-
+                endpoints.Add(Endpoint.Parse(s, Communicator, oaEndpoints));
                 ++end;
             }
 
@@ -1191,7 +1172,7 @@ namespace Ice
             // Do not create unknown properties list if Ice prefix, i.e. Ice, Glacier2, etc.
             bool addUnknown = true;
             string prefix = Name + ".";
-            foreach (string propertyName in PropertyNames.clPropNames)
+            foreach (string propertyName in PropertyNames.ClassPropertyNames)
             {
                 if (prefix.StartsWith(string.Format("{0}.", propertyName), StringComparison.Ordinal))
                 {
@@ -1240,12 +1221,12 @@ namespace Ice
             internal readonly Identity Identity;
             internal readonly string Facet;
 
-            public bool Equals (IdentityPlusFacet other)
-                => Identity.Equals(other.Identity) && Facet.Equals(other.Facet);
+            public bool Equals(IdentityPlusFacet other) =>
+                Identity.Equals(other.Identity) && Facet.Equals(other.Facet);
 
             // Since facet is often empty, we don't want the empty facet to contribute to the hash value.
-            public override int GetHashCode()
-                => Facet.Length == 0 ? Identity.GetHashCode() : HashCode.Combine(Identity, Facet);
+            public override int GetHashCode() =>
+                Facet.Length == 0 ? Identity.GetHashCode() : HashCode.Combine(Identity, Facet);
 
             internal IdentityPlusFacet(Identity identity, string facet)
             {
@@ -1259,11 +1240,11 @@ namespace Ice
             internal readonly string Category;
             internal readonly string Facet;
 
-            public bool Equals (CategoryPlusFacet other)
-                => Category.Equals(other.Category) && Facet.Equals(other.Facet);
+            public bool Equals(CategoryPlusFacet other) =>
+                Category.Equals(other.Category) && Facet.Equals(other.Facet);
 
-            public override int GetHashCode()
-                => Facet.Length == 0 ? Category.GetHashCode() : HashCode.Combine(Category, Facet);
+            public override int GetHashCode() =>
+                Facet.Length == 0 ? Category.GetHashCode() : HashCode.Combine(Category, Facet);
 
             internal CategoryPlusFacet(string category, string facet)
             {

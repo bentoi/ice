@@ -284,7 +284,7 @@ namespace IceInternal
 
         protected void Warning(Exception ex)
         {
-            if ((Communicator.GetPropertyAsInt("Ice.Warn.AMICallback") ?? 1) > 0)
+            if (Communicator.GetPropertyAsBool("Ice.Warn.AMICallback") ?? true)
             {
                 Communicator.Logger.Warning("exception raised by AMI callback:\n" + ex);
             }
@@ -568,8 +568,8 @@ namespace IceInternal
     public class OutgoingAsync : ProxyOutgoingAsyncBase
     {
         public OutgoingAsync(IObjectPrx prx, IOutgoingAsyncCompletionCallback completionCallback,
-            OutgoingRequestFrame requestFrame, bool oneway = false) :
-            base(prx, completionCallback, requestFrame)
+            OutgoingRequestFrame requestFrame, bool oneway = false)
+            : base(prx, completionCallback, requestFrame)
         {
             Encoding = Proxy.Encoding;
             Synchronous = false;
@@ -577,7 +577,7 @@ namespace IceInternal
             IsIdempotent = requestFrame.IsIdempotent;
         }
 
-        public override bool Sent() => base.SentImpl(IsOneway); // done = true
+        public override bool Sent() => SentImpl(IsOneway); // done = true
 
         public override bool Response(IncomingResponseFrame responseFrame)
         {

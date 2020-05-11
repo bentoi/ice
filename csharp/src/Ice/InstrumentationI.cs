@@ -9,6 +9,18 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
 
+namespace IceMX
+{
+    // Extends generated class that requires a public parameterless constructor in the code below.
+    public partial class InvocationMetrics
+    {
+        public InvocationMetrics()
+            : this(remotes: Array.Empty<Metrics>(), collocated: Array.Empty<Metrics>())
+        {
+        }
+    }
+}
+
 namespace IceInternal
 {
     public class ObserverWithDelegate<T, O> : Observer<T>
@@ -73,7 +85,8 @@ namespace IceInternal
         where OImpl : ObserverWithDelegate<T, O>, O, new()
         where O : class, Ice.Instrumentation.IObserver
     {
-        public ObserverFactoryWithDelegate(MetricsAdminI metrics, string name) : base(metrics, name)
+        public ObserverFactoryWithDelegate(MetricsAdminI metrics, string name)
+            : base(metrics, name)
         {
         }
 
@@ -278,7 +291,8 @@ namespace IceInternal
         }
         private static readonly AttributeResolver _attributes = new AttributeResolverI();
 
-        public DispatchHelper(Current current, int size) : base(_attributes)
+        public DispatchHelper(Current current, int size)
+            : base(_attributes)
         {
             _current = current;
             _size = size;
@@ -499,7 +513,8 @@ namespace IceInternal
         }
         private static readonly AttributeResolver _attributes = new AttributeResolverI();
 
-        public ThreadHelper(string parent, string id, Ice.Instrumentation.ThreadState state) : base(_attributes)
+        public ThreadHelper(string parent, string id, Ice.Instrumentation.ThreadState state)
+            : base(_attributes)
         {
             Parent = parent;
             Id = id;
@@ -548,15 +563,18 @@ namespace IceInternal
                 }
             }
         }
+
         private static readonly AttributeResolver _attributes = new AttributeResolverI();
 
-        public EndpointHelper(Endpoint endpt, string id) : base(_attributes)
+        public EndpointHelper(Endpoint endpt, string id)
+            : base(_attributes)
         {
             _endpoint = endpt;
             _id = id;
         }
 
-        public EndpointHelper(Endpoint endpt) : base(_attributes) => _endpoint = endpt;
+        public EndpointHelper(Endpoint endpt)
+            : base(_attributes) => _endpoint = endpt;
 
         public string GetParent() => "Communicator";
 
@@ -598,8 +616,8 @@ namespace IceInternal
         }
         private static readonly AttributeResolver _attributes = new AttributeResolverI();
 
-        public RemoteInvocationHelper(ConnectionInfo con, Endpoint endpt, int requestId, int size) :
-            base(_attributes)
+        public RemoteInvocationHelper(ConnectionInfo con, Endpoint endpt, int requestId, int size)
+            : base(_attributes)
         {
             _connectionInfo = con;
             _endpoint = endpt;
@@ -669,8 +687,8 @@ namespace IceInternal
         }
         private static readonly AttributeResolver _attributes = new AttributeResolverI();
 
-        public CollocatedInvocationHelper(ObjectAdapter adapter, int requestId, int size) :
-            base(_attributes)
+        public CollocatedInvocationHelper(ObjectAdapter adapter, int requestId, int size)
+            : base(_attributes)
         {
             _id = adapter.Name;
             _requestId = requestId;
@@ -683,7 +701,7 @@ namespace IceInternal
 
         public int GetRequestId() => _requestId;
 
-        public string GetParent() => "Communicator";
+        public static string GetParent() => "Communicator";
 
         private readonly int _size;
         private readonly int _requestId;

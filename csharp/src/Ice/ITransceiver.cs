@@ -300,5 +300,4 @@ namespace IceInternal
         void CheckSendSize(int size);
         void SetBufferSize(int rcvSize, int sndSize);
     }
-
 }

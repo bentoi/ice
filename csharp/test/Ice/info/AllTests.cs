@@ -3,6 +3,7 @@
 //
 
 using System.Collections.Generic;
+using System.Linq;
 using Test;
 
 namespace Ice.info
@@ -89,7 +90,7 @@ namespace Ice.info
             output.Write("test object adapter endpoint information... ");
             output.Flush();
             {
-                string host = communicator.GetPropertyAsInt("Ice.IPv6") != 0 ? "::1" : "127.0.0.1";
+                string host = (communicator.GetPropertyAsBool("Ice.IPv6") ?? false) ? "::1" : "127.0.0.1";
                 communicator.SetProperty("TestAdapter.Endpoints", "tcp -h \"" + host +
                     "\" -t 15000:udp -h \"" + host + "\"");
                 adapter = communicator.CreateObjectAdapter("TestAdapter");
@@ -97,7 +98,7 @@ namespace Ice.info
                 var endpoints = adapter.GetEndpoints();
                 TestHelper.Assert(endpoints.Count == 2);
                 var publishedEndpoints = adapter.GetPublishedEndpoints();
-                TestHelper.Assert(global::Test.Collections.Equals(endpoints, publishedEndpoints));
+                TestHelper.Assert(endpoints.SequenceEqual(publishedEndpoints));
 
                 TcpEndpoint? tcpEndpoint = getTCPEndpoint(endpoints[0]);
                 TestHelper.Assert(tcpEndpoint != null);
@@ -121,7 +122,7 @@ namespace Ice.info
 
                 adapter.SetPublishedEndpoints(endpoints);
                 publishedEndpoints = adapter.GetPublishedEndpoints();
-                TestHelper.Assert(Collections.Equals(endpoints, publishedEndpoints));
+                TestHelper.Assert(endpoints.SequenceEqual(publishedEndpoints));
 
                 adapter.Destroy();
 

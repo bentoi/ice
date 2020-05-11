@@ -1781,7 +1781,6 @@ class Result:
         self._start = self._stdout.tell()
 
     def failed(self, current, exception):
-        print(exception)
         key = self.getKey(current)
         self._testCaseDuration = time.time() - self._testCaseDuration;
         self.writeln("\ntest in {0} failed:\n{1}".format(self.testsuite, exception))
@@ -2823,6 +2822,7 @@ class BrowserProcessController(RemoteProcessController):
             raise ex
 
     def destroy(self, driver):
+        RemoteProcessController.destroy(self, driver)
         if self.httpServer:
             self.httpServer.terminate()
             self.httpServer = None

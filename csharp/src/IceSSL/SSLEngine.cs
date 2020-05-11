@@ -71,7 +71,7 @@ namespace IceSSL
             // CheckCertName determines whether we compare the name in a peer's
             // certificate against its hostname.
             //
-            _checkCertName = ic.GetPropertyAsInt("IceSSL.CheckCertName") > 0;
+            _checkCertName = ic.GetPropertyAsBool("IceSSL.CheckCertName") ?? false;
 
             //
             // VerifyDepthMax establishes the maximum length of a peer's certificate
@@ -256,7 +256,7 @@ namespace IceSSL
                     certAuthFile = ic.GetProperty("IceSSL.CertAuthFile");
                 }
 
-                if (certAuthFile != null || (ic.GetPropertyAsInt("IceSSL.UsePlatformCAs") ?? 0) <= 0)
+                if (certAuthFile != null || !(ic.GetPropertyAsBool("IceSSL.UsePlatformCAs") ?? false))
                 {
                     _caCerts = new X509Certificate2Collection();
                 }
@@ -421,7 +421,6 @@ namespace IceSSL
                 }
 
                 throw new Ice.SecurityException($"IceSSL: {msg}");
-
             }
 
             if (_verifier != null && !_verifier.Verify(info))
@@ -535,7 +534,7 @@ namespace IceSSL
             return false;
         }
 
-        private SslProtocols ParseProtocols(string[] arr)
+        private static SslProtocols ParseProtocols(string[] arr)
         {
             SslProtocols result = SslProtocols.None;
 
@@ -753,10 +752,11 @@ namespace IceSSL
                         if (findType == X509FindType.FindBySubjectDistinguishedName ||
                            findType == X509FindType.FindByIssuerDistinguishedName)
                         {
-                            X500DistinguishedNameFlags[] flags = {
-                                X500DistinguishedNameFlags.None,
-                                X500DistinguishedNameFlags.Reversed,
-                            };
+                            X500DistinguishedNameFlags[] flags =
+                                {
+                                    X500DistinguishedNameFlags.None,
+                                    X500DistinguishedNameFlags.Reversed,
+                                };
                             var dn = new X500DistinguishedName(arg);
                             X509Certificate2Collection r = result;
                             for (int i = 0; i < flags.Length; ++i)

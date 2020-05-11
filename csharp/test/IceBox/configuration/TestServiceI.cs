@@ -3,20 +3,17 @@
 //
 
 using IceBox;
-using Test;
 
-class TestService : IService
+public class TestService : IService
 {
-    public void
-    start(string name, Ice.Communicator communicator, string[] args)
+    public void Start(string name, Ice.Communicator communicator, string[] args)
     {
         Ice.ObjectAdapter adapter = communicator.CreateObjectAdapter(name + "OA");
         adapter.Add("test", new TestIntf(args));
         adapter.Activate();
     }
 
-    public void
-    stop()
+    public void Stop()
     {
     }
 }

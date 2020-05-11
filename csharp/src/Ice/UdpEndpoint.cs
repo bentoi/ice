@@ -177,9 +177,7 @@ namespace Ice
                              bool oaEndpoint)
             : base(instance, endpointString, options, oaEndpoint)
         {
-            string? argument;
-
-            if (options.TryGetValue("-c", out argument))
+            if (options.TryGetValue("-c", out string? argument))
             {
                 if (argument != null)
                 {
@@ -275,5 +273,4 @@ namespace Ice
 
         internal UdpEndpointFactory(TransportInstance instance) => _instance = instance;
     }
-
 }

@@ -56,8 +56,8 @@ namespace Ice
                         //
                         if (_ref.Communicator.TraceLevels.Location >= 1)
                         {
-                            locatorInfo.Trace("retrieved adapter for well-known object from locator, " +
-                                              "adding to locator cache", _ref, r);
+                            Trace("retrieved adapter for well-known object from locator, adding to locator cache",
+                                  _ref, r);
                         }
                         locatorInfo.GetEndpoints(r, _ref, _ttl, _callback);
                         return;
@@ -66,7 +66,7 @@ namespace Ice
 
                 if (_ref.Communicator.TraceLevels.Location >= 1)
                 {
-                    locatorInfo.GetEndpointsTrace(_ref, endpoints, false);
+                    GetEndpointsTrace(_ref, endpoints, false);
                 }
                 if (_callback != null)
                 {
@@ -196,7 +196,8 @@ namespace Ice
 
         private class ObjectRequest : Request
         {
-            internal ObjectRequest(LocatorInfo locatorInfo, Reference reference) : base(locatorInfo, reference)
+            internal ObjectRequest(LocatorInfo locatorInfo, Reference reference)
+                : base(locatorInfo, reference)
             {
             }
 
@@ -228,7 +229,8 @@ namespace Ice
 
         private class AdapterRequest : Request
         {
-            internal AdapterRequest(LocatorInfo locatorInfo, Reference reference) : base(locatorInfo, reference)
+            internal AdapterRequest(LocatorInfo locatorInfo, Reference reference)
+                : base(locatorInfo, reference)
             {
             }
 
@@ -425,7 +427,7 @@ namespace Ice
             }
         }
 
-        private void Trace(string msg, Reference r, IReadOnlyList<Endpoint> endpoints)
+        private static void Trace(string msg, Reference r, IReadOnlyList<Endpoint> endpoints)
         {
             var s = new System.Text.StringBuilder();
             s.Append(msg + "\n");
@@ -443,7 +445,7 @@ namespace Ice
             r.Communicator.Logger.Trace(r.Communicator.TraceLevels.LocationCat, s.ToString());
         }
 
-        private void Trace(string msg, Reference r, Reference resolved)
+        private static void Trace(string msg, Reference r, Reference resolved)
         {
             Debug.Assert(r.IsWellKnown);
 
@@ -459,7 +461,7 @@ namespace Ice
             r.Communicator.Logger.Trace(r.Communicator.TraceLevels.LocationCat, s.ToString());
         }
 
-        private void GetEndpointsTrace(Reference reference, IReadOnlyList<Endpoint>? endpoints, bool cached)
+        private static void GetEndpointsTrace(Reference reference, IReadOnlyList<Endpoint>? endpoints, bool cached)
         {
             if (endpoints != null && endpoints.Count > 0)
             {
@@ -636,12 +638,19 @@ namespace Ice
             private readonly Encoding _encoding;
         }
 
-        // Returns locator info for a given locator. Automatically creates
-        // the locator info if it doesn't exist yet.
-        internal LocatorInfo GetLocatorInfo(ILocatorPrx loc)
+        // Returns locator info for a given locator. Automatically creates the locator info if it doesn't exist yet.
+        internal LocatorInfo? GetLocatorInfo(ILocatorPrx? locator, Encoding encoding)
         {
-            // The locator can't be located.
-            ILocatorPrx locator = loc.Clone(clearLocator: true);
+            if (locator == null)
+            {
+                return null;
+            }
+
+            if (locator.Locator != null || locator.Encoding != encoding)
+            {
+                // The locator can't be located.
+                locator = locator.Clone(clearLocator: true, encoding: encoding);
+            }
 
             // TODO: reap unused locator info objects?
             lock (_locatorInfoMap)
@@ -697,7 +706,6 @@ namespace Ice
                 {
                     cached = CheckTTL(entry.Time, ttl);
                     return entry.Endpoints;
-
                 }
                 cached = false;
                 return null;
@@ -767,7 +775,7 @@ namespace Ice
             }
         }
 
-        private bool CheckTTL(long time, int ttl)
+        private static bool CheckTTL(long time, int ttl)
         {
             Debug.Assert(ttl != 0);
             if (ttl < 0) // TTL = infinite
@@ -797,5 +805,4 @@ namespace Ice
         private readonly Dictionary<Identity, (long Time, Reference Reference)> _objectTable =
             new Dictionary<Identity, (long Time, Reference Reference)>();
     }
-
 }

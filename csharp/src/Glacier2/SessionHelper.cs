@@ -10,7 +10,6 @@ using Ice;
 
 namespace Glacier2
 {
-
     /// <summary>
     /// A helper class for using Glacier2 with GUI applications.
     /// </summary>
@@ -28,7 +27,7 @@ namespace Glacier2
         /// The default is Ice.TypeId.</param>
         /// <param name="finderStr">The stringified Ice.RouterFinder proxy.</param>
         /// <param name="useCallbacks">True if the session should create an object adapter for receiving callbacks.</param>
-        internal SessionHelper(SessionCallback callback,
+        internal SessionHelper(ISessionCallback callback,
             string finderStr,
             bool useCallbacks,
             Dictionary<string, string> properties,
@@ -302,7 +301,7 @@ namespace Glacier2
 
             try
             {
-                _callback.connected(this);
+                _callback.Connected(this);
             }
             catch (SessionNotExistException)
             {
@@ -357,7 +356,7 @@ namespace Glacier2
             communicator.Destroy();
 
             // Notify the callback that the session is gone.
-            _callback.disconnected(this);
+            _callback.Disconnected(this);
         }
 
         private void
@@ -397,7 +396,7 @@ namespace Glacier2
                     {
                         _destroy = true;
                     }
-                    _callback.connectFailed(this, ex);
+                    _callback.ConnectFailed(this, ex);
                     return;
                 }
 
@@ -411,14 +410,14 @@ namespace Glacier2
                     }
                     catch (CommunicatorDestroyedException ex)
                     {
-                        _callback.connectFailed(this, ex);
+                        _callback.ConnectFailed(this, ex);
                         return;
                     }
                     catch (System.Exception ex)
                     {
                         if (finder == null)
                         {
-                            _callback.connectFailed(this, ex);
+                            _callback.ConnectFailed(this, ex);
                             return;
                         }
                         else
@@ -434,7 +433,7 @@ namespace Glacier2
 
                 try
                 {
-                    _callback.createdCommunicator(this);
+                    _callback.CreatedCommunicator(this);
                     Ice.IRouterPrx? defaultRouter = _communicator.DefaultRouter;
                     Debug.Assert(defaultRouter != null);
                     var routerPrx = IRouterPrx.UncheckedCast(defaultRouter);
@@ -444,7 +443,7 @@ namespace Glacier2
                 catch (System.Exception ex)
                 {
                     _communicator.Destroy();
-                    _callback.connectFailed(this, ex);
+                    _callback.ConnectFailed(this, ex);
                 }
             })).Start();
         }
@@ -462,9 +461,8 @@ namespace Glacier2
         private readonly Ice.Instrumentation.ICommunicatorObserver? _observer;
         private readonly string[]? _typeIdNamespaces;
 
-        private readonly SessionCallback _callback;
+        private readonly ISessionCallback _callback;
         private bool _destroy = false;
         private readonly object _mutex = new object();
     }
-
 }

@@ -142,7 +142,8 @@ namespace Ice
         private readonly bool _warn;
         private readonly bool _warnUdp;
 
-        private static readonly ConnectionState[] _connectionStateMap = new ConnectionState[] {
+        private static readonly ConnectionState[] _connectionStateMap = new ConnectionState[]
+        {
             ConnectionState.ConnectionStateValidating,   // State.NotInitialized
             ConnectionState.ConnectionStateActive,       // State.Active
             ConnectionState.ConnectionStateClosing,      // State.Closing
@@ -196,7 +197,7 @@ namespace Ice
         /// </param>
         /// <returns>A proxy that matches the given identity and uses this connection.</returns>
         public T CreateProxy<T>(Identity identity, ProxyFactory<T> factory) where T : class, IObjectPrx
-            => factory(_communicator.CreateReference(identity, this));
+            => factory(new Reference(_communicator, this, identity));
 
         /// <summary>Get the ACM parameters.</summary>
         /// <returns>The ACM parameters.</returns>
@@ -378,8 +379,8 @@ namespace Ice
             _connector = connector;
             _endpoint = endpoint;
             _adapter = adapter;
-            _warn = communicator.GetPropertyAsInt("Ice.Warn.Connections") > 0;
-            _warnUdp = communicator.GetPropertyAsInt("Ice.Warn.Datagrams") > 0;
+            _warn = communicator.GetPropertyAsBool("Ice.Warn.Connections") ?? false;
+            _warnUdp = communicator.GetPropertyAsBool("Ice.Warn.Datagrams") ?? false;
 
             if (_monitor != null && _monitor.GetACM().Timeout > 0)
             {

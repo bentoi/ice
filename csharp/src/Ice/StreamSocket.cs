@@ -579,5 +579,4 @@ namespace IceInternal
         private const int StateProxyConnected = 4;
         private const int StateConnected = 5;
     }
-
 }

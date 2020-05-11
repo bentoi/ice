@@ -44,14 +44,7 @@ namespace Ice
             var istr = new InputStream(communicator, data);
 
             Identity = new Identity(istr);
-
-            // For compatibility with the old FacetPath.
-            string[] facetPath = istr.ReadStringArray();
-            if (facetPath.Length > 1)
-            {
-                throw new InvalidDataException($"invalid facet path length: {facetPath.Length}");
-            }
-            Facet = facetPath.Length == 0 ? "" : facetPath[0];
+            Facet = istr.ReadFacet();
             Operation = istr.ReadString();
             IsIdempotent = istr.ReadOperationMode() != OperationMode.Normal;
             Context = istr.ReadContext();
@@ -73,25 +66,14 @@ namespace Ice
 
         /// <summary>Reads the empty parameter list, calling this methods ensure that the frame payload
         /// correspond to the empty parameter list.</summary>
-        public void ReadEmptyParamList()
-        {
-            var istr = new InputStream(_communicator, Payload);
-            istr.StartEncapsulation();
-            istr.EndEncapsulation();
-        }
+        public void ReadEmptyParamList() => InputStream.ReadEmptyEncapsulation(_communicator, Payload);
 
         /// <summary>Reads the request frame parameter list.</summary>
         /// <param name="reader">An InputStreamReader delegate used to read the request frame
         /// parameters.</param>
         /// <returns>The request parameters, when the frame parameter list contains multiple parameters
         /// they must be return as a tuple.</returns>
-        public T ReadParamList<T>(InputStreamReader<T> reader)
-        {
-            var istr = new InputStream(_communicator, Payload);
-            istr.StartEncapsulation();
-            T paramList = reader(istr);
-            istr.EndEncapsulation();
-            return paramList;
-        }
+        public T ReadParamList<T>(InputStreamReader<T> reader) =>
+            InputStream.ReadEncapsulation(_communicator, Payload, reader);
     }
 }

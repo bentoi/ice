@@ -122,7 +122,7 @@ namespace IceInternal
                 {
                     _connections.Remove(c.Connector, c);
                     _connectionsByEndpoint.Remove(c.Endpoint, c);
-                    _connectionsByEndpoint.Remove((c.Endpoint).NewCompressionFlag(true), c);
+                    _connectionsByEndpoint.Remove(c.Endpoint.NewCompressionFlag(true), c);
                 }
                 Debug.Assert(_connections.Count == 0);
                 Debug.Assert(_connectionsByEndpoint.Count == 0);
@@ -948,8 +948,8 @@ namespace IceInternal
             private readonly bool _hasMore;
             private readonly ICreateConnectionCallback _callback;
             private readonly IReadOnlyList<Endpoint> _endpoints;
-            private readonly Ice.EndpointSelectionType _selType;
-            private IEnumerator<Endpoint> _endpointEnumerator;
+            private readonly EndpointSelectionType _selType;
+            private readonly IEnumerator<Endpoint> _endpointEnumerator;
             private bool _hasMoreEndpoints;
             private Endpoint? _currentEndpoint;
             private readonly List<ConnectorInfo> _connectors = new List<ConnectorInfo>();
@@ -989,7 +989,7 @@ namespace IceInternal
             _endpoint = endpoint;
             _publishedEndpoint = publish;
             _adapter = adapter;
-            _warn = _communicator.GetPropertyAsInt("Ice.Warn.Connections") > 0;
+            _warn = _communicator.GetPropertyAsBool("Ice.Warn.Connections") ?? false;
             _monitor = new FactoryACMMonitor(_communicator, acmConfig);
 
             if (_communicator.OverrideTimeout != null)

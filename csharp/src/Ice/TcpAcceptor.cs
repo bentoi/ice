@@ -49,7 +49,7 @@ namespace IceInternal
             try
             {
                 Debug.Assert(_fd != null);
-                _result = _fd.BeginAccept(delegate (IAsyncResult result)
+                _result = _fd.BeginAccept(delegate(IAsyncResult result)
                                           {
                                               if (!result.CompletedSynchronously)
                                               {

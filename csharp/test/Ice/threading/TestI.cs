@@ -47,9 +47,9 @@ namespace Ice.threading
 
         public void concurrent(int level, Current current)
         {
-            lock(_mutex)
+            lock (_mutex)
             {
-                if(_level == -1)
+                if (_level == -1)
                 {
                     // Test is done, just return.
                     return;

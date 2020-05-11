@@ -34,5 +34,4 @@ namespace IceInternal
         public readonly int Slicing;
         public readonly string SlicingCat;
     }
-
 }

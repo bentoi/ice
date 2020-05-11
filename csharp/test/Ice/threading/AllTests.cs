@@ -15,7 +15,7 @@ namespace Ice.threading
 {
     public class AllTests
     {
-        class Progress : IProgress<bool>
+        private class Progress : IProgress<bool>
         {
             public TaskScheduler Scheduler {
                 get
@@ -43,7 +43,7 @@ namespace Ice.threading
 
             var proxy = ITestIntfPrx.Parse("test:" + helper.GetTestEndpoint(server), helper.Communicator()!);
 
-            if(collocated)
+            if (collocated)
             {
                 // With collocation, synchronous calls dispatched on an object adapter which doesn't set a task
                 // scheduler are dispatched from the client invocation task scheduler.
@@ -122,7 +122,7 @@ namespace Ice.threading
             await Task.Factory.StartNew(async () =>
             {
                 await allTestsWithServer(helper, collocated, 0);
-            } , default, TaskCreationOptions.None, schedulers.ConcurrentScheduler).Unwrap();
+            }, default, TaskCreationOptions.None, schedulers.ConcurrentScheduler).Unwrap();
             output.WriteLine("ok");
 
             // Use the exclusive task scheduler
@@ -143,7 +143,7 @@ namespace Ice.threading
                 {
                     Task.WaitAll(Enumerable.Range(0, 25).Select(idx => proxy.concurrentAsync(20)).ToArray());
                 }
-                catch(AggregateException ex)
+                catch (AggregateException ex)
                 {
                     // On Windows, it's not un-common that the .NET thread pool creates one or two additional threads
                     // and doesn't striclty respect the number of configured maximum threads. So we tolerate a lest

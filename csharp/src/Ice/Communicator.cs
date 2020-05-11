@@ -12,7 +12,6 @@ using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -46,14 +45,14 @@ namespace Ice
             private readonly Communicator _communicator;
         }
 
-         /// <summary>Indicates whether or not object adapters created by this communicator accept non-secure incoming
-         /// connections. When false, they accept only secure connections; when true, they accept both secure and
-         /// non-secure connections. This property corresponds to the Ice.AcceptNonSecureConnections configuration
-         /// property. It can be overridden for each object adapter by the object adapter property with the same name.
-         /// </summary>
-         // TODO: update doc with default value for AcceptNonSecureConnections - it's currently true but should be
-         // false.
-         // TODO: currently only this property is implemented and nothing else.
+        /// <summary>Indicates whether or not object adapters created by this communicator accept non-secure incoming
+        /// connections. When false, they accept only secure connections; when true, they accept both secure and
+        /// non-secure connections. This property corresponds to the Ice.AcceptNonSecureConnections configuration
+        /// property. It can be overridden for each object adapter by the object adapter property with the same name.
+        /// </summary>
+        // TODO: update doc with default value for AcceptNonSecureConnections - it's currently true but should be
+        // false.
+        // TODO: currently only this property is implemented and nothing else.
         public bool AcceptNonSecureConnections { get; }
 
         /// <summary>Each time you send a request without an explicit context parameter, Ice sends automatically the
@@ -97,8 +96,8 @@ namespace Ice
 
         public bool DefaultCollocationOptimized { get; }
 
-        /// <summary>The default context for proxies created using this communicator.
-        /// Changing the value of DefaultContext does not change the context of previously created proxies.</summary>
+        /// <summary>The default context for proxies created using this communicator. Changing the value of
+        /// DefaultContext does not change the context of previously created proxies.</summary>
         public IReadOnlyDictionary<string, string> DefaultContext
         {
             get => _defaultContext;
@@ -111,11 +110,8 @@ namespace Ice
         public string? DefaultHost { get; }
 
         /// <summary>The default locator for this communicator. To disable the default locator, null can be used.
-        /// All newly created proxies and object adapters will use this default locator.
-        /// Note that setting this property has no effect on existing proxies or object adapters.
-        ///
-        /// You can also set a locator for an individual proxy by calling the operation ice_locator on the proxy,
-        /// or for an object adapter by calling ObjectAdapter.setLocator on the object adapter.</summary>
+        /// All newly created proxies and object adapters will use this default locator. Note that setting this property
+        /// has no effect on existing proxies or object adapters.</summary>
         public ILocatorPrx? DefaultLocator
         {
             get => _defaultLocator;
@@ -130,11 +126,8 @@ namespace Ice
         public int DefaultLocatorCacheTimeout { get; }
 
         /// <summary>The default router for this communicator. To disable the default router, null can be used.
-        /// All newly created proxies will use this default router.
-        /// Note that setting this property has no effect on existing proxies.
-        ///
-        /// You can also set a router for an individual proxy by calling the operation ice_router on the proxy.
-        /// </summary>
+        /// All newly created proxies will use this default router. Note that setting this property has no effect on
+        /// existing proxies.</summary>
         public IRouterPrx? DefaultRouter
         {
             get => _defaultRouter;
@@ -188,8 +181,11 @@ namespace Ice
         private readonly HashSet<string> _adminFacetFilter = new HashSet<string>();
         private readonly Dictionary<string, IObject> _adminFacets = new Dictionary<string, IObject>();
         private Identity? _adminIdentity;
-        private readonly ConcurrentDictionary<int, Type?> _compactIdCache = new ConcurrentDictionary<int, Type?>();
-        private readonly string[] _compactIdNamespaces;
+        private readonly ConcurrentDictionary<string, IClassFactory?> _classFactoryCache =
+            new ConcurrentDictionary<string, IClassFactory?>();
+        private readonly string[] _classFactoryNamespaces;
+        private readonly ConcurrentDictionary<int, IClassFactory?> _compactIdCache =
+            new ConcurrentDictionary<int, IClassFactory?>();
         private readonly ThreadLocal<Dictionary<string, string>> _currentContext
             = new ThreadLocal<Dictionary<string, string>>();
         private volatile IReadOnlyDictionary<string, string> _defaultContext = Reference.EmptyContext;
@@ -200,24 +196,31 @@ namespace Ice
         private static bool _oneOffDone = false;
         private readonly OutgoingConnectionFactory _outgoingConnectionFactory;
         private static bool _printProcessIdDone = false;
+        private readonly ConcurrentDictionary<string, IRemoteExceptionFactory?> _remoteExceptionFactoryCache =
+            new ConcurrentDictionary<string, IRemoteExceptionFactory?>();
+        private readonly string[] _remoteExceptionFactoryNamespaces;
         private readonly int[] _retryIntervals;
         private readonly Dictionary<EndpointType, BufSizeWarnInfo> _setBufSizeWarn =
             new Dictionary<EndpointType, BufSizeWarnInfo>();
         private int _state;
         private readonly IceInternal.Timer _timer;
-        private readonly ConcurrentDictionary<string, Type?> _typeIdCache = new ConcurrentDictionary<string, Type?>();
-        private readonly string[] _typeIdNamespaces;
+
+        private readonly IDictionary<string, IEndpointFactory> _transportToEndpointFactory =
+            new ConcurrentDictionary<string, IEndpointFactory>();
+
+        private readonly IDictionary<EndpointType, IEndpointFactory> _typeToEndpointFactory =
+            new ConcurrentDictionary<EndpointType, IEndpointFactory>();
 
         public Communicator(Dictionary<string, string>? properties,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            string[]? typeIdNamespaces = null) :
-            this(ref _emptyArgs,
-                 null,
-                 properties,
-                 logger,
-                 observer,
-                 typeIdNamespaces)
+                            string[]? typeIdNamespaces = null)
+            : this(ref _emptyArgs,
+                   null,
+                   properties,
+                   logger,
+                   observer,
+                   typeIdNamespaces)
         {
         }
 
@@ -225,13 +228,13 @@ namespace Ice
                             Dictionary<string, string>? properties,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            string[]? typeIdNamespaces = null) :
-            this(ref args,
-                 null,
-                 properties,
-                 logger,
-                 observer,
-                 typeIdNamespaces)
+                            string[]? typeIdNamespaces = null)
+            : this(ref args,
+                   null,
+                   properties,
+                   logger,
+                   observer,
+                   typeIdNamespaces)
         {
         }
 
@@ -239,13 +242,13 @@ namespace Ice
                             Dictionary<string, string>? properties = null,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            string[]? typeIdNamespaces = null) :
-            this(ref _emptyArgs,
-                 appSettings,
-                 properties,
-                 logger,
-                 observer,
-                 typeIdNamespaces)
+                            string[]? typeIdNamespaces = null)
+            : this(ref _emptyArgs,
+                   appSettings,
+                   properties,
+                   logger,
+                   observer,
+                   typeIdNamespaces)
         {
         }
 
@@ -259,8 +262,15 @@ namespace Ice
             _state = StateActive;
             Logger = logger ?? Util.GetProcessLogger();
             Observer = observer;
-            _typeIdNamespaces = typeIdNamespaces ?? new string[] { "Ice.TypeId" };
-            _compactIdNamespaces = new string[] { "IceCompactId" }.Concat(_typeIdNamespaces).ToArray();
+
+            _classFactoryNamespaces = new string[] { "Ice.ClassFactory" };
+            _remoteExceptionFactoryNamespaces = new string[] { "Ice.RemoteExceptionFactory" };
+            if (typeIdNamespaces != null)
+            {
+                _classFactoryNamespaces = _classFactoryNamespaces.Concat(typeIdNamespaces).ToArray();
+                _remoteExceptionFactoryNamespaces =
+                    _remoteExceptionFactoryNamespaces.Concat(typeIdNamespaces).ToArray();
+            }
 
             if (properties == null)
             {
@@ -351,14 +361,14 @@ namespace Ice
                         //
                         // Ice.ConsoleListener is enabled by default.
                         //
-                        Logger = new TraceLogger(programName, (GetPropertyAsInt("Ice.ConsoleListener") ?? 1) > 0);
+                        Logger = new TraceLogger(programName, GetPropertyAsBool("Ice.ConsoleListener") ?? true);
                     }
                     // else already set to process logger
                 }
 
                 TraceLevels = new TraceLevels(this);
 
-                DefaultCollocationOptimized = (GetPropertyAsInt("Ice.Default.CollocationOptimized") ?? 1) > 0;
+                DefaultCollocationOptimized = GetPropertyAsBool("Ice.Default.CollocationOptimized") ?? true;
 
                 if (GetProperty("Ice.Default.Encoding") is string encoding)
                 {
@@ -378,7 +388,7 @@ namespace Ice
                     DefaultEncoding = Encoding.Latest;
                 }
 
-                var endpointSelection = GetProperty("Ice.Default.EndpointSelection") ?? "Random";
+                string endpointSelection = GetProperty("Ice.Default.EndpointSelection") ?? "Random";
                 DefaultEndpointSelection = endpointSelection switch
                 {
                     "Random" => EndpointSelectionType.Random,
@@ -387,13 +397,13 @@ namespace Ice
                              $"illegal value `{endpointSelection}'; expected `Random' or `Ordered'")
                 };
 
-                DefaultFormat = (GetPropertyAsInt("Ice.Default.SlicedFormat") > 0) ? FormatType.Sliced :
-                                                                                     FormatType.Compact;
+                DefaultFormat = (GetPropertyAsBool("Ice.Default.SlicedFormat") ?? false) ?
+                    FormatType.Sliced : FormatType.Compact;
 
                 DefaultHost = GetProperty("Ice.Default.Host");
 
-                // TODO: switch to 0 default
-                DefaultPreferNonSecure = (GetPropertyAsInt("Ice.Default.PreferNonSecure") ?? 1) > 0;
+                // TODO: switch to 0/false default
+                DefaultPreferNonSecure = GetPropertyAsBool("Ice.Default.PreferNonSecure") ?? true;
 
                 if (GetProperty("Ice.Default.SourceAddress") is string address)
                 {
@@ -428,10 +438,10 @@ namespace Ice
                         $"invalid value for Ice.Default.LocatorCacheTimeout: `{DefaultLocatorCacheTimeout}'");
                 }
 
-                if (GetPropertyAsInt("Ice.Override.Compress") is int compress)
+                if (GetPropertyAsBool("Ice.Override.Compress") is bool compress)
                 {
-                    OverrideCompress = compress > 0;
-                    if (!BZip2.IsLoaded && OverrideCompress.Value)
+                    OverrideCompress = compress;
+                    if (!BZip2.IsLoaded && compress)
                     {
                         throw new InvalidConfigurationException($"compression not supported, bzip2 library not found");
                     }
@@ -496,7 +506,7 @@ namespace Ice
                 }
 
                 // TODO: switch to 0 default
-                AcceptNonSecureConnections = (GetPropertyAsInt("Ice.AcceptNonSecureConnections") ?? 1) > 0;
+                AcceptNonSecureConnections = GetPropertyAsBool("Ice.AcceptNonSecureConnections") ?? true;
 
                 {
                     int num = GetPropertyAsInt("Ice.ClassGraphDepthMax") ?? 100;
@@ -512,7 +522,7 @@ namespace Ice
 
                 ToStringMode = Enum.Parse<ToStringMode>(GetProperty("Ice.ToStringMode") ?? "Unicode");
 
-                _backgroundLocatorCacheUpdates = GetPropertyAsInt("Ice.BackgroundLocatorCacheUpdates") > 0;
+                _backgroundLocatorCacheUpdates = GetPropertyAsBool("Ice.BackgroundLocatorCacheUpdates") ?? false;
 
                 string[]? arr = GetPropertyAsList("Ice.RetryIntervals");
 
@@ -540,8 +550,8 @@ namespace Ice
                 }
 
                 bool isIPv6Supported = Network.IsIPv6Supported();
-                bool ipv4 = (GetPropertyAsInt("Ice.IPv4") ?? 1) > 0;
-                bool ipv6 = (GetPropertyAsInt("Ice.IPv6") ?? (isIPv6Supported ? 1 : 0)) > 0;
+                bool ipv4 = GetPropertyAsBool("Ice.IPv4") ?? true;
+                bool ipv6 = GetPropertyAsBool("Ice.IPv6") ?? isIPv6Supported;
                 if (!ipv4 && !ipv6)
                 {
                     throw new InvalidConfigurationException("Both IPV4 and IPv6 support cannot be disabled.");
@@ -558,19 +568,22 @@ namespace Ice
                 {
                     IPVersion = Network.EnableIPv6;
                 }
-                PreferIPv6 = GetPropertyAsInt("Ice.PreferIPv6Address") > 0;
+                PreferIPv6 = GetPropertyAsBool("Ice.PreferIPv6Address") ?? false;
 
                 NetworkProxy = CreateNetworkProxy(IPVersion);
 
-                _endpointFactories = new List<IEndpointFactory>();
-                AddEndpointFactory(new TcpEndpointFactory(new TransportInstance(this, EndpointType.TCP, "tcp", false)));
-                AddEndpointFactory(new UdpEndpointFactory(new TransportInstance(this, EndpointType.UDP, "udp", false)));
-                AddEndpointFactory(new WSEndpointFactory(new TransportInstance(this, EndpointType.WS, "ws", false), EndpointType.TCP));
-                AddEndpointFactory(new WSEndpointFactory(new TransportInstance(this, EndpointType.WSS, "wss", true), EndpointType.SSL));
+                AddEndpointFactory(new TcpEndpointFactory(
+                    new TransportInstance(this, EndpointType.TCP, "tcp", false)));
+                AddEndpointFactory(new UdpEndpointFactory(
+                    new TransportInstance(this, EndpointType.UDP, "udp", false)));
+                AddEndpointFactory(new WSEndpointFactory(
+                    new TransportInstance(this, EndpointType.WS, "ws", false), EndpointType.TCP));
+                AddEndpointFactory(new WSEndpointFactory(
+                    new TransportInstance(this, EndpointType.WSS, "wss", true), EndpointType.SSL));
 
                 _outgoingConnectionFactory = new OutgoingConnectionFactory(this);
 
-                if (GetPropertyAsInt("Ice.PreloadAssemblies") > 0)
+                if (GetPropertyAsBool("Ice.PreloadAssemblies") ?? false)
                 {
                     AssemblyUtil.PreloadAssemblies();
                 }
@@ -580,13 +593,11 @@ namespace Ice
                 //
                 LoadPlugins(ref args);
 
-                //
-                // Initialize the endpoint factories once all the plugins are loaded. This gives
-                // the opportunity for the endpoint factories to find underlying factories.
-                //
-                foreach (IEndpointFactory f in _endpointFactories)
+                // Initialize the endpoint factories once all the plugins are loaded. This gives the opportunity for the
+                // endpoint factories to find underlying factories.
+                foreach (IEndpointFactory factory in _typeToEndpointFactory.Values)
                 {
-                    f.Initialize();
+                    factory.Initialize();
                 }
 
                 //
@@ -602,7 +613,7 @@ namespace Ice
                 }
                 else
                 {
-                    _adminEnabled = GetPropertyAsInt("Ice.Admin.Enabled") > 0;
+                    _adminEnabled = GetPropertyAsBool("Ice.Admin.Enabled") ?? false;
                 }
 
                 _adminFacetFilter = new HashSet<string>(
@@ -719,7 +730,7 @@ namespace Ice
                 //
                 lock (this)
                 {
-                    if (!_printProcessIdDone && GetPropertyAsInt("Ice.PrintProcessId") > 0)
+                    if (!_printProcessIdDone && (GetPropertyAsBool("Ice.PrintProcessId") ?? false))
                     {
                         using var p = System.Diagnostics.Process.GetCurrentProcess();
                         Console.WriteLine(p.Id);
@@ -732,7 +743,7 @@ namespace Ice
                 // initialization until after it has interacted directly with the
                 // plug-ins.
                 //
-                if ((GetPropertyAsInt("Ice.InitPlugins") ?? 1) > 0)
+                if (GetPropertyAsBool("Ice.InitPlugins") ?? true)
                 {
                     InitializePlugins();
                 }
@@ -742,7 +753,7 @@ namespace Ice
                 // and eventually registers a process proxy with the Ice locator (allowing
                 // remote clients to invoke on Ice.Admin facets as soon as it's registered).
                 //
-                if ((GetPropertyAsInt("Ice.Admin.DelayCreation") ?? 0) <= 0)
+                if (!(GetPropertyAsBool("Ice.Admin.DelayCreation") ?? false))
                 {
                     GetAdmin();
                 }
@@ -862,446 +873,6 @@ namespace Ice
             return _adminAdapter.CreateProxy(adminIdentity, IObjectPrx.Factory);
         }
 
-        public Reference CreateReference(string s, string? propertyPrefix = null)
-        {
-            const string delim = " \t\n\r";
-
-            int beg;
-            int end = 0;
-
-            beg = IceUtilInternal.StringUtil.FindFirstNotOf(s, delim, end);
-            if (beg == -1)
-            {
-                throw new FormatException($"no non-whitespace characters found in `{s}'");
-            }
-
-            //
-            // Extract the identity, which may be enclosed in single
-            // or double quotation marks.
-            //
-            string idstr;
-            end = IceUtilInternal.StringUtil.CheckQuote(s, beg);
-            if (end == -1)
-            {
-                throw new FormatException($"mismatched quotes around identity in `{s} '");
-            }
-            else if (end == 0)
-            {
-                end = IceUtilInternal.StringUtil.FindFirstOf(s, delim + ":@", beg);
-                if (end == -1)
-                {
-                    end = s.Length;
-                }
-                idstr = s[beg..end];
-            }
-            else
-            {
-                beg++; // Skip leading quote
-                idstr = s[beg..end];
-                end++; // Skip trailing quote
-            }
-
-            if (beg == end)
-            {
-                throw new FormatException($"no identity in `{s}'");
-            }
-
-            //
-            // Parsing the identity may raise FormatException.
-            //
-            var ident = Identity.Parse(idstr);
-
-            string facet = "";
-            InvocationMode mode = InvocationMode.Twoway;
-            Encoding encoding = DefaultEncoding;
-            Protocol protocol = Protocol.Ice1;
-            string adapter;
-
-            while (true)
-            {
-                beg = IceUtilInternal.StringUtil.FindFirstNotOf(s, delim, end);
-                if (beg == -1)
-                {
-                    break;
-                }
-
-                if (s[beg] == ':' || s[beg] == '@')
-                {
-                    break;
-                }
-
-                end = IceUtilInternal.StringUtil.FindFirstOf(s, delim + ":@", beg);
-                if (end == -1)
-                {
-                    end = s.Length;
-                }
-
-                if (beg == end)
-                {
-                    break;
-                }
-
-                string option = s[beg..end];
-                if (option.Length != 2 || option[0] != '-')
-                {
-                    throw new FormatException("expected a proxy option but found `{option}' in `{s}'");
-                }
-
-                //
-                // Check for the presence of an option argument. The
-                // argument may be enclosed in single or double
-                // quotation marks.
-                //
-                string? argument = null;
-                int argumentBeg = IceUtilInternal.StringUtil.FindFirstNotOf(s, delim, end);
-                if (argumentBeg != -1)
-                {
-                    char ch = s[argumentBeg];
-                    if (ch != '@' && ch != ':' && ch != '-')
-                    {
-                        beg = argumentBeg;
-                        end = IceUtilInternal.StringUtil.CheckQuote(s, beg);
-                        if (end == -1)
-                        {
-                            throw new FormatException($"mismatched quotes around value for {option} option in `{s}'");
-                        }
-                        else if (end == 0)
-                        {
-                            end = IceUtilInternal.StringUtil.FindFirstOf(s, delim + ":@", beg);
-                            if (end == -1)
-                            {
-                                end = s.Length;
-                            }
-                            argument = s[beg..end];
-                        }
-                        else
-                        {
-                            beg++; // Skip leading quote
-                            argument = s[beg..end];
-                            end++; // Skip trailing quote
-                        }
-                    }
-                }
-
-                //
-                // If any new options are added here,
-                // IceInternal::Reference::toString() and its derived classes must be updated as well.
-                //
-                switch (option[1])
-                {
-                    case 'f':
-                        {
-                            if (argument == null)
-                            {
-                                throw new FormatException($"no argument provided for -f option in `{s}'");
-                            }
-
-                            facet = IceUtilInternal.StringUtil.UnescapeString(argument, 0, argument.Length, "");
-                            break;
-                        }
-
-                    case 't':
-                        {
-                            if (argument != null)
-                            {
-                                throw new FormatException(
-                                    $"unexpected argument `{argument}' provided for -t option in `{s}'");
-                            }
-                            mode = InvocationMode.Twoway;
-                            break;
-                        }
-
-                    case 'o':
-                        {
-                            if (argument != null)
-                            {
-                                throw new FormatException(
-                                    $"unexpected argument `{argument}' provided for -o option in `{s}'");
-                            }
-                            mode = InvocationMode.Oneway;
-                            break;
-                        }
-
-                    case 'O':
-                        {
-                            if (argument != null)
-                            {
-                                throw new FormatException(
-                                    $"unexpected argument `{argument}' provided for -O option in `{s}'");
-                            }
-                            mode = InvocationMode.BatchOneway;
-                            break;
-                        }
-
-                    case 'd':
-                        {
-                            if (argument != null)
-                            {
-                                throw new FormatException(
-                                    $"unexpected argument `{argument}' provided for -d option in `{s}'");
-                            }
-                            mode = InvocationMode.Datagram;
-                            break;
-                        }
-
-                    case 'D':
-                        {
-                            if (argument != null)
-                            {
-                                throw new FormatException(
-                                    $"unexpected argument `{argument}' provided for -D option in `{s}'");
-                            }
-                            mode = InvocationMode.BatchDatagram;
-                            break;
-                        }
-
-                    case 's':
-                        {
-                            if (argument != null)
-                            {
-                                throw new FormatException(
-                                    $"unexpected argument `{argument}' provided for -s option in `{s}'");
-                            }
-                            Logger.Warning($"while parsing `{s}': the `-s' proxy option no longer has any effect");
-                            break;
-                        }
-
-                    case 'e':
-                        {
-                            if (argument == null)
-                            {
-                                throw new FormatException($"no argument provided for -e option in `{s}'");
-                            }
-
-                            encoding = Encoding.Parse(argument);
-                            break;
-                        }
-
-                    case 'p':
-                        {
-                            if (argument == null)
-                            {
-                                throw new FormatException($"no argument provided for -p option `{s}'");
-                            }
-
-                            protocol = ProtocolExtensions.Parse(argument);
-                            break;
-                        }
-
-                    default:
-                        {
-                            throw new FormatException("unknown option `{option}' in `{s}'");
-                        }
-                }
-            }
-
-            if (beg == -1)
-            {
-                return CreateReference(ident, facet, mode, protocol, encoding, Array.Empty<Endpoint>(),
-                    null, propertyPrefix);
-            }
-
-            var endpoints = new List<Endpoint>();
-
-            if (s[beg] == ':')
-            {
-                var unknownEndpoints = new List<string>();
-                end = beg;
-
-                while (end < s.Length && s[end] == ':')
-                {
-                    beg = end + 1;
-
-                    end = beg;
-                    while (true)
-                    {
-                        end = s.IndexOf(':', end);
-                        if (end == -1)
-                        {
-                            end = s.Length;
-                            break;
-                        }
-                        else
-                        {
-                            bool quoted = false;
-                            int quote = beg;
-                            while (true)
-                            {
-                                quote = s.IndexOf('\"', quote);
-                                if (quote == -1 || end < quote)
-                                {
-                                    break;
-                                }
-                                else
-                                {
-                                    quote = s.IndexOf('\"', ++quote);
-                                    if (quote == -1)
-                                    {
-                                        break;
-                                    }
-                                    else if (end < quote)
-                                    {
-                                        quoted = true;
-                                        break;
-                                    }
-                                    ++quote;
-                                }
-                            }
-                            if (!quoted)
-                            {
-                                break;
-                            }
-                            ++end;
-                        }
-                    }
-
-                    string es = s[beg..end];
-                    Endpoint? endp = CreateEndpoint(es, false);
-                    if (endp != null)
-                    {
-                        endpoints.Add(endp);
-                    }
-                    else
-                    {
-                        unknownEndpoints.Add(es);
-                    }
-                }
-
-                if (endpoints.Count == 0)
-                {
-                    Debug.Assert(unknownEndpoints.Count > 0);
-                    throw new FormatException($"invalid endpoint `{unknownEndpoints[0]}' in `{s}'");
-                }
-                else if (unknownEndpoints.Count != 0 && (GetPropertyAsInt("Ice.Warn.Endpoints") ?? 1) > 0)
-                {
-                    var msg = new StringBuilder("Proxy contains unknown endpoints:");
-                    int sz = unknownEndpoints.Count;
-                    for (int idx = 0; idx < sz; ++idx)
-                    {
-                        msg.Append(" `");
-                        msg.Append(unknownEndpoints[idx]);
-                        msg.Append("'");
-                    }
-                    Logger.Warning(msg.ToString());
-                }
-                return CreateReference(ident, facet, mode, protocol, encoding, endpoints, null, propertyPrefix);
-            }
-            else if (s[beg] == '@')
-            {
-                beg = IceUtilInternal.StringUtil.FindFirstNotOf(s, delim, beg + 1);
-                if (beg == -1)
-                {
-                    throw new FormatException($"missing adapter id in `{s}'");
-                }
-
-                string adapterstr;
-                end = IceUtilInternal.StringUtil.CheckQuote(s, beg);
-                if (end == -1)
-                {
-                    throw new FormatException($"mismatched quotes around adapter id in `{s}'");
-                }
-                else if (end == 0)
-                {
-                    end = IceUtilInternal.StringUtil.FindFirstOf(s, delim, beg);
-                    if (end == -1)
-                    {
-                        end = s.Length;
-                    }
-                    adapterstr = s[beg..end];
-                }
-                else
-                {
-                    beg++; // Skip leading quote
-                    adapterstr = s[beg..end];
-                    end++; // Skip trailing quote
-                }
-
-                if (end != s.Length && IceUtilInternal.StringUtil.FindFirstNotOf(s, delim, end) != -1)
-                {
-                    throw new FormatException(
-                        $"invalid trailing characters after `{s.Substring(0, end + 1)}' in `{s}'");
-                }
-
-                adapter = IceUtilInternal.StringUtil.UnescapeString(adapterstr, 0, adapterstr.Length, "");
-
-                if (adapter.Length == 0)
-                {
-                    throw new FormatException($"empty adapter id in `{s}'");
-                }
-                return CreateReference(ident, facet, mode, protocol, encoding, Array.Empty<Endpoint>(),
-                    adapter, propertyPrefix);
-            }
-
-            throw new FormatException($"malformed proxy `{s}'");
-        }
-
-        public Reference CreateReference(Identity ident, InputStream istr)
-        {
-            //
-            // Don't read the identity here. Operations calling this
-            // constructor read the identity, and pass it as a parameter.
-            //
-
-            //
-            // For compatibility with the old FacetPath.
-            //
-            string[] facetPath = istr.ReadStringArray();
-            string facet;
-            if (facetPath.Length > 0)
-            {
-                if (facetPath.Length > 1)
-                {
-                    throw new InvalidDataException($"invalid facet path length: {facetPath.Length}");
-                }
-                facet = facetPath[0];
-            }
-            else
-            {
-                facet = "";
-            }
-
-            int mode = istr.ReadByte();
-            if (mode < 0 || mode > (int)InvocationMode.Last)
-            {
-                throw new InvalidDataException($"invalid invocation mode: {mode}");
-            }
-
-            istr.ReadBool(); // secure option, ignored
-
-            byte major = istr.ReadByte();
-            byte minor = istr.ReadByte();
-            if (minor != 0)
-            {
-                throw new InvalidDataException($"received proxy with protocol set to {major}.{minor}");
-            }
-            var protocol = (Protocol)major;
-
-            major = istr.ReadByte();
-            minor = istr.ReadByte();
-            var encoding = new Encoding(major, minor);
-
-            Endpoint[] endpoints;
-            string adapterId = "";
-
-            int sz = istr.ReadSize();
-            if (sz > 0)
-            {
-                endpoints = new Endpoint[sz];
-                for (int i = 0; i < sz; i++)
-                {
-                    endpoints[i] = istr.ReadEndpoint();
-                }
-            }
-            else
-            {
-                endpoints = Array.Empty<Endpoint>();
-                adapterId = istr.ReadString();
-            }
-
-            return CreateReference(ident, facet, (InvocationMode)mode, protocol, encoding, endpoints, adapterId,
-                                   null);
-        }
-
         /// <summary>
         /// Destroy the communicator.
         /// This operation calls shutdown
@@ -1335,7 +906,7 @@ namespace Ice
             // connections and wait for the connections to be finished.
             //
             Shutdown();
-            _outgoingConnectionFactory.Destroy();
+            _outgoingConnectionFactory?.Destroy();
 
             //
             // First wait for shutdown to finish.
@@ -1344,60 +915,61 @@ namespace Ice
 
             DestroyAllObjectAdapters();
 
-            _outgoingConnectionFactory.WaitUntilFinished();
+            _outgoingConnectionFactory?.WaitUntilFinished();
 
             DestroyRetryQueue(); // Must be called before destroying thread pools.
 
-            if (Observer != null)
-            {
-                Observer.SetObserverUpdater(null);
-            }
+            Observer?.SetObserverUpdater(null);
 
             if (Logger is ILoggerAdminLogger)
             {
                 ((ILoggerAdminLogger)Logger).Destroy();
             }
 
-            lock (_endpointHostResolverThread)
+            if (_endpointHostResolverThread != null)
             {
-                Debug.Assert(!_endpointHostResolverDestroyed);
-                _endpointHostResolverDestroyed = true;
-                Monitor.Pulse(_endpointHostResolverThread);
+                lock (_endpointHostResolverThread)
+                {
+                    Debug.Assert(!_endpointHostResolverDestroyed);
+                    _endpointHostResolverDestroyed = true;
+                    Monitor.Pulse(_endpointHostResolverThread);
+                }
             }
 
             //
             // Wait for all the threads to be finished.
             //
-            _timer.Destroy();
+            _timer?.Destroy();
 
-            _endpointHostResolverThread.Join();
+            _endpointHostResolverThread?.Join();
 
             lock (_routerInfoTable)
             {
-                foreach (RouterInfo i in _routerInfoTable.Values)
+                foreach (RouterInfo routerInfo in _routerInfoTable.Values)
                 {
-                    i.Destroy();
+                    routerInfo.Destroy();
                 }
                 _routerInfoTable.Clear();
             }
 
             lock (_locatorInfoMap)
             {
-                foreach (LocatorInfo info in _locatorInfoMap.Values)
+                foreach (LocatorInfo locatorInfo in _locatorInfoMap.Values)
                 {
-                    info.Destroy();
+                    locatorInfo.Destroy();
                 }
                 _locatorInfoMap.Clear();
                 _locatorTableMap.Clear();
             }
 
-            foreach (IEndpointFactory f in _endpointFactories)
+            foreach (IEndpointFactory factory in _typeToEndpointFactory.Values)
             {
-                f.Destroy();
+                factory.Destroy();
             }
-            _endpointFactories.Clear();
+            _typeToEndpointFactory.Clear();
+            _transportToEndpointFactory.Clear();
 
-            if (GetPropertyAsInt("Ice.Warn.UnusedProperties") > 0)
+            if (GetPropertyAsBool("Ice.Warn.UnusedProperties") ?? false)
             {
                 List<string> unusedProperties = GetUnusedProperties();
                 if (unusedProperties.Count != 0)
@@ -1421,16 +993,16 @@ namespace Ice
                 plugins = new List<(string Name, IPlugin Plugin)>(_plugins);
             }
             plugins.Reverse();
-            foreach ((string Name, IPlugin Plugin) in plugins)
+            foreach ((string name, IPlugin plugin) in plugins)
             {
                 try
                 {
-                    Plugin.Destroy();
+                    plugin.Destroy();
                 }
                 catch (Exception ex)
                 {
                     Util.GetProcessLogger().Warning(
-                        $"unexpected exception raised by plug-in `{Name}' destruction:\n{ex}");
+                        $"unexpected exception raised by plug-in `{name}' destruction:\n{ex}");
                 }
             }
 
@@ -1623,6 +1195,14 @@ namespace Ice
             }
         }
 
+        // Registers an endpoint factory.
+        // TODO: make public and add Ice prefix when removing ITransportPluginFacade.
+        internal void AddEndpointFactory(IEndpointFactory factory)
+        {
+            _typeToEndpointFactory.Add(factory.Type(), factory);
+            _transportToEndpointFactory.Add(factory.Transport(), factory);
+        }
+
         internal int CheckRetryAfterException(System.Exception ex, Reference reference, ref int cnt)
         {
             ILogger logger = Logger;
@@ -1745,36 +1325,13 @@ namespace Ice
             return interval;
         }
 
-        internal Reference CreateReference(Identity ident, string facet, Reference tmpl,
-            IReadOnlyList<Endpoint> endpoints)
-        {
-            return CreateReference(ident, facet, tmpl.InvocationMode, tmpl.Protocol, tmpl.Encoding,
-                          endpoints, null, null);
-        }
+        // Finds an endpoint factory previously registered using AddEndpointFactory.
+        internal IEndpointFactory? FindEndpointFactory(string transport) =>
+            _transportToEndpointFactory.TryGetValue(transport, out IEndpointFactory? factory) ? factory : null;
 
-        internal Reference CreateReference(Identity ident, string facet, Reference tmpl, string adapterId)
-        {
-            //
-            // Create new reference
-            //
-            return CreateReference(ident, facet, tmpl.InvocationMode, tmpl.Protocol, tmpl.Encoding,
-                          Array.Empty<Endpoint>(), adapterId, null);
-        }
-
-        internal Reference CreateReference(Identity identity, Connection connection)
-        {
-            // Fixed reference
-            return new Reference(
-                communicator: this,
-                compress: null,
-                context: DefaultContext,
-                encoding: DefaultEncoding,
-                facet: "",
-                fixedConnection: connection,
-                identity: identity,
-                invocationMode: connection.Endpoint.IsDatagram ? InvocationMode.Datagram : InvocationMode.Twoway,
-                invocationTimeout: -1);
-        }
+         // Finds an endpoint factory previously registered using AddEndpointFactory.
+        internal IEndpointFactory? FindEndpointFactory(EndpointType type) =>
+            _typeToEndpointFactory.TryGetValue(type, out IEndpointFactory? factory) ? factory : null;
 
         internal BufSizeWarnInfo GetBufSizeWarn(EndpointType type)
         {
@@ -1810,74 +1367,50 @@ namespace Ice
             }
         }
 
-        // Return the C# class associated with this Slice type-id
-        // Used for both Slice classes and exceptions
-        internal Type? ResolveClass(string typeId)
-        {
-            return _typeIdCache.GetOrAdd(typeId, typeId =>
+        // Returns the IClassFactory associated with this Slice type ID, not null if not found.
+        internal IClassFactory? FindClassFactory(string typeId) =>
+            _classFactoryCache.GetOrAdd(typeId, typeId =>
             {
-                // First attempt corresponds to no cs:namespace metadata in the
-                // enclosing top-level module
                 string className = TypeIdToClassName(typeId);
-                Type? classType = AssemblyUtil.FindType(className);
-
-                // If this fails, look for helper classes in the typeIdNamespaces namespace(s)
-                if (classType == null)
+                foreach (string ns in _classFactoryNamespaces)
                 {
-                    foreach (string ns in _typeIdNamespaces)
+                    Type? factoryClass = AssemblyUtil.FindType($"{ns}.{className}");
+                    if (factoryClass != null)
                     {
-                        Type? helper = AssemblyUtil.FindType($"{ns}.{className}");
-                        if (helper != null)
-                        {
-                            try
-                            {
-                                classType = helper.GetProperty("targetClass")!.PropertyType;
-                                break; // foreach
-                            }
-                            catch (Exception)
-                            {
-                            }
-                        }
+                        return (IClassFactory?)Activator.CreateInstance(factoryClass, false);
                     }
                 }
-
-                // Ensure the class can be instantiate.
-                if (classType != null && !classType.IsAbstract && !classType.IsInterface)
-                {
-                    return classType;
-                }
-
                 return null;
             });
-        }
 
-        internal Type? ResolveCompactId(int compactId)
-        {
-            return _compactIdCache.GetOrAdd(compactId, compactId =>
+        internal IClassFactory? FindClassFactory(int compactId) =>
+           _compactIdCache.GetOrAdd(compactId, compactId =>
+           {
+               foreach (string ns in _classFactoryNamespaces)
+               {
+                   Type? factoryClass = AssemblyUtil.FindType($"{ns}.CompactId_{compactId}");
+                   if (factoryClass != null)
+                   {
+                       return (IClassFactory?)Activator.CreateInstance(factoryClass, false);
+                   }
+               }
+               return null;
+           });
+
+        internal IRemoteExceptionFactory? FindRemoteExceptionFactory(string typeId) =>
+            _remoteExceptionFactoryCache.GetOrAdd(typeId, typeId =>
             {
-                foreach (string ns in _compactIdNamespaces)
+                string className = TypeIdToClassName(typeId);
+                foreach (string ns in _remoteExceptionFactoryNamespaces)
                 {
-                    try
+                    Type? factoryClass = AssemblyUtil.FindType($"{ns}.{className}");
+                    if (factoryClass != null)
                     {
-                        Type? classType = AssemblyUtil.FindType($"{ns}.TypeId_{compactId}");
-                        if (classType != null)
-                        {
-                            string? result = (string?)classType.GetField("typeId")!.GetValue(null);
-                            if (result != null)
-                            {
-                                return ResolveClass(result);
-                            }
-                            return null;
-                        }
-                    }
-                    catch (Exception)
-                    {
+                        return (IRemoteExceptionFactory?)Activator.CreateInstance(factoryClass, false);
                     }
                 }
-
                 return null;
             });
-        }
 
         internal void SetRcvBufSizeWarn(EndpointType type, int size)
         {
@@ -1996,54 +1529,6 @@ namespace Ice
             }
         }
 
-        private void CheckForUnknownProperties(string prefix)
-        {
-            //
-            // Do not warn about unknown properties if Ice prefix, ie Ice, Glacier2, etc
-            //
-            foreach (string name in PropertyNames.clPropNames)
-            {
-                if (prefix.StartsWith(string.Format("{0}.", name), StringComparison.Ordinal))
-                {
-                    return;
-                }
-            }
-
-            var unknownProps = new List<string>();
-            Dictionary<string, string> props = GetProperties(forPrefix: $"{prefix}.");
-            foreach (string prop in props.Keys)
-            {
-                bool valid = false;
-                for (int i = 0; i < _suffixes.Length; ++i)
-                {
-                    string pattern = "^" + Regex.Escape(prefix + ".") + _suffixes[i] + "$";
-                    if (new Regex(pattern).Match(prop).Success)
-                    {
-                        valid = true;
-                        break;
-                    }
-                }
-
-                if (!valid)
-                {
-                    unknownProps.Add(prop);
-                }
-            }
-
-            if (unknownProps.Count != 0)
-            {
-                var message = new StringBuilder("found unknown properties for proxy '");
-                message.Append(prefix);
-                message.Append("':");
-                foreach (string s in unknownProps)
-                {
-                    message.Append("\n    ");
-                    message.Append(s);
-                }
-                Logger.Warning(message.ToString());
-            }
-        }
-
         private INetworkProxy? CreateNetworkProxy(int protocolSupport)
         {
             string? proxyHost = GetProperty("Ice.SOCKSProxyHost");
@@ -2063,166 +1548,6 @@ namespace Ice
             }
 
             return null;
-        }
-
-        private Reference CreateReference(
-            Identity ident,
-            string facet,
-            InvocationMode mode,
-            Protocol protocol,
-            Encoding encoding,
-            IReadOnlyList<Endpoint> endpoints,
-            string? adapterId,
-            string? propertyPrefix)
-        {
-            lock (this)
-            {
-                if (_state == StateDestroyed)
-                {
-                    throw new CommunicatorDestroyedException();
-                }
-            }
-
-            //
-            // Default local proxy options.
-            //
-            LocatorInfo? locatorInfo = null;
-            if (_defaultLocator != null)
-            {
-                if (!_defaultLocator.IceReference.Encoding.Equals(encoding))
-                {
-                    locatorInfo = GetLocatorInfo(_defaultLocator.Clone(encoding: encoding));
-                }
-                else
-                {
-                    locatorInfo = GetLocatorInfo(_defaultLocator);
-                }
-            }
-            RouterInfo? routerInfo = null;
-            if (_defaultRouter != null)
-            {
-                routerInfo = GetRouterInfo(_defaultRouter);
-            }
-            bool collocOptimized = DefaultCollocationOptimized;
-            bool cacheConnection = true;
-            bool preferNonSecure = DefaultPreferNonSecure;
-            EndpointSelectionType endpointSelection = DefaultEndpointSelection;
-            int locatorCacheTimeout = DefaultLocatorCacheTimeout;
-            int invocationTimeout = DefaultInvocationTimeout;
-            IReadOnlyDictionary<string, string>? context = null;
-
-            //
-            // Override the defaults with the proxy properties if a property prefix is defined.
-            //
-            if (propertyPrefix != null && propertyPrefix.Length > 0)
-            {
-                //
-                // Warn about unknown properties.
-                //
-                if ((GetPropertyAsInt("Ice.Warn.UnknownProperties") ?? 1) > 0)
-                {
-                    CheckForUnknownProperties(propertyPrefix);
-                }
-
-                string property = $"{propertyPrefix}.Locator";
-                ILocatorPrx? locator = GetPropertyAsProxy(property, ILocatorPrx.Factory);
-                if (locator != null)
-                {
-                    if (!locator.IceReference.Encoding.Equals(encoding))
-                    {
-                        locatorInfo = GetLocatorInfo(locator.Clone(encoding: encoding));
-                    }
-                    else
-                    {
-                        locatorInfo = GetLocatorInfo(locator);
-                    }
-                }
-
-                property = $"{propertyPrefix}.Router";
-                IRouterPrx? router = GetPropertyAsProxy(property, IRouterPrx.Factory);
-                if (router != null)
-                {
-                    if (propertyPrefix.EndsWith(".Router", StringComparison.Ordinal))
-                    {
-                        Logger.Warning($"`{property}={GetProperty(property)}': cannot set a router on a router; setting ignored");
-                    }
-                    else
-                    {
-                        routerInfo = GetRouterInfo(router);
-                    }
-                }
-
-                property = $"{propertyPrefix}.CollocationOptimized";
-                collocOptimized = (GetPropertyAsInt(property) ?? (collocOptimized ? 1 : 0)) > 0;
-
-                property = $"{propertyPrefix}.ConnectionCached";
-                cacheConnection = (GetPropertyAsInt(property) ?? (cacheConnection ? 1 : 0)) > 0;
-
-                property = $"{propertyPrefix}.PreferNonSecure";
-                preferNonSecure = (GetPropertyAsInt(property) ?? (preferNonSecure ? 1 : 0)) > 0;
-
-                property = propertyPrefix + ".EndpointSelection";
-                string? val = GetProperty(property);
-                if (val != null)
-                {
-                    endpointSelection = Enum.Parse<EndpointSelectionType>(val);
-                }
-
-                property = $"{propertyPrefix}.LocatorCacheTimeout";
-                val = GetProperty(property);
-                if (val != null)
-                {
-                    locatorCacheTimeout = GetPropertyAsInt(property) ?? locatorCacheTimeout;
-                    if (locatorCacheTimeout < -1)
-                    {
-                        locatorCacheTimeout = -1;
-                        Logger.Warning($"invalid value for {property} `{val}': defaulting to -1");
-                    }
-                }
-
-                property = $"{propertyPrefix}.InvocationTimeout";
-                val = GetProperty(property);
-                if (val != null)
-                {
-                    invocationTimeout = GetPropertyAsInt(property) ?? invocationTimeout;
-                    if (invocationTimeout < 1 && invocationTimeout != -1)
-                    {
-                        invocationTimeout = -1;
-                        Logger.Warning($"invalid value for {property} `{val}': defaulting to -1");
-                    }
-                }
-
-                property = $"{propertyPrefix}.Context.";
-                context = GetProperties(forPrefix: property).ToDictionary(e => e.Key.Substring(property.Length),
-                                                                          e => e.Value);
-            }
-
-            if (context == null || context.Count == 0)
-            {
-                context = DefaultContext;
-            }
-
-            // routable reference
-            return new Reference(adapterId: adapterId ?? "", // TODO: make adapterId parameter non null
-                                 cacheConnection: cacheConnection,
-                                 collocationOptimized: collocOptimized,
-                                 communicator: this,
-                                 compress: null,
-                                 connectionId: "",
-                                 connectionTimeout: null,
-                                 context: context,
-                                 encoding: encoding,
-                                 endpointSelection: endpointSelection,
-                                 endpoints: endpoints,
-                                 facet: facet,
-                                 identity: ident,
-                                 invocationMode: mode,
-                                 invocationTimeout: invocationTimeout,
-                                 locatorCacheTimeout: locatorCacheTimeout,
-                                 locatorInfo: locatorInfo,
-                                 preferNonSecure: preferNonSecure,
-                                 protocol: protocol,
-                                 routerInfo: routerInfo);
         }
     }
 }

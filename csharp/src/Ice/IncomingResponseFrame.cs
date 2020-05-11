@@ -38,11 +38,7 @@ namespace Ice
         {
             if (ReplyStatus == ReplyStatus.OK)
             {
-                var istr = new InputStream(_communicator, Payload, 1);
-                istr.StartEncapsulation();
-                T ret = reader(istr);
-                istr.EndEncapsulation();
-                return ret;
+                return InputStream.ReadEncapsulation(_communicator, Payload.Slice(1), reader);
             }
             else
             {
@@ -56,9 +52,7 @@ namespace Ice
         {
             if (ReplyStatus == ReplyStatus.OK)
             {
-                var istr = new InputStream(_communicator, Payload, 1);
-                istr.StartEncapsulation();
-                istr.EndEncapsulation();
+                InputStream.ReadEmptyEncapsulation(_communicator, Payload.Slice(1));
             }
             else
             {
@@ -108,11 +102,7 @@ namespace Ice
             {
                 case ReplyStatus.UserException:
                 {
-                    var istr = new InputStream(_communicator, Payload, 1);
-                    istr.StartEncapsulation();
-                    RemoteException ex = istr.ReadException();
-                    istr.EndEncapsulation();
-                    return ex;
+                    return InputStream.ReadEncapsulation(_communicator, Payload.Slice(1), istr => istr.ReadException());
                 }
                 case ReplyStatus.ObjectNotExistException:
                 case ReplyStatus.FacetNotExistException:
@@ -131,21 +121,13 @@ namespace Ice
         }
 
         internal UnhandledException ReadUnhandledException() =>
-            new UnhandledException(InputStream.ReadString(Payload.Slice(1)), Identity.Empty, "", "");
+            new UnhandledException(InputStream.ReadString(Payload.Slice(1), Encoding), Identity.Empty, "", "");
 
         internal DispatchException ReadDispatchException()
         {
             var istr = new InputStream(_communicator, Payload, 1);
             var identity = new Identity(istr);
-
-            // For compatibility with the old FacetPath.
-            string[] facetPath = istr.ReadStringArray();
-            if (facetPath.Length > 1)
-            {
-                throw new InvalidDataException($"invalid facet path length: {facetPath.Length}");
-            }
-            string facet = facetPath.Length > 0 ? facetPath[0] : "";
-
+            string facet = istr.ReadFacet();
             string operation = istr.ReadString();
 
             if (ReplyStatus == ReplyStatus.OperationNotExistException)

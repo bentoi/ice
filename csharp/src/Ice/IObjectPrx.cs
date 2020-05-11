@@ -241,13 +241,13 @@ namespace Ice
         public static readonly ProxyFactory<IObjectPrx> Factory = (reference) => new ObjectPrx(reference);
 
         public static IObjectPrx Parse(string s, Communicator communicator) =>
-            new ObjectPrx(communicator.CreateReference(s));
+            new ObjectPrx(Reference.Parse(s, communicator));
 
         public static bool TryParse(string s, Communicator communicator, out IObjectPrx? prx)
         {
             try
             {
-                prx = new ObjectPrx(communicator.CreateReference(s));
+                prx = new ObjectPrx(Reference.Parse(s, communicator));
             }
             catch (Exception)
             {
@@ -338,7 +338,7 @@ namespace Ice
         private static OutgoingRequestWithEmptyParamList<string[]>? _iceI_IdsRequest;
         private static OutgoingRequestWithEmptyParamList<string[]> IceI_IdsRequest =>
             _iceI_IdsRequest ??= new OutgoingRequestWithEmptyParamList<string[]>("ice_ids", idempotent: true,
-                reader: istr => istr.ReadStringArray());
+                reader: istr => istr.ReadArray(1, InputStream.IceReaderIntoString));
 
         private static OutgoingRequestWithEmptyParamList<string>? _iceI_IdRequest;
         private static OutgoingRequestWithEmptyParamList<string> IceI_IdRequest =>
@@ -347,7 +347,7 @@ namespace Ice
 
         private static OutgoingRequestWithEmptyParamList? _iceI_PingRequest;
         private static OutgoingRequestWithEmptyParamList IceI_PingRequest =>
-            _iceI_PingRequest ??= new OutgoingRequestWithEmptyParamList("ice_ping", idempotent: true);
+            _iceI_PingRequest ??= new OutgoingRequestWithEmptyParamList("ice_ping", idempotent: true, oneway: false);
     }
 
     // The base class for all proxies. It's a publicly visible Ice-internal class. Applications should not use it
@@ -393,7 +393,7 @@ namespace Ice
             }
             string? str = info.GetString("proxy");
             Debug.Assert(str != null);
-            IceReference = communicator.CreateReference(str, null);
+            IceReference = Reference.Parse(str, communicator);
         }
     }
 }

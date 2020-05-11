@@ -3,11 +3,11 @@
 //
 
 using System;
-using System.Linq;
-using System.Text;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Ice
@@ -28,7 +28,7 @@ namespace Ice
             }
         }
 
-        /// <summary>Get the value of a property. If the property is not set, returns null.</summary>
+        /// <summary>Gets the value of a property. If the property is not set, returns null.</summary>
         /// <param name="name">The property name.</param>
         /// <returns>The property value.</returns>
         public string? GetProperty(string name)
@@ -44,7 +44,14 @@ namespace Ice
             }
         }
 
-        /// <summary>Get the value of a property as an integer. If the property is not set, returns null.</summary>
+        /// <summary>Gets the value of a property as a bool. If the property is not set, returns null.</summary>
+        /// <param name="name">The property name.</param>
+        /// <returns>True if the property value is parsed into an integer greater than 0; false of the property value
+        /// is parsed into an integer smaller or equal to 0.</returns>
+        public bool? GetPropertyAsBool(string name) =>
+            GetPropertyAsInt(name) is int intValue ? intValue > 0 : (bool?)null;
+
+        /// <summary>Gets the value of a property as an integer. If the property is not set, returns null.</summary>
         /// <param name="name">The property name.</param>
         /// <returns>The property value parsed into an integer or null.</returns>
         public int? GetPropertyAsInt(string name)
@@ -58,10 +65,10 @@ namespace Ice
                         pv.Used = true;
                         return int.Parse(pv.Val, CultureInfo.InvariantCulture);
                     }
-                    catch (Exception ex)
+                    catch (FormatException ex)
                     {
-                        throw new InvalidConfigurationException($"illegal value `{pv.Val}'; {name} must be an integer",
-                                                                ex);
+                        throw new InvalidConfigurationException(
+                            $"the value of property `{name}' is not an integer", ex);
                     }
                 }
                 return null;
@@ -69,7 +76,7 @@ namespace Ice
         }
 
         /// <summary>
-        /// Get the value of a property as an array of strings. If the property is not set, returns null.
+        /// Gets the value of a property as an array of strings. If the property is not set, returns null.
         /// The value must contain strings separated by whitespace or comma. These strings can contain
         /// whitespace and commas if they are enclosed in single or double quotes. Within single quotes or
         /// double quotes, you can escape the quote in question with \, e.g. O'Reilly can be written as
@@ -90,7 +97,7 @@ namespace Ice
             }
         }
 
-        /// <summary>Get all properties whose keys begins with forPrefix.
+        /// <summary>Gets all properties whose keys begins with forPrefix.
         /// If forPrefix is an empty string, then all properties are returned.
         /// </summary>
         /// <param name="forPrefix">The prefix to search for (empty string if none).</param>
@@ -114,18 +121,27 @@ namespace Ice
             }
         }
 
-        /// <summary>Get the value of a property as a proxy. If the property is not set, returns null.</summary>
+        /// <summary>Gets the value of a property as a proxy. If the property is not set, returns null.</summary>
         /// <param name="name">The property name. The property name is also used as the prefix for proxy options.</param>
         /// <param name="factory">The proxy factory. Use IAPrx.Factory to create IAPrx proxies.</param>
         /// <returns>The property value parsed into a proxy or null.</returns>
         public T? GetPropertyAsProxy<T>(string name, ProxyFactory<T> factory) where T : class, IObjectPrx
         {
-            string? proxy = GetProperty(name);
-            if (proxy == null)
+            if (GetProperty(name) is string value)
+            {
+                try
+                {
+                    return factory(Reference.Parse(value, name, this));
+                }
+                catch (FormatException ex)
+                {
+                    throw new InvalidConfigurationException($"the value of property `{name}' is not a proxy", ex);
+                }
+            }
+            else
             {
                 return null;
             }
-            return factory(CreateReference(proxy, name));
         }
 
         /// <summary>Insert a new property or change the value of an existing property.
@@ -189,6 +205,52 @@ namespace Ice
             }
         }
 
+        internal void CheckForUnknownProperties(string prefix)
+        {
+            // Do not warn about unknown properties if Ice prefix, ie Ice, Glacier2, etc
+            foreach (string name in PropertyNames.ClassPropertyNames)
+            {
+                if (prefix.StartsWith(string.Format("{0}.", name), StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+
+            var unknownProps = new List<string>();
+            Dictionary<string, string> props = GetProperties(forPrefix: $"{prefix}.");
+            foreach (string prop in props.Keys)
+            {
+                bool valid = false;
+                for (int i = 0; i < _suffixes.Length; ++i)
+                {
+                    string pattern = "^" + Regex.Escape(prefix + ".") + _suffixes[i] + "$";
+                    if (new Regex(pattern).Match(prop).Success)
+                    {
+                        valid = true;
+                        break;
+                    }
+                }
+
+                if (!valid)
+                {
+                    unknownProps.Add(prop);
+                }
+            }
+
+            if (unknownProps.Count != 0)
+            {
+                var message = new StringBuilder("found unknown properties for proxy '");
+                message.Append(prefix);
+                message.Append("':");
+                foreach (string s in unknownProps)
+                {
+                    message.Append("\n    ");
+                    message.Append(s);
+                }
+                Logger.Warning(message.ToString());
+            }
+        }
+
         // SetPropertyImpl sets a property and returns true when the property
         // was added, changed or removed, and false otherwise.
         private bool SetPropertyImpl(string name, string value)
@@ -232,7 +294,7 @@ namespace Ice
             if (dotPos != -1)
             {
                 string prefix = name.Substring(0, dotPos);
-                foreach (IceInternal.Property[] validProps in IceInternal.PropertyNames.validProps)
+                foreach (Property[] validProps in PropertyNames.ValidProperties)
                 {
                     string pattern = validProps[0].Pattern();
                     dotPos = pattern.IndexOf('.');
@@ -246,7 +308,7 @@ namespace Ice
                     }
 
                     bool found = false;
-                    foreach (IceInternal.Property prop in validProps)
+                    foreach (Property prop in validProps)
                     {
                         var r = new Regex(prop.Pattern());
                         Match m = r.Match(name);
@@ -298,7 +360,7 @@ namespace Ice
         /// <param name="args">The command-line args.</param>
         public static void ParseIceArgs(this Dictionary<string, string> into, ref string[] args)
         {
-            foreach (string name in IceInternal.PropertyNames.clPropNames)
+            foreach (string name in PropertyNames.ClassPropertyNames)
             {
                 into.ParseArgs(ref args, name);
             }
@@ -327,10 +389,10 @@ namespace Ice
             {
                 if (arg.StartsWith(prefix, StringComparison.Ordinal))
                 {
-                    (string Name, string Value) = ParseLine((arg.IndexOf('=') == -1 ? $"{arg}=1" : arg).Substring(2));
-                    if (Name.Length > 0)
+                    (string name, string value) = ParseLine((arg.IndexOf('=') == -1 ? $"{arg}=1" : arg).Substring(2));
+                    if (name.Length > 0)
                     {
-                        parsedArgs[Name] = Value;
+                        parsedArgs[name] = value;
                         continue;
                     }
                 }
@@ -363,15 +425,19 @@ namespace Ice
             string? line;
             while ((line = input.ReadLine()) != null)
             {
-                (string Name, string Value) = ParseLine(line);
-                if (Name.Length > 0)
+                (string name, string value) = ParseLine(line);
+                if (name.Length > 0)
                 {
-                    into[Name] = Value;
+                    into[name] = value;
                 }
             }
         }
 
-        internal enum ParseState : byte { Key, Value }
+        internal enum ParseState : byte
+        {
+            Key,
+            Value
+        }
 
         private static (string Name, string Value) ParseLine(string line)
         {

@@ -9,53 +9,86 @@ using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters.Binary;
 
 namespace Ice
 {
-    public delegate T InputStreamReader<T>(InputStream ins);
+    /// <summary>A delegate that reads a value from an input stream.</summary>
+    /// <typeparam name="T">The type of the value to read.</typeparam>
+    /// <param name="istr">The input stream to read from.</param>
+    public delegate T InputStreamReader<T>(InputStream istr);
 
-    /// <summary>
-    /// Interface for input streams used to extract Slice types from a sequence of bytes.
-    /// </summary>
-    public sealed class InputStream
+    /// <summary>Reads a byte buffer encoded using the Ice encoding.</summary>
+    public sealed partial class InputStream
     {
-        public static readonly InputStreamReader<bool> IceReaderIntoBool = (istr) => istr.ReadBool();
-        public static readonly InputStreamReader<byte> IceReaderIntoByte = (istr) => istr.ReadByte();
-        public static readonly InputStreamReader<short> IceReaderIntoShort = (istr) => istr.ReadShort();
-        public static readonly InputStreamReader<int> IceReaderIntoInt = (istr) => istr.ReadInt();
-        public static readonly InputStreamReader<long> IceReaderIntoLong = (istr) => istr.ReadLong();
-        public static readonly InputStreamReader<float> IceReaderIntoFloat = (istr) => istr.ReadFloat();
-        public static readonly InputStreamReader<double> IceReaderIntoDouble = (istr) => istr.ReadDouble();
-        public static readonly InputStreamReader<string> IceReaderIntoString = (istr) => istr.ReadString();
-        public static readonly InputStreamReader<string[]> IceReaderIntoStringArray = (istr) => istr.ReadStringArray();
+        //
+        // Cached InputStreamWriter static objects used by the generated code
+        //
 
-        /// <summary>
-        /// The communicator associated with this stream.
-        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<bool> IceReaderIntoBool = (istr) => istr.ReadBool();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<bool[]> IceReaderIntoBoolArray =
+            (istr) => istr.ReadFixedSizeNumericArray<bool>();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<byte> IceReaderIntoByte = (istr) => istr.ReadByte();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<byte[]> IceReaderIntoByteArray =
+            (istr) => istr.ReadFixedSizeNumericArray<byte>();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<double> IceReaderIntoDouble = (istr) => istr.ReadDouble();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<double[]> IceReaderIntoDoubleArray =
+            (istr) => istr.ReadFixedSizeNumericArray<double>();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<float> IceReaderIntoFloat = (istr) => istr.ReadFloat();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<float[]> IceReaderIntoFloatArray =
+            (istr) => istr.ReadFixedSizeNumericArray<float>();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<int> IceReaderIntoInt = (istr) => istr.ReadInt();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<int[]> IceReaderIntoIntArray =
+            (istr) => istr.ReadFixedSizeNumericArray<int>();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<long> IceReaderIntoLong = (istr) => istr.ReadLong();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<long[]> IceReaderIntoLongArray =
+            (istr) => istr.ReadFixedSizeNumericArray<long>();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<short> IceReaderIntoShort = (istr) => istr.ReadShort();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<short[]> IceReaderIntoShortArray =
+            (istr) => istr.ReadFixedSizeNumericArray<short>();
+
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static readonly InputStreamReader<string> IceReaderIntoString = (istr) => istr.ReadString();
+
+        /// <summary>The communicator associated with this stream.</summary>
         /// <value>The communicator.</value>
         public Communicator Communicator { get; }
 
-        // Returns the sliced data held by the current instance.
-        internal SlicedData? SlicedData
-        {
-            get
-            {
-                Debug.Assert(_current != null);
-                if (_current.Slices == null)
-                {
-                    return null;
-                }
-                else
-                {
-                    Debug.Assert(_encoding != null);
-                    return new SlicedData(_encoding.Value, _current.Slices);
-                }
-            }
-        }
+        /// <summary>The Ice encoding used by this stream when reading its byte buffer.</summary>
+        /// <value>The current encoding.</value>
+        public Encoding Encoding { get; private set; }
 
-        /// <summary>The position (offset) in the underlying buffer.</summary>
+        /// <summary>The 0-based position (index) in the underlying buffer.</summary>
         internal int Pos
         {
             get => _pos;
@@ -70,31 +103,19 @@ namespace Ice
             }
         }
 
-        /// <summary>Returns the current size of the stream.</summary>
-        internal int Size => _buffer.Count;
+        private static readonly System.Text.UTF8Encoding _utf8 = new System.Text.UTF8Encoding(false, true);
 
-        // When set, we are in reading a top-level encapsulation.
-        private Encaps? _mainEncaps;
+        // True when reading a top-level encapsulation; otherwise, false.
+        private bool InEncapsulation { get; }
 
-        // Temporary upper limit set by an encapsulation. See Remaining.
-        private int? _limit;
+        // The byte buffer we are reading.
+        private ArraySegment<byte> _buffer;
 
-        // The sum of all the minimum sizes (in bytes) of the sequences read in this buffer. Must not exceed the buffer
-        // size.
-        private int _minTotalSeqSize = 0;
+        // Data for the class or exception instance that is currently getting unmarshaled.
+        private InstanceData? _current;
 
-        private readonly ArraySegment<byte> _buffer;
-        private int _pos;
-
-        // Map of type ID index to type ID string.
-        // When reading a top-level encapsulation, we assign a type ID index (starting with 1) to each type ID we
-        // read, in order. Since this map is a list, we lookup a previously assigned type ID string with
-        // _typeIdMap[index - 1].
-        private List<string>? _typeIdMap;
-        private int _posAfterLatestInsertedTypeId = 0;
-
-        // The remaining fields are used for class/exception unmarshaling.
-        // Class/exception unmarshaling is allowed only when _mainEncaps != null
+        // The maximum depth when reading nested class/exception instances.
+        private int _classGraphDepth = 0;
 
         // Map of class instance ID to class instance.
         // When reading a top-level encapsulation:
@@ -103,164 +124,638 @@ namespace Ice
         //  - Instance ID > 1 means a reference to a previously read instance, found in this map.
         // Since the map is actually a list, we use instance ID - 2 to lookup an instance.
         private List<AnyClass>? _instanceMap;
-        private int _classGraphDepth = 0;
-        private Encoding? _encoding;
 
-         // Data for the class or exception instance that is currently getting unmarshaled.
-        private InstanceData? _current;
+        // The sum of all the minimum sizes (in bytes) of the sequences read in this buffer. Must not exceed the buffer
+        // size.
+        private int _minTotalSeqSize = 0;
 
-        /// <summary>This constructor uses the given encoding version.</summary>
-        /// <param name="communicator">The communicator to use when initializing the stream.</param>
-        /// <param name="buffer">The stream initial data.</param>
-        /// <param name="pos">The zero base byte offset for the next read operation.</param>
-        internal InputStream(Communicator communicator, ArraySegment<byte> buffer, int pos = 0)
+        // The 0-based index in the buffer.
+        private int _pos;
+
+        // See _typeIdMap.
+        private int _posAfterLatestInsertedTypeId = 0;
+
+        // Map of type ID index to type ID string.
+        // When reading a top-level encapsulation, we assign a type ID index (starting with 1) to each type ID we
+        // read, in order. Since this map is a list, we lookup a previously assigned type ID string with
+        // _typeIdMap[index - 1].
+        private List<string>? _typeIdMap;
+
+        //
+        // Read methods for basic types
+        //
+
+        /// <summary>Reads a bool from the stream.</summary>
+        /// <returns>The bool read from the stream.</returns>
+        public bool ReadBool() => _buffer[_pos++] == 1;
+
+        /// <summary>Reads a byte from the stream.</summary>
+        /// <returns>The byte read from the stream.</returns>
+        public byte ReadByte() => _buffer[_pos++];
+
+        /// <summary>Reads a double from the stream.</summary>
+        /// <returns>The double read from the stream.</returns>
+        public double ReadDouble()
         {
-            Communicator = communicator;
-            _buffer = buffer;
-            _pos = pos;
+            Debug.Assert(_buffer.Array != null);
+            double value = BitConverter.ToDouble(_buffer.AsSpan(_pos, sizeof(double)));
+            _pos += sizeof(double);
+            return value;
         }
 
-        /// <summary>Reads the start of an encapsulation.</summary>
-        /// <returns>The encoding of the encapsulation.</returns>
-        public Encoding StartEncapsulation()
+        /// <summary>Reads a float from the stream.</summary>
+        /// <returns>The float read from the stream.</returns>
+        public float ReadFloat()
         {
-            Debug.Assert(_mainEncaps == null);
-            (Encoding Encoding, int Size) encapsHeader = ReadEncapsulationHeader();
-            Debug.Assert(encapsHeader.Encoding == Encoding.V1_1); // TODO: temporary
-            _mainEncaps = new Encaps(_limit, encapsHeader.Size);
-            _limit = _pos + encapsHeader.Size - 6;
-            _encoding = encapsHeader.Encoding;
-            return encapsHeader.Encoding;
+            Debug.Assert(_buffer.Array != null);
+            float value = BitConverter.ToSingle(_buffer.AsSpan(_pos, sizeof(float)));
+            _pos += sizeof(float);
+            return value;
         }
 
-        /// <summary>Ends an encapsulation started with StartEncpasulation or RestartEncapsulation.</summary>
-        public void EndEncapsulation()
+        /// <summary>Reads an int from the stream.</summary>
+        /// <returns>The int read from the stream.</returns>
+        public int ReadInt()
         {
-            Debug.Assert(_mainEncaps != null);
-            SkipTaggedMembers();
+            Debug.Assert(_buffer.Array != null);
+            int value = BitConverter.ToInt32(_buffer.AsSpan(_pos, sizeof(int)));
+            _pos += sizeof(int);
+            return value;
+        }
 
-            if (_buffer.Count - _pos != 0)
+        /// <summary>Reads a long from the stream.</summary>
+        /// <returns>The long read from the stream.</returns>
+        public long ReadLong()
+        {
+            Debug.Assert(_buffer.Array != null);
+            long value = BitConverter.ToInt64(_buffer.AsSpan(_pos, sizeof(long)));
+            _pos += sizeof(long);
+            return value;
+        }
+
+        /// <summary>Reads a short from the stream.</summary>
+        /// <returns>The short read from the stream.</returns>
+        public short ReadShort()
+        {
+            Debug.Assert(_buffer.Array != null);
+            short value = BitConverter.ToInt16(_buffer.AsSpan(_pos, sizeof(short)));
+            _pos += sizeof(short);
+            return value;
+        }
+
+        /// <summary>Reads a string from the stream.</summary>
+        /// <returns>The string read from the stream.</returns>
+        public string ReadString()
+        {
+            int size = ReadSize();
+            if (size == 0)
             {
-                throw new InvalidDataException($"{_buffer.Count - _pos} bytes remaining in encapsulation");
+                return "";
             }
-            _limit = _mainEncaps.Value.OldLimit;
+            string value = _utf8.GetString(_buffer.AsSpan(_pos, size));
+            _pos += size;
+            return value;
         }
 
-        /// <summary>Go to the end of the current main encapsulation, if we are in one.</summary>
-        public void SkipCurrentEncapsulation()
+        //
+        // Read methods for constructed types except class and exception
+        //
+
+        /// <summary>Reads a sequence from the stream and returns an array.</summary>
+        /// <param name="minElementSize">The minimum size of each element of the sequence, in bytes.</param>
+        /// <param name="reader">The input stream reader used to read each element of the sequence.</param>
+        /// <returns>The sequence read from the stream, as an array.</returns>
+        public T[] ReadArray<T>(int minElementSize, InputStreamReader<T> reader)
         {
-            if (_mainEncaps != null)
+            ICollection<T> collection = ReadSequence(minElementSize, reader);
+            var array = new T[collection.Count];
+            collection.CopyTo(array, 0);
+            return array;
+        }
+
+        /// <summary>Reads a dictionary from the stream.</summary>
+        /// <param name="minEntrySize">The minimum size of each entry of the dictionary, in bytes.</param>
+        /// <param name="keyReader">The input stream reader used to read each key of the dictionary.</param>
+        /// <param name="valueReader">The input stream reader used to read each value of the dictionary.</param>
+        /// <returns>The dictionary read from the stream.</returns>
+        public Dictionary<TKey, TValue> ReadDictionary<TKey, TValue>(int minEntrySize,
+                                                                     InputStreamReader<TKey> keyReader,
+                                                                     InputStreamReader<TValue> valueReader)
+            where TKey : notnull
+        {
+            int sz = ReadAndCheckSeqSize(minEntrySize);
+            var dict = new Dictionary<TKey, TValue>(sz);
+            for (int i = 0; i < sz; ++i)
             {
-                _pos = _limit!.Value;
-                EndEncapsulation();
+                TKey key = keyReader(this);
+                TValue value = valueReader(this);
+                dict.Add(key, value);
             }
+            return dict;
         }
 
-        /// <summary>
-        /// Returns a blob of bytes representing an encapsulation. The encapsulation's encoding version
-        /// is returned in the argument.
-        /// </summary>
-        /// <param name="encoding">The encapsulation's encoding version.</param>
-        /// <returns>The encoded encapsulation.</returns>
-        public ArraySegment<byte> ReadEncapsulation(out Encoding encoding)
+        /// <summary>Reads an enum value from the stream; this method does not validate the value.</summary>
+        /// <returns>The enum value (int) read from the stream.</returns>
+        public int ReadEnumValue() => ReadSize();
+
+        /// <summary>Reads a sequence of fixed-size numeric type from the stream and returns an array.</summary>
+        /// <returns>The sequence read from the stream, as an array.</returns>
+        public T[] ReadFixedSizeNumericArray<T>() where T : struct
         {
-            (Encoding Encoding, int Size) encapsHeader = ReadEncapsulationHeader();
-            _pos -= 6;
-            encoding = encapsHeader.Encoding;
-            ArraySegment<byte> data = _buffer.Slice(_pos, encapsHeader.Size);
-            _pos += encapsHeader.Size;
-            return data;
+            int elementSize = Unsafe.SizeOf<T>();
+            var value = new T[ReadAndCheckSeqSize(elementSize)];
+            int byteCount = elementSize * value.Length;
+            _buffer.AsSpan(_pos, byteCount).CopyTo(MemoryMarshal.Cast<T, byte>(value));
+            _pos += byteCount;
+            return value;
         }
 
-        /// <summary>
-        /// Skips over an encapsulation.
-        /// </summary>
-        /// <returns>The encoding version of the skipped encapsulation.</returns>
-        public Encoding SkipEncapsulation()
-        {
-            (Encoding Encoding, int Size) encapsHeader = ReadEncapsulationHeader();
+        /// <summary>Reads a proxy from the stream.</summary>
+        /// <param name="factory">The proxy factory used to create the typed proxy.</param>
+        /// <returns>The proxy read from the stream.</returns>
+        public T? ReadProxy<T>(ProxyFactory<T> factory) where T : class, IObjectPrx =>
+            Reference.Read(this) is Reference reference ? factory(reference) : null;
 
-            int pos = _pos + encapsHeader.Size - 6;
-            if (pos > _buffer.Count)
+        /// <summary>Reads a sequence from the stream.</summary>
+        /// <param name="minElementSize">The minimum size of each element of the sequence, in bytes.</param>
+        /// <param name="reader">The input stream reader used to read each element of the sequence.</param>
+        /// <returns>A collection that provides the size of the sequence and allows you read the sequence from the
+        /// the stream. The return value does not fully implement ICollection{T}, in particular you can only call
+        /// GetEnumerator() once on this collection. You would typically use this collection to construct a List{T} or
+        /// some other generic collection that can be constructed from an IEnumerable{T}.</returns>
+        public ICollection<T> ReadSequence<T>(int minElementSize, InputStreamReader<T> reader) =>
+            new Collection<T>(this, minElementSize, reader);
+
+        /// <summary>Reads a serializable object from the stream.</summary>
+        /// <returns>The object read from the stream.</returns>
+        public object ReadSerializable()
+        {
+            int sz = ReadAndCheckSeqSize(1);
+            if (sz == 0)
             {
-                throw new InvalidDataException("the encapsulation's size extends beyond the end of the frame");
+                throw new InvalidDataException("read an empty byte sequence for non-null serializable object");
             }
-            _pos = pos;
-            return encapsHeader.Encoding;
+            var f = new BinaryFormatter(null, new StreamingContext(StreamingContextStates.All, Communicator));
+            return f.Deserialize(new StreamWrapper(this));
         }
 
-        // Start reading a slice of a class or exception instance.
-        // This is an Ice-internal method marked public because it's called by the generated code.
-        // typeId is the expected type ID of this slice.
-        // firstSlice is true when reading the first (most derived) slice of an instance.
-        [EditorBrowsable(EditorBrowsableState.Never)]
-        public void IceStartSlice(string typeId, bool firstSlice)
+        /// <summary>Reads a sorted dictionary from the stream.</summary>
+        /// <param name="minEntrySize">The minimum size of each entry of the dictionary, in bytes.</param>
+        /// <param name="keyReader">The input stream reader used to read each key of the dictionary.</param>
+        /// <param name="valueReader">The input stream reader used to read each value of the dictionary.</param>
+        /// <returns>The sorted dictionary read from the stream.</returns>
+        public SortedDictionary<TKey, TValue> ReadSortedDictionary<TKey, TValue>(
+            int minEntrySize,
+            InputStreamReader<TKey> keyReader,
+            InputStreamReader<TValue> valueReader) where TKey : notnull
         {
-            Debug.Assert(_mainEncaps != null);
-            if (firstSlice)
+            int sz = ReadAndCheckSeqSize(minEntrySize);
+            var dict = new SortedDictionary<TKey, TValue>();
+            for (int i = 0; i < sz; ++i)
             {
-                Debug.Assert(_current != null && (_current.SliceTypeId == null || _current.SliceTypeId == typeId));
-                if (_current.InstanceType == InstanceType.Class)
-                {
-                    // For exceptions, we read it for the first slice in ThrowException.
-                    ReadIndirectionTableIntoCurrent();
-                }
+                TKey key = keyReader(this);
+                TValue value = valueReader(this);
+                dict.Add(key, value);
+            }
+            return dict;
+        }
 
-                // We can discard all the unknown slices: the generated code calls IceStartSliceAndGetSlicedData to
-                // preserve them and it just called IceStartSlice instead.
-                _current.Slices = null;
+        //
+        // Read methods for tagged basic types
+        //
+
+        /// <summary>Reads a tagged bool from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The bool read from the stream, or null.</returns>
+        public bool? ReadTaggedBool(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.F1) ? ReadBool() : (bool?)null;
+
+        /// <summary>Reads a tagged byte from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The byte read from the stream, or null.</returns>
+        public byte? ReadTaggedByte(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.F1) ? ReadByte() : (byte?)null;
+
+        /// <summary>Reads a tagged double from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The double read from the stream, or null.</returns>
+        public double? ReadTaggedDouble(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.F8) ? ReadDouble() : (double?)null;
+
+        /// <summary>Reads a tagged float from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The float read from the stream, or null.</returns>
+        public float? ReadTaggedFloat(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.F4) ? ReadFloat() : (float?)null;
+
+        /// <summary>Reads a tagged int from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The int read from the stream, or null.</returns>
+        public int? ReadTaggedInt(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.F4) ? ReadInt() : (int?)null;
+
+        /// <summary>Reads a tagged long from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The long read from the stream, or null.</returns>
+        public long? ReadTaggedLong(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.F8) ? ReadLong() : (long?)null;
+
+        /// <summary>Reads a tagged short from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The short read from the stream, or null.</returns>
+        public short? ReadTaggedShort(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.F2) ? ReadShort() : (short?)null;
+
+        /// <summary>Reads a tagged string from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The string read from the stream, or null.</returns>
+        public string? ReadTaggedString(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.VSize) ? ReadString() : null;
+
+        //
+        // Read methods for tagged constructed types except class
+        //
+
+        /// <summary>Reads a tagged enum from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="reader">The input stream reader used to create and validate the enum.</param>
+        /// <returns>The enum read from the stream, or null.</returns>
+        public T? ReadTaggedEnum<T>(int tag, InputStreamReader<T> reader) where T : struct, Enum =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.Size) ? reader(this) : (T?)null;
+
+        /// <summary>Reads a tagged sequence with fixed-size elements from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="elementSize">The size of each element, in bytes.</param>
+        /// <param name="reader">The input stream reader used to read each element of the sequence.</param>
+        /// <returns>The sequence read from the stream as an array, or null.</returns>
+        public T[]? ReadTaggedFixedSizeElementArray<T>(int tag, int elementSize, InputStreamReader<T> reader)
+        {
+            if (ReadTaggedFixedSizeElementSequence(tag, elementSize, reader) is ICollection<T> collection)
+            {
+                var array = new T[collection.Count];
+                collection.CopyTo(array, 0);
+                return array;
             }
             else
             {
-                string? headerTypeId = ReadSliceHeaderIntoCurrent();
-                Debug.Assert(headerTypeId == null || headerTypeId == typeId);
-                ReadIndirectionTableIntoCurrent();
+                return null;
             }
         }
 
-        // Start reading the first slice of an instance and get the unknown slices for this instances that were
-        // previously saved (if any).
-        // This is an Ice-internal method marked public because it's called by the generated code.
-        // typeId is the expected typeId of this slice.
-        [EditorBrowsable(EditorBrowsableState.Never)]
-        public SlicedData? IceStartSliceAndGetSlicedData(string typeId)
+        /// <summary>Reads a tagged sequence with fixed-size elements from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="elementSize">The size of each element, in bytes.</param>
+        /// <param name="reader">The input stream reader used to read each element of the sequence.</param>
+        /// <returns>The sequence read from the stream as an ICollection{T}, or null.</returns>
+        public ICollection<T>? ReadTaggedFixedSizeElementSequence<T>(int tag,
+                                                                     int elementSize,
+                                                                     InputStreamReader<T> reader)
         {
-            Debug.Assert(_mainEncaps != null);
-            // Called by generated code for first slice instead of IceStartSlice
-            Debug.Assert(_current != null && (_current.SliceTypeId == null || _current.SliceTypeId == typeId));
-            if (_current.InstanceType == InstanceType.Class)
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.VSize))
             {
-                    // For exceptions, we read it for the first slice in ThrowException.
-                    ReadIndirectionTableIntoCurrent();
+                if (elementSize > 1)
+                {
+                    SkipSize(); // this size represents the number of bytes in the tagged parameter.
+                }
+                return ReadSequence(elementSize, reader);
             }
-            return SlicedData;
+            else
+            {
+                return null;
+            }
         }
 
-        // Tells the InputStream the end of a class or exception slice was reached.
-        // This is an Ice-internal method marked public because it's called by the generated code.
-        [EditorBrowsable(EditorBrowsableState.Never)]
-        public void IceEndSlice()
+        /// <summary>Reads a tagged dictionary with fixed-size entries from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="entrySize">The size of each entry, in bytes.</param>
+        /// <param name="keyReader">The input stream reader used to read each key of the dictionary.</param>
+        /// <param name="valueReader">The input stream reader used to read each value of the dictionary.</param>
+        /// <returns>The dictionary read from the stream, or null.</returns>
+        public Dictionary<TKey, TValue>? ReadTaggedFixedSizeEntryDictionary<TKey, TValue>(
+            int tag,
+            int entrySize,
+            InputStreamReader<TKey> keyReader,
+            InputStreamReader<TValue> valueReader) where TKey : notnull
         {
-            // Note that IceEndSlice is not called when we call SkipSlice.
-            Debug.Assert(_mainEncaps != null && _current != null);
-            if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasTaggedMembers) != 0)
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.VSize))
             {
-                SkipTaggedMembers();
+                SkipSize();
+                return ReadDictionary(entrySize, keyReader, valueReader);
             }
-            if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasIndirectionTable) != 0)
+            else
             {
-                Debug.Assert(_current.PosAfterIndirectionTable.HasValue && _current.IndirectionTable != null);
-                _pos = _current.PosAfterIndirectionTable.Value;
-                _current.PosAfterIndirectionTable = null;
-                _current.IndirectionTable = null;
+                return null;
             }
         }
 
-        /// <summary>
-        /// Extracts a size from the stream.
-        /// </summary>
-        /// <returns>The extracted size.</returns>
-        public int ReadSize()
+        /// <summary>Reads a tagged sorted dictionary with fixed-size entries from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="entrySize">The size of each entry, in bytes.</param>
+        /// <param name="keyReader">The input stream reader used to read each key of the dictionary.</param>
+        /// <param name="valueReader">The input stream reader used to read each value of the dictionary.</param>
+        /// <returns>The sorted dictionary read from the stream, or null.</returns>
+        public SortedDictionary<TKey, TValue>? ReadTaggedFixedSizeEntrySortedDictionary<TKey, TValue>(
+            int tag,
+            int entrySize,
+            InputStreamReader<TKey> keyReader,
+            InputStreamReader<TValue> valueReader) where TKey : notnull
+        {
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.VSize))
+            {
+                SkipSize();
+                return ReadSortedDictionary(entrySize, keyReader, valueReader);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Reads a tagged sequence of a fixed-size numeric type from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The sequence read from the stream as an array, or null.</returns>
+        public T[]? ReadTaggedFixedSizeNumericArray<T>(int tag) where T : struct
+        {
+            int elementSize = Unsafe.SizeOf<T>();
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.VSize))
+            {
+                if (elementSize > 1)
+                {
+                    // For elements with size > 1, the encoding includes a size (number of bytes in the tagged
+                    // parameter) that we skip.
+                    SkipSize();
+                }
+                return ReadFixedSizeNumericArray<T>();
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Reads a tagged fixed-size struct from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="reader">The input stream reader used to create and read the struct.</param>
+        /// <returns>The struct T read from the stream, or null.</returns>
+        public T? ReadTaggedFixedSizeStruct<T>(int tag, InputStreamReader<T> reader) where T : struct
+        {
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.VSize))
+            {
+                SkipSize();
+                return reader(this);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Reads a tagged proxy from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="factory">The proxy factory used to create the typed proxy.</param>
+        /// <returns>The proxy read from the stream, or null.</returns>
+        public T? ReadTaggedProxy<T>(int tag, ProxyFactory<T> factory) where T : class, IObjectPrx
+        {
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.FSize))
+            {
+                // We skip this int that holds the size (in bytes) of the tagged parameter.
+                _ = ReadInt();
+                return ReadProxy(factory);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Reads a tagged serializable object from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <returns>The object read from the stream, or null.</returns>
+        public object? ReadTaggedSerializable(int tag) =>
+            ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.VSize) ? ReadSerializable() : null;
+
+        /// <summary>Reads a tagged sequence with variable-size elements from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="minElementSize">The minimum size of each element, in bytes.</param>
+        /// <param name="reader">The input stream reader used to read each element of the sequence.</param>
+        /// <returns>The sequence read from the stream as an array, or null.</returns>
+        public T[]? ReadTaggedVariableSizeElementArray<T>(int tag, int minElementSize, InputStreamReader<T> reader)
+        {
+            if (ReadTaggedVariableSizeElementSequence(tag, minElementSize, reader) is ICollection<T> collection)
+            {
+                var array = new T[collection.Count];
+                collection.CopyTo(array, 0);
+                return array;
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Reads a tagged sequence with variable-size elements from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="minElementSize">The minimum size of each element, in bytes.</param>
+        /// <param name="reader">The input stream reader used to read each element of the sequence.</param>
+        /// <returns>The sequence read from the stream as an ICollection{T}, or null.</returns>
+        public ICollection<T>? ReadTaggedVariableSizeElementSequence<T>(int tag,
+                                                                        int minElementSize,
+                                                                        InputStreamReader<T> reader)
+        {
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.FSize))
+            {
+                _ = ReadInt();
+                return ReadSequence(minElementSize, reader);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Reads a tagged dictionary with variable-size entries from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="minEntrySize">The minimum size of each entry, in bytes.</param>
+        /// <param name="keyReader">The input stream reader used to read each key of the dictionary.</param>
+        /// <param name="valueReader">The input stream reader used to read each value of the dictionary.</param>
+        /// <returns>The dictionary read from the stream, or null.</returns>
+        public Dictionary<TKey, TValue>? ReadTaggedVariableSizeEntryDictionary<TKey, TValue>(
+            int tag,
+            int minEntrySize,
+            InputStreamReader<TKey> keyReader,
+            InputStreamReader<TValue> valueReader) where TKey : notnull
+        {
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.FSize))
+            {
+                _ = ReadInt();
+                return ReadDictionary(minEntrySize, keyReader, valueReader);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Reads a tagged sorted dictionary with variable-size entries from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="minEntrySize">The minimum size of each entry, in bytes.</param>
+        /// <param name="keyReader">The input stream reader used to read each key of the dictionary.</param>
+        /// <param name="valueReader">The input stream reader used to read each value of the dictionary.</param>
+        /// <returns>The sorted dictionary read from the stream, or null.</returns>
+        public SortedDictionary<TKey, TValue>? ReadTaggedVariableSizeEntrySortedDictionary<TKey, TValue>(
+            int tag,
+            int minEntrySize,
+            InputStreamReader<TKey> keyReader,
+            InputStreamReader<TValue> valueReader) where TKey : notnull
+        {
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.FSize))
+            {
+                _ = ReadInt();
+                return ReadSortedDictionary(minEntrySize, keyReader, valueReader);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Reads a tagged variable-size struct from the stream.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="reader">The input stream reader used to create and read the struct.</param>
+        /// <returns>The struct T read from the stream, or null.</returns>
+        public T? ReadTaggedVariableSizeStruct<T>(int tag, InputStreamReader<T> reader) where T : struct
+        {
+            if (ReadTaggedParamHeader(tag, EncodingDefinitions.TagFormat.FSize))
+            {
+                _ = ReadInt();
+                return reader(this);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        //
+        // Internal and private methods
+        //
+
+        /// <summary>Reads an empty encapsulation from the provided byte buffer.</summary>
+        /// <param name="communicator">The communicator.</param>
+        /// <param name="buffer">The byte buffer.</param>
+        internal static void ReadEmptyEncapsulation(Communicator communicator, ArraySegment<byte> buffer)
+        {
+            var istr = new InputStream(communicator, buffer, startEncaps: true, 0);
+            istr.SkipTaggedParams();
+            istr.CheckEndOfBuffer();
+        }
+
+        /// <summary>Reads the contents of an encapsulation from the provided byte buffer.</summary>
+        /// <param name="communicator">The communicator.</param>
+        /// <param name="buffer">The byte buffer.</param>
+        /// <param name="payloadReader">The reader used to read the payload of this encapsulation.</param>
+        internal static T ReadEncapsulation<T>(Communicator communicator,
+                                               ArraySegment<byte> buffer,
+                                               InputStreamReader<T> payloadReader)
+        {
+            var istr = new InputStream(communicator, buffer, startEncaps: true, 0);
+            T result = payloadReader(istr);
+            istr.SkipTaggedParams();
+            istr.CheckEndOfBuffer();
+            return result;
+        }
+
+        internal static int ReadInt(ReadOnlySpan<byte> buffer) => BitConverter.ToInt32(buffer);
+        internal static long ReadLong(ReadOnlySpan<byte> buffer) => BitConverter.ToInt64(buffer);
+        internal static short ReadShort(ReadOnlySpan<byte> buffer) => BitConverter.ToInt16(buffer);
+
+        internal static string ReadString(ArraySegment<byte> buffer, Encoding encoding)
+        {
+            int size = ReadSize(buffer, encoding);
+            if (size == 0)
+            {
+                return "";
+            }
+            else
+            {
+                return _utf8.GetString(buffer.AsSpan(size < 255 ? 1 : 5, size));
+            }
+        }
+
+        /// <summary>Constructs a new InputStream over a byte buffer.</summary>
+        /// <param name="communicator">The communicator.</param>
+        /// <param name="buffer">The byte buffer.</param>
+        /// <param name="pos">The initial position in the buffer.</param>
+        internal InputStream(Communicator communicator, ArraySegment<byte> buffer, int pos = 0)
+            : this(communicator, buffer, false, pos)
+        {
+            // TODO: pos should always be 0 and buffer should be a slice as needed.
+            // Currently this does not work because of the tracing code that resets Pos to 0 to read the protocol frame
+            // headers.
+        }
+
+        /// <summary>Reads an encapsulation header from the stream.</summary>
+        /// <returns>The encapsulation header read from the stream.</returns>
+        internal (Encoding Encoding, int Size) ReadEncapsulationHeader()
+        {
+            (Encoding Encoding, int Size) result = ReadEncapsulationHeader(_buffer.Slice(_pos), Encoding);
+            _pos += 6;
+            return result;
+        }
+
+        /// <summary>Reads an endpoint from the stream.</summary>
+        /// <returns>The endpoint read from the stream.</returns>
+        internal Endpoint ReadEndpoint()
+        {
+            var type = (EndpointType)ReadShort();
+            (Encoding encoding, int size) = ReadEncapsulationHeader();
+
+            Endpoint endpoint;
+            if (encoding.IsSupported && Communicator.FindEndpointFactory(type) is IEndpointFactory factory)
+            {
+                Encoding oldEncoding = Encoding;
+                ArraySegment<byte> oldBuffer = _buffer;
+                int oldPos = _pos;
+                int oldMinTotalSeqSize = _minTotalSeqSize;
+                Encoding = encoding;
+                _buffer = _buffer.Slice(_pos, size - 6);
+                _pos = 0;
+                _minTotalSeqSize = 0;
+
+                endpoint = factory.Read(this);
+                CheckEndOfBuffer();
+
+                // Exceptions when reading InputStream are considered fatal to the InputStream so no need to restore
+                // anything unless we succeed.
+                Encoding = oldEncoding;
+                _buffer = oldBuffer;
+                _pos = oldPos + size - 6;
+                _minTotalSeqSize = oldMinTotalSeqSize;
+            }
+            else
+            {
+                endpoint = new OpaqueEndpoint(type, encoding, _buffer.Slice(_pos, size - 6).ToArray());
+                _pos += size - 6;
+            }
+
+            return endpoint;
+        }
+
+        /// <summary>Reads a facet from the stream.</summary>
+        /// <returns>The facet read from the stream.</returns>
+        internal string ReadFacet()
+        {
+            string[] facets = ReadArray(1, IceReaderIntoString);
+            if (facets.Length > 1)
+            {
+                throw new InvalidDataException($"read ice1 facet path with {facets.Length} elements");
+            }
+            return facets.Length == 1 ? facets[0] : "";
+        }
+
+        /// <summary>Reads a size from the stream.</summary>
+        /// <returns>The size read from the stream.</returns>
+        internal int ReadSize()
         {
             byte b = ReadByte();
             if (b < 255)
@@ -276,8 +771,46 @@ namespace Ice
             return size;
         }
 
-        public static int ReadSize(ArraySegment<byte> buffer)
+        /// <summary>Skips over an encapsulation without reading it.</summary>
+        /// <returns>The encoding version of the skipped encapsulation.</returns>
+        internal Encoding SkipEncapsulation()
         {
+            (Encoding encoding, int size) = ReadEncapsulationHeader();
+            _pos += size - 6;
+            if (_pos > _buffer.Count)
+            {
+                throw new InvalidDataException("the encapsulation's size extends beyond the end of the frame");
+            }
+            return encoding;
+        }
+
+        private static (Encoding Encoding, int Size) ReadEncapsulationHeader(ReadOnlySpan<byte> buffer,
+                                                                             Encoding encoding)
+        {
+            Debug.Assert(encoding == Encoding.V1_1); // temporary
+
+            // With the 1.1 encoding, the encapsulation size is encoded on a 4-bytes int and not on a variable-length
+            // size, for ease of marshaling.
+            if (buffer.Length < 6)
+            {
+                throw new InvalidDataException($"encapsulation buffer has only {buffer.Length} bytes");
+            }
+            int size = ReadInt(buffer);
+            if (size < 6)
+            {
+                throw new InvalidDataException($"encapsulation has only {size} bytes");
+            }
+            if (size - 4 > buffer.Length)
+            {
+                throw new InvalidDataException("the encapsulation's size extends beyond the end of the buffer");
+            }
+            return (new Encoding(buffer[4], buffer[5]), size);
+        }
+
+        private static int ReadSize(ArraySegment<byte> buffer, Encoding encoding)
+        {
+            Debug.Assert(encoding == Encoding.V1_1);
+
             byte b = buffer[0];
             if (b < 255)
             {
@@ -292,14 +825,45 @@ namespace Ice
             return size;
         }
 
-        /// <summary>
-        /// Reads a sequence size and make sure there is enough space in the underlying buffer to read the sequence.
-        /// This validation is performed to make sure we do not allocate a large container based on an invalid encoded
-        /// size.
-        /// </summary>
+        private InputStream(Communicator communicator, ArraySegment<byte> buffer, bool startEncaps, int pos)
+        {
+            Debug.Assert(pos == 0 || !startEncaps); // while pos is still there, it's 0 when startEncaps is true
+            Communicator = communicator;
+
+            if (startEncaps)
+            {
+                _pos = 0;
+                int size;
+                (Encoding, size) = ReadEncapsulationHeader(buffer, Encoding.V1_1);
+                Encoding.CheckSupported();
+                // We slice the provided buffer to the encapsulation (minus its header). This way, we can easily prevent
+                // reads past the end of the encapsulation.
+                _buffer = buffer.Slice(6, size - 6);
+                InEncapsulation = true;
+            }
+            else
+            {
+                _buffer = buffer;
+                _pos = pos;
+                Encoding = Encoding.V1_1;
+                InEncapsulation = false;
+            }
+        }
+
+        private void CheckEndOfBuffer()
+        {
+            if (_pos != _buffer.Count)
+            {
+                throw new InvalidDataException($"{_buffer.Count - _pos} bytes remaining in the InputStream buffer");
+            }
+        }
+
+        /// <summary>Reads a sequence size and makes sure there is enough space in the underlying buffer to read the
+        /// sequence. This validation is performed to make sure we do not allocate a large container based on an
+        /// invalid encoded size.</summary>
         /// <param name="minElementSize">The minimum encoded size of an element of the sequence, in bytes.</param>
         /// <returns>The number of elements in the sequence.</returns>
-        public int ReadAndCheckSeqSize(int minElementSize)
+        private int ReadAndCheckSeqSize(int minElementSize)
         {
             int sz = ReadSize();
 
@@ -321,16 +885,24 @@ namespace Ice
             return sz;
         }
 
-        /// <summary>Determine if an optional value is available for reading.</summary>
-        /// <param name="tag">The tag associated with the value.</param>
-        /// <param name="expectedFormat">The optional format for the value.</param>
-        /// <returns>True if the value is present, false otherwise.</returns>
-        public bool ReadOptional(int tag, OptionalFormat expectedFormat)
+        private int ReadSpan(Span<byte> span)
+        {
+            int length = Math.Min(span.Length, _buffer.Count - _pos);
+            _buffer.AsSpan(_pos, length).CopyTo(span);
+            _pos += length;
+            return length;
+        }
+
+        /// <summary>Determines if a tagged parameter or data member is available for reading.</summary>
+        /// <param name="tag">The tag.</param>
+        /// <param name="expectedFormat">The format of the tagged parameter.</param>
+        /// <returns>True if the tagged parameter is present; otherwise, false.</returns>
+        private bool ReadTaggedParamHeader(int tag, EncodingDefinitions.TagFormat expectedFormat)
         {
             // Tagged members/parameters can only be in the main encapsulation
-            Debug.Assert(_mainEncaps != null);
+            Debug.Assert(InEncapsulation);
 
-            // The current slice has no tagged member
+            // The current slice has no tagged parameter
             if (_current != null && (_current.SliceFlags & EncodingDefinitions.SliceFlags.HasTaggedMembers) == 0)
             {
                 return false;
@@ -342,7 +914,7 @@ namespace Ice
             {
                 if (_buffer.Count - _pos <= 0)
                 {
-                    return false; // End of encapsulation also indicates end of optionals.
+                    return false; // End of encapsulation also indicates end of tagged parameters.
                 }
 
                 int v = ReadByte();
@@ -352,7 +924,7 @@ namespace Ice
                     return false;
                 }
 
-                var format = (OptionalFormat)(v & 0x07); // First 3 bits.
+                var format = (EncodingDefinitions.TagFormat)(v & 0x07); // First 3 bits.
                 tag = v >> 3;
                 if (tag == 30)
                 {
@@ -363,7 +935,7 @@ namespace Ice
                 {
                     int offset = tag < 30 ? 1 : (tag < 255 ? 2 : 6); // Rewind
                     _pos -= offset;
-                    return false; // No tagged member with the requested tag.
+                    return false; // No tagged parameter with the requested tag.
                 }
                 else if (tag < requestedTag)
                 {
@@ -373,683 +945,14 @@ namespace Ice
                 {
                     if (format != expectedFormat)
                     {
-                        throw new InvalidDataException($"invalid tagged data member `{tag}': unexpected format");
+                        throw new InvalidDataException($"invalid tagged parameter `{tag}': unexpected format");
                     }
                     return true;
                 }
             }
         }
 
-        /// <summary>Extracts a byte value from the stream.</summary>
-        /// <returns>The extracted byte.</returns>
-        public byte ReadByte() => _buffer[_pos++];
-
-        /// <summary>Extracts an optional byte value from the stream.</summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public byte? ReadByte(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.F1))
-            {
-                return ReadByte();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>Extracts a sequence of byte values from the stream.</summary>
-        /// <returns>The extracted byte sequence.</returns>
-        public byte[] ReadByteArray()
-        {
-            byte[] value = new byte[ReadAndCheckSeqSize(1)];
-            ReadNumericArray(value);
-            return value;
-        }
-
-        public int ReadSpan(Span<byte> span)
-        {
-            int length = Math.Min(span.Length, _buffer.Count - _pos);
-            _buffer.AsSpan(_pos, length).CopyTo(span);
-            _pos += length;
-            return length;
-        }
-
-        /// <summary>Extracts an optional byte sequence from the stream.</summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public byte[]? ReadByteArray(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.VSize))
-            {
-                return ReadByteArray();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>Extracts a serializable object from the stream.</summary>
-        /// <returns>The serializable object.</returns>
-        public object ReadSerializable()
-        {
-            int sz = ReadAndCheckSeqSize(1);
-            if (sz == 0)
-            {
-                throw new InvalidDataException("read an empty byte sequence for non-null serializable object");
-            }
-            var f = new BinaryFormatter(null, new StreamingContext(StreamingContextStates.All, Communicator));
-            return f.Deserialize(new InputStreamWrapper(this));
-        }
-
-        /// <summary>
-        /// Extracts a boolean value from the stream.
-        /// </summary>
-        /// <returns>The extracted boolean.</returns>
-        public bool ReadBool() => _buffer[_pos++] == 1;
-
-        /// <summary>
-        /// Extracts an optional boolean value from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public bool? ReadBool(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.F1))
-            {
-                return ReadBool();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a sequence of boolean values from the stream.
-        /// </summary>
-        /// <returns>The extracted boolean sequence.</returns>
-        public bool[] ReadBoolArray()
-        {
-            bool[] value = new bool[ReadAndCheckSeqSize(1)];
-            ReadNumericArray(value);
-            return value;
-        }
-
-        /// <summary>
-        /// Extracts an optional boolean sequence from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public bool[]? ReadBoolArray(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.VSize))
-            {
-                return ReadBoolArray();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a short value from the stream.
-        /// </summary>
-        /// <returns>The extracted short.</returns>
-        public short ReadShort()
-        {
-            Debug.Assert(_buffer.Array != null);
-            short value = BitConverter.ToInt16(_buffer.Array, _buffer.Offset + _pos);
-            _pos += 2;
-            return value;
-        }
-
-        public static short ReadShort(ReadOnlySpan<byte> buffer) => BitConverter.ToInt16(buffer);
-
-        /// <summary>
-        /// Extracts an optional short value from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public short? ReadShort(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.F2))
-            {
-                return ReadShort();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a sequence of short values from the stream.
-        /// </summary>
-        /// <returns>The extracted short sequence.</returns>
-        public short[] ReadShortArray()
-        {
-            short[] value = new short[ReadAndCheckSeqSize(2)];
-            ReadNumericArray(value);
-            return value;
-        }
-
-        /// <summary>
-        /// Extracts an optional short sequence from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public short[]? ReadShortArray(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.VSize))
-            {
-                SkipSize();
-                return ReadShortArray();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts an int value from the stream.
-        /// </summary>
-        /// <returns>The extracted int.</returns>
-        public int ReadInt()
-        {
-            Debug.Assert(_buffer.Array != null);
-            int value = BitConverter.ToInt32(_buffer.Array, _buffer.Offset + _pos);
-            _pos += 4;
-            return value;
-        }
-
-        public static int ReadInt(ReadOnlySpan<byte> buffer) => BitConverter.ToInt32(buffer);
-
-        /// <summary>
-        /// Extracts an optional int value from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public int? ReadInt(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.F4))
-            {
-                return ReadInt();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a sequence of int values from the stream.
-        /// </summary>
-        /// <returns>The extracted int sequence.</returns>
-        public int[] ReadIntArray()
-        {
-            int[] value = new int[ReadAndCheckSeqSize(4)];
-            ReadNumericArray(value);
-            return value;
-        }
-
-        /// <summary>
-        /// Extracts an optional int sequence from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public int[]? ReadIntArray(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.VSize))
-            {
-                SkipSize();
-                return ReadIntArray();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a long value from the stream.
-        /// </summary>
-        /// <returns>The extracted long.</returns>
-        public long ReadLong()
-        {
-            Debug.Assert(_buffer.Array != null);
-            long value = BitConverter.ToInt64(_buffer.Array, _buffer.Offset + _pos);
-            _pos += 8;
-            return value;
-        }
-
-        public static long ReadLong(ReadOnlySpan<byte> buffer) => BitConverter.ToInt64(buffer);
-
-        /// <summary>
-        /// Extracts an optional long value from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public long? ReadLong(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.F8))
-            {
-                return ReadLong();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a sequence of long values from the stream.
-        /// </summary>
-        /// <returns>The extracted long sequence.</returns>
-        public long[] ReadLongArray()
-        {
-            long[] value = new long[ReadAndCheckSeqSize(8)];
-            ReadNumericArray(value);
-            return value;
-        }
-
-        /// <summary>
-        /// Extracts an optional long sequence from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public long[]? ReadLongArray(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.VSize))
-            {
-                SkipSize();
-                return ReadLongArray();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a float value from the stream.
-        /// </summary>
-        /// <returns>The extracted float.</returns>
-        public float ReadFloat()
-        {
-            Debug.Assert(_buffer.Array != null);
-            float value = BitConverter.ToSingle(_buffer.Array, _buffer.Offset + _pos);
-            _pos += 4;
-            return value;
-        }
-
-        /// <summary>
-        /// Extracts an optional float value from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public float? ReadFloat(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.F4))
-            {
-                return ReadFloat();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a sequence of float values from the stream.
-        /// </summary>
-        /// <returns>The extracted float sequence.</returns>
-        public float[] ReadFloatArray()
-        {
-            float[] value = new float[ReadAndCheckSeqSize(4)];
-            ReadNumericArray(value);
-            return value;
-        }
-
-        /// <summary>
-        /// Extracts an optional float sequence from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public float[]? ReadFloatArray(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.VSize))
-            {
-                SkipSize();
-                return ReadFloatArray();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a double value from the stream.
-        /// </summary>
-        /// <returns>The extracted double.</returns>
-        public double ReadDouble()
-        {
-            Debug.Assert(_buffer.Array != null);
-            double value = BitConverter.ToDouble(_buffer.Array, _buffer.Offset + _pos);
-            _pos += 8;
-            return value;
-        }
-
-        /// <summary>
-        /// Extracts an optional double value from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public double? ReadDouble(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.F8))
-            {
-                return ReadDouble();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a sequence of double values from the stream.
-        /// </summary>
-        /// <returns>The extracted double sequence.</returns>
-        public double[] ReadDoubleArray()
-        {
-            double[] value = new double[ReadAndCheckSeqSize(8)];
-            ReadNumericArray(value);
-            return value;
-        }
-
-        /// <summary>
-        /// Extracts an optional double sequence from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public double[]? ReadDoubleArray(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.VSize))
-            {
-                SkipSize();
-                return ReadDoubleArray();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        private static readonly System.Text.UTF8Encoding _utf8 = new System.Text.UTF8Encoding(false, true);
-
-        /// <summary>
-        /// Extracts a string from the stream.
-        /// </summary>
-        /// <returns>The extracted string.</returns>
-        public string ReadString()
-        {
-            int size = ReadSize();
-            if (size == 0)
-            {
-                return "";
-            }
-            string value = _utf8.GetString(_buffer.AsSpan(_pos, size));
-            _pos += size;
-            return value;
-        }
-
-        public static string ReadString(ArraySegment<byte> buffer)
-        {
-            int size = ReadSize(buffer);
-            if (size == 0)
-            {
-                return "";
-            }
-            else
-            {
-                return _utf8.GetString(buffer.AsSpan(size < 254 ? 1 : 4, size));
-            }
-        }
-
-        /// <summary>
-        /// Extracts an optional string from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public string? ReadString(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.VSize))
-            {
-                return ReadString();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        public T[] ReadArray<T>(InputStreamReader<T> reader, int minSize)
-        {
-            var enumerable = new Collection<T>(this, reader, minSize);
-            var arr = new T[enumerable.Count];
-            int pos = 0;
-            foreach (T item in enumerable)
-            {
-                arr[pos++] = item;
-            }
-            return arr;
-        }
-
-        public IEnumerable<T> ReadCollection<T>(InputStreamReader<T> reader, int minSize) =>
-            new Collection<T>(this, reader, minSize);
-
-        public Dictionary<TKey, TValue> ReadDict<TKey, TValue>(InputStreamReader<TKey> keyReader,
-            InputStreamReader<TValue> valueReader, int minWireSize = 1) where TKey : notnull
-        {
-            int sz = ReadAndCheckSeqSize(minWireSize);
-            var dict = new Dictionary<TKey, TValue>(sz);
-            for (int i = 0; i < sz; ++i)
-            {
-                TKey key = keyReader(this);
-                TValue value = valueReader(this);
-                dict.Add(key, value);
-            }
-            return dict;
-        }
-
-        public SortedDictionary<TKey, TValue> ReadSortedDict<TKey, TValue>(InputStreamReader<TKey> keyReader,
-            InputStreamReader<TValue> valueReader) where TKey : notnull
-        {
-            int sz = ReadSize();
-            var dict = new SortedDictionary<TKey, TValue>();
-            for (int i = 0; i < sz; ++i)
-            {
-                TKey key = keyReader(this);
-                TValue value = valueReader(this);
-                dict.Add(key, value);
-            }
-            return dict;
-        }
-
-        /// <summary>
-        /// Extracts a sequence of strings from the stream.
-        /// </summary>
-        /// <returns>The extracted string sequence.</returns>
-        public string[] ReadStringArray() => ReadArray(IceReaderIntoString, 1);
-
-        public IEnumerable<string> ReadStringCollection() => ReadCollection(IceReaderIntoString, 1);
-
-        /// <summary>
-        /// Extracts an optional string sequence from the stream.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <returns>The optional value.</returns>
-        public string[]? ReadStringArray(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.FSize))
-            {
-                Skip(4);
-                return ReadStringArray();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extracts a proxy from the stream. The stream must have been initialized with a communicator.
-        /// </summary>
-        /// <returns>The extracted proxy.</returns>
-        public T? ReadProxy<T>(ProxyFactory<T> factory) where T : class, IObjectPrx
-        {
-            var ident = new Identity(this);
-            if (ident.Name.Length == 0)
-            {
-                return null;
-            }
-            else
-            {
-                return factory(Communicator.CreateReference(ident, this));
-            }
-        }
-
-        /// <summary>
-        /// Extracts an optional proxy from the stream. The stream must have been initialized with a communicator.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the value.</param>
-        /// <param name="factory">The proxy factory used to create the typed proxy.</param>
-        /// <returns>The optional value.</returns>
-        public T? ReadProxy<T>(int tag, ProxyFactory<T> factory) where T : class, IObjectPrx
-        {
-            if (ReadOptional(tag, OptionalFormat.FSize))
-            {
-                Skip(4);
-                return ReadProxy(factory);
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Read an instance of class T.
-        /// </summary>
-        /// <returns>The class instance, or null.</returns>
-        public T? ReadClass<T>() where T : AnyClass
-        {
-            AnyClass? obj = ReadAnyClass();
-            if (obj == null)
-            {
-                return null;
-            }
-            else if (obj is T)
-            {
-                return (T)obj;
-            }
-            else
-            {
-                throw new InvalidDataException(@$"read instance of type `{obj.GetType().FullName
-                    }' but expected instance of type `{typeof(T).FullName}'");
-            }
-        }
-
-        /// <summary>
-        /// Read a tagged parameter or data member of type class T.
-        /// </summary>
-        /// <param name="tag">The numeric tag associated with the class parameter or data member.</param>
-        /// <returns>The class instance, or null.</returns>
-        public T? ReadClass<T>(int tag) where T : AnyClass
-        {
-            AnyClass? obj = ReadAnyClass(tag);
-            if (obj == null)
-            {
-                return null;
-            }
-            else if (obj is T)
-            {
-                return (T)obj;
-            }
-            else
-            {
-                throw new InvalidDataException(@$"read instance of type `{obj.GetType().FullName
-                    }' but expected instance of type `{typeof(T).FullName}'");
-            }
-        }
-
-        /// <summary>
-        /// Extracts a remote exception from the stream and throws it.
-        /// </summary>
-        public RemoteException ReadException()
-        {
-            Push(InstanceType.Exception);
-            Debug.Assert(_current != null);
-
-            // Read the first slice header, and exception's type ID cannot be null.
-            string typeId = ReadSliceHeaderIntoCurrent()!;
-            ReadIndirectionTableIntoCurrent(); // we read the indirection table immediately
-
-            while (true)
-            {
-                RemoteException? remoteEx = null;
-                Type? type = Communicator.ResolveClass(typeId);
-                if (type != null)
-                {
-                    try
-                    {
-                        remoteEx = (RemoteException?)Activator.CreateInstance(type);
-                    }
-                    catch (Exception ex)
-                    {
-                        throw new InvalidDataException(
-                            @$"failed to create an instance of type `{type.Name
-                            }' while reading a remote exception with type ID `{typeId}'", ex);
-                    }
-                }
-
-                // We found the exception.
-                if (remoteEx != null)
-                {
-                    remoteEx.ConvertToUnhandled = true;
-                    remoteEx.Read(this);
-                    Pop(null);
-                    return remoteEx;
-                }
-
-                // Slice off what we don't understand.
-                SkipSlice();
-
-                if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.IsLastSlice) != 0)
-                {
-                    // Create and throw a plain RemoteException with the SlicedData.
-                    Debug.Assert(SlicedData != null);
-                    remoteEx = new RemoteException(SlicedData.Value);
-                    remoteEx.ConvertToUnhandled = true;
-                    return remoteEx;
-                }
-
-                typeId = ReadSliceHeaderIntoCurrent()!;
-                ReadIndirectionTableIntoCurrent();
-            }
-        }
-
-        /// <summary>
-        /// Skip the given number of bytes.
-        /// </summary>
-        /// <param name="size">The number of bytes to skip</param>
-        public void Skip(int size)
+        private void Skip(int size)
         {
             if (size < 0 || size > _buffer.Count - _pos)
             {
@@ -1058,10 +961,8 @@ namespace Ice
             _pos += size;
         }
 
-        /// <summary>
-        /// Skip over a size value.
-        /// </summary>
-        public void SkipSize()
+        /// <summary>Skips over a size value. Equivalent to ReadSize()</summary>
+        private void SkipSize()
         {
             byte b = ReadByte();
             if (b == 255)
@@ -1070,119 +971,45 @@ namespace Ice
             }
         }
 
-        internal Endpoint ReadEndpoint()
-        {
-            var type = (EndpointType)ReadShort();
-
-            Encoding? oldEncoding = _encoding; // TODO: update once we restore the Encoding property!
-            int size;
-            (_encoding, size) = ReadEncapsulationHeader();
-            Debug.Assert(_encoding != null);
-            int? oldLimit = _limit;
-            _limit = _pos + size - 6;
-
-            Endpoint result;
-            if (_encoding.Value.IsSupported && Communicator.GetEndpointFactory(type) is IEndpointFactory factory)
-            {
-                result = factory.Read(this);
-            }
-            else
-            {
-                byte[] data = new byte[size - 6];
-                int bytesRead = ReadSpan(data);
-                if (bytesRead < data.Length)
-                {
-                    throw new InvalidDataException("invalid endpoint encapsulation size while reading opaque endpoint");
-                }
-                result = new OpaqueEndpoint(type, _encoding.Value, data);
-            }
-
-            if (_limit.Value - _pos != 0)
-            {
-                throw new InvalidDataException(
-                    $"there are {_limit.Value - _pos} bytes remaining in endpoint encapsulation");
-            }
-
-            // Exceptions when reading InputStream are considered fatal to the InputStream so no need to restore
-            // _limit or _encoding unless we succeed.
-            _limit = oldLimit;
-            _encoding = oldEncoding;
-            return result;
-        }
-
-        internal (Encoding Encoding, int Size) ReadEncapsulationHeader()
-        {
-            // With the 1.1 encoding, the encapsulation size is encoded on a 4-bytes int and
-            // not on a variable-length size, for ease of marshaling.
-            int sz = ReadInt();
-            if (sz < 6)
-            {
-                throw new InvalidDataException($"encapsulation has only {sz} bytes");
-            }
-            if (sz - 4 > _buffer.Count - _pos)
-            {
-                throw new InvalidDataException("the encapsulation's size extends beyond the end of the frame");
-            }
-            byte major = ReadByte();
-            byte minor = ReadByte();
-            return (new Encoding(major, minor), sz);
-        }
-
-        private void SkipTagged(OptionalFormat format)
+        private void SkipTagged(EncodingDefinitions.TagFormat format)
         {
             switch (format)
             {
-                case OptionalFormat.F1:
-                    {
-                        Skip(1);
-                        break;
-                    }
-                case OptionalFormat.F2:
-                    {
-                        Skip(2);
-                        break;
-                    }
-                case OptionalFormat.F4:
-                    {
-                        Skip(4);
-                        break;
-                    }
-                case OptionalFormat.F8:
-                    {
-                        Skip(8);
-                        break;
-                    }
-                case OptionalFormat.Size:
-                    {
-                        SkipSize();
-                        break;
-                    }
-                case OptionalFormat.VSize:
-                    {
-                        Skip(ReadSize());
-                        break;
-                    }
-                case OptionalFormat.FSize:
-                    {
-                        Skip(ReadInt());
-                        break;
-                    }
-                case OptionalFormat.Class:
-                    {
-                        ReadAnyClass();
-                        break;
-                    }
+                case EncodingDefinitions.TagFormat.F1:
+                    Skip(1);
+                    break;
+                case EncodingDefinitions.TagFormat.F2:
+                    Skip(2);
+                    break;
+                case EncodingDefinitions.TagFormat.F4:
+                    Skip(4);
+                    break;
+                case EncodingDefinitions.TagFormat.F8:
+                    Skip(8);
+                    break;
+                case EncodingDefinitions.TagFormat.Size:
+                    SkipSize();
+                    break;
+                case EncodingDefinitions.TagFormat.VSize:
+                    Skip(ReadSize());
+                    break;
+                case EncodingDefinitions.TagFormat.FSize:
+                    Skip(ReadInt());
+                    break;
+                case EncodingDefinitions.TagFormat.Class:
+                    ReadAnyClass();
+                    break;
             }
         }
 
-        private bool SkipTaggedMembers()
+        private bool SkipTaggedParams()
         {
-            // Skip remaining unread tagged members.
+            // Skip remaining unread tagged parameters.
             while (true)
             {
                 if (_buffer.Count - _pos <= 0)
                 {
-                    return false; // End of encapsulation also indicates end of tagged members.
+                    return false; // End of encapsulation also indicates end of tagged parameters.
                 }
 
                 int v = ReadByte();
@@ -1191,544 +1018,12 @@ namespace Ice
                     return true;
                 }
 
-                var format = (OptionalFormat)(v & 0x07); // Read first 3 bits.
+                var format = (EncodingDefinitions.TagFormat)(v & 0x07); // Read first 3 bits.
                 if ((v >> 3) == 30)
                 {
                     SkipSize();
                 }
                 SkipTagged(format);
-            }
-        }
-
-        private string ReadTypeId(bool isIndex)
-        {
-            _typeIdMap ??= new List<string>();
-
-            if (isIndex)
-            {
-                int index = ReadSize();
-                if (index > 0 && index - 1 < _typeIdMap.Count)
-                {
-                    // The encoded type-id indexes start at 1, not 0.
-                    return _typeIdMap[index - 1];
-                }
-                throw new InvalidDataException($"read invalid type ID index {index}");
-            }
-            else
-            {
-                string typeId = ReadString();
-
-                // The typeIds of slices in indirection tables can be read several times: when we skip the
-                // indirection table and later on when we read it. We only want to add this typeId to the list
-                // and assign it an index when it's the first time we read it, so we save the largest position we
-                // read to figure out when to add to the list.
-                if (_pos > _posAfterLatestInsertedTypeId)
-                {
-                    _posAfterLatestInsertedTypeId = _pos;
-                    _typeIdMap.Add(typeId);
-                }
-
-                return typeId;
-            }
-        }
-
-        private AnyClass? ReadAnyClass()
-        {
-            int index = ReadSize();
-            if (index < 0)
-            {
-                throw new InvalidDataException($"invalid index {index} while reading a class");
-            }
-            else if (index == 0)
-            {
-                return null;
-            }
-            else if (_current != null && (_current.SliceFlags & EncodingDefinitions.SliceFlags.HasIndirectionTable) != 0)
-            {
-                // When reading an instance within a slice and there is an
-                // indirection table, we have an index within this indirection table.
-                //
-                // We need to decrement index since position 0 in the indirection table
-                // corresponds to index 1.
-                index--;
-                if (index < _current.IndirectionTable?.Length)
-                {
-                    return _current.IndirectionTable[index];
-                }
-                else
-                {
-                    throw new InvalidDataException("index too big for indirection table");
-                }
-            }
-            else
-            {
-                return ReadInstance(index);
-            }
-        }
-
-        // Read a tagged parameter or data member of type class.
-        private AnyClass? ReadAnyClass(int tag)
-        {
-            if (ReadOptional(tag, OptionalFormat.Class))
-            {
-                return ReadAnyClass();
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        // Read a slice header into _current.
-        // Returns the type ID of that slice. Null means it's a slice in compact format without a type ID,
-        // or a slice with a compact ID we could not resolve.
-        private string? ReadSliceHeaderIntoCurrent()
-        {
-            Debug.Assert(_current != null);
-
-            _current.SliceFlags = (EncodingDefinitions.SliceFlags)ReadByte();
-
-            // Read the type ID. For class slices, the type ID is encoded as a
-            // string or as an index or as a compact ID, for exceptions it's always encoded as a
-            // string.
-            if (_current.InstanceType == InstanceType.Class)
-            {
-                // TYPE_ID_COMPACT must be checked first!
-                if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasTypeIdCompact) ==
-                    EncodingDefinitions.SliceFlags.HasTypeIdCompact)
-                {
-                    _current.SliceCompactId = ReadSize();
-                    _current.SliceTypeId = null;
-                }
-                else if ((_current.SliceFlags &
-                        (EncodingDefinitions.SliceFlags.HasTypeIdIndex | EncodingDefinitions.SliceFlags.HasTypeIdString)) != 0)
-                {
-                    _current.SliceTypeId = ReadTypeId((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasTypeIdIndex) != 0);
-                    _current.SliceCompactId = null;
-                }
-                else
-                {
-                    // Slice in compact format, without a type ID or compact ID.
-                    Debug.Assert((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasSliceSize) == 0);
-                    _current.SliceTypeId = null;
-                    _current.SliceCompactId = null;
-                }
-            }
-            else
-            {
-                _current.SliceTypeId = ReadString();
-                Debug.Assert(_current.SliceCompactId == null); // no compact ID for exceptions
-            }
-
-            // Read the slice size if necessary.
-            if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasSliceSize) != 0)
-            {
-                _current.SliceSize = ReadInt();
-                if (_current.SliceSize < 4)
-                {
-                    throw new InvalidDataException($"invalid slice size: {_current.SliceSize}");
-                }
-            }
-            else
-            {
-                _current.SliceSize = 0;
-            }
-
-            // Clear other per-slice fields:
-            _current.IndirectionTable = null;
-            _current.PosAfterIndirectionTable = null;
-
-            return _current.SliceTypeId;
-        }
-
-        // Read the indirection table into _current's fields if there is an indirection table.
-        // Precondition: called after reading the slice's header.
-        // This method does not change Pos.
-        private void ReadIndirectionTableIntoCurrent()
-        {
-            Debug.Assert(_current != null && _current.IndirectionTable == null);
-            if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasIndirectionTable) != 0)
-            {
-                int savedPos = _pos;
-                if (_current.SliceSize < 4)
-                {
-                    throw new InvalidDataException($"invalid slice size: {_current.SliceSize}");
-                }
-                _pos = savedPos + _current.SliceSize - 4;
-                _current.IndirectionTable = ReadIndirectionTable();
-                _current.PosAfterIndirectionTable = _pos;
-                _pos = savedPos;
-            }
-        }
-
-        // Skip the body of the current slice and it indirection table (if any).
-        // When it's a class instance and there is an indirection table, it returns the starting position of that
-        // indirection table; otherwise, it return 0.
-        private int SkipSlice()
-        {
-            Debug.Assert(_current != null);
-            if (Communicator.TraceLevels.Slicing > 0)
-            {
-                ILogger logger = Communicator.Logger;
-                string slicingCat = Communicator.TraceLevels.SlicingCat;
-                if (_current.InstanceType == InstanceType.Exception)
-                {
-                    IceInternal.TraceUtil.TraceSlicing("exception", _current.SliceTypeId ?? "", slicingCat, logger);
-                }
-                else
-                {
-                    IceInternal.TraceUtil.TraceSlicing("object", _current.SliceTypeId ?? "", slicingCat, logger);
-                }
-            }
-
-            int start = _pos;
-
-            if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasSliceSize) != 0)
-            {
-                Debug.Assert(_current.SliceSize >= 4);
-                Skip(_current.SliceSize - 4);
-            }
-            else
-            {
-                if (_current.InstanceType == InstanceType.Class)
-                {
-                    string typeId = _current.SliceTypeId ?? _current.SliceCompactId!.ToString()!;
-                    throw new InvalidDataException(@$"no class found for type ID `{typeId
-                        }' and compact format prevents slicing (the sender should use the sliced format instead)");
-                }
-                else
-                {
-                    string typeId = _current.SliceTypeId!;
-                    throw new InvalidDataException(@$"no exception class found for type ID `{typeId
-                        }' and compact format prevents slicing (the sender should use the sliced format instead)");
-                }
-            }
-
-            // Preserve this slice.
-            bool hasOptionalMembers = (_current.SliceFlags & EncodingDefinitions.SliceFlags.HasTaggedMembers) != 0;
-            int end = _pos;
-            int dataEnd = end;
-            if (hasOptionalMembers)
-            {
-                // Don't include the tagged end marker. It will be re-written by IceEndSlice when the sliced data
-                // is re-written.
-                --dataEnd;
-            }
-            byte[] bytes = new byte[dataEnd - start];
-            _buffer.Slice(start, bytes.Length).CopyTo(bytes);
-
-            int startOfIndirectionTable = 0;
-
-            if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.HasIndirectionTable) != 0)
-            {
-                if (_current.InstanceType == InstanceType.Class)
-                {
-                    startOfIndirectionTable = _pos;
-                    SkipIndirectionTable();
-                }
-                else
-                {
-                    Debug.Assert(_current.PosAfterIndirectionTable != null);
-                    // Move past indirection table
-                    _pos = _current.PosAfterIndirectionTable.Value;
-                    _current.PosAfterIndirectionTable = null;
-                }
-            }
-            _current.Slices ??= new List<SliceInfo>();
-            var info = new SliceInfo(_current.SliceTypeId,
-                                     _current.SliceCompactId,
-                                     new ReadOnlyMemory<byte>(bytes),
-                                     Array.AsReadOnly(_current.IndirectionTable ?? Array.Empty<AnyClass>()),
-                                     hasOptionalMembers,
-                                     (_current.SliceFlags & EncodingDefinitions.SliceFlags.IsLastSlice) != 0);
-            _current.Slices.Add(info);
-
-            // An exception slice may have an indirection table (saved above). We don't need it anymore
-            // since we're skipping this slice.
-            _current.IndirectionTable = null;
-            return startOfIndirectionTable;
-        }
-
-        // Skip the indirection table. The caller must save the current stream position before calling
-        // SkipIndirectionTable (to read the indirection table at a later point) except when the caller
-        // is SkipIndirectionTable itself.
-        private void SkipIndirectionTable()
-        {
-            Debug.Assert(_current != null);
-            // We should never skip an exception's indirection table
-            Debug.Assert(_current.InstanceType == InstanceType.Class);
-
-            // We use ReadSize and not ReadAndCheckSeqSize here because we don't allocate memory for this
-            // sequence, and since we are skipping this sequence to read it later, we don't want to double-count
-            // its contribution to _minTotalSeqSize.
-            int tableSize = ReadSize();
-            for (int i = 0; i < tableSize; ++i)
-            {
-                int index = ReadSize();
-                if (index <= 0)
-                {
-                    throw new InvalidDataException($"read invalid index {index} in indirection table");
-                }
-                if (index == 1)
-                {
-                    if (++_classGraphDepth > Communicator.ClassGraphDepthMax)
-                    {
-                        throw new InvalidDataException("maximum class graph depth reached");
-                    }
-
-                    // Read/skip this instance
-                    EncodingDefinitions.SliceFlags sliceFlags;
-                    do
-                    {
-                        sliceFlags = (EncodingDefinitions.SliceFlags)ReadByte();
-                        if ((sliceFlags & EncodingDefinitions.SliceFlags.HasTypeIdCompact) == EncodingDefinitions.SliceFlags.HasTypeIdCompact)
-                        {
-                            ReadSize(); // compact type-id
-                        }
-                        else if ((sliceFlags &
-                            (EncodingDefinitions.SliceFlags.HasTypeIdIndex | EncodingDefinitions.SliceFlags.HasTypeIdString)) != 0)
-                        {
-                            // This can update the typeIdMap
-                            ReadTypeId((sliceFlags & EncodingDefinitions.SliceFlags.HasTypeIdIndex) != 0);
-                        }
-                        else
-                        {
-                            throw new InvalidDataException(
-                                "indirection table cannot hold an instance without a type ID");
-                        }
-
-                        // Read the slice size, then skip the slice
-                        if ((sliceFlags & EncodingDefinitions.SliceFlags.HasSliceSize) == 0)
-                        {
-                            throw new InvalidDataException("size of slice missing");
-                        }
-                        int sliceSize = ReadInt();
-                        if (sliceSize < 4)
-                        {
-                            throw new InvalidDataException($"invalid slice size: {sliceSize}");
-                        }
-                        _pos = _pos + sliceSize - 4;
-
-                        // If this slice has an indirection table, skip it too
-                        if ((sliceFlags & EncodingDefinitions.SliceFlags.HasIndirectionTable) != 0)
-                        {
-                            SkipIndirectionTable();
-                        }
-                    } while ((sliceFlags & EncodingDefinitions.SliceFlags.IsLastSlice) == 0);
-                    _classGraphDepth--;
-                }
-            }
-        }
-
-        private AnyClass[] ReadIndirectionTable()
-        {
-            int size = ReadAndCheckSeqSize(1);
-            if (size == 0)
-            {
-                throw new InvalidDataException("invalid empty indirection table");
-            }
-            var indirectionTable = new AnyClass[size];
-            for (int i = 0; i < indirectionTable.Length; ++i)
-            {
-                int index = ReadSize();
-                if (index < 1)
-                {
-                    throw new InvalidDataException($"read invalid index {index} in indirection table");
-                }
-                indirectionTable[i] = ReadInstance(index);
-            }
-            return indirectionTable;
-        }
-
-        private AnyClass ReadInstance(int index)
-        {
-            Debug.Assert(index > 0);
-
-            if (index > 1)
-            {
-                if (_instanceMap != null && _instanceMap.Count > index - 2)
-                {
-                    return _instanceMap[index - 2];
-                }
-                throw new InvalidDataException($"could not find index {index} in {nameof(_instanceMap)}");
-            }
-
-            InstanceData? previousCurrent = Push(InstanceType.Class);
-            Debug.Assert(_current != null);
-
-            // Read the first slice header.
-            string? mostDerivedId = ReadSliceHeaderIntoCurrent();
-            string? typeId = mostDerivedId;
-            // We cannot read the indirection table at this point as it may reference the new instance that is not
-            // created yet.
-
-            AnyClass? v = null;
-            List<int>? deferredIndirectionTableList = null;
-
-            while (true)
-            {
-                Type? cls = null;
-                if (typeId != null)
-                {
-                    Debug.Assert(_current.SliceCompactId == null);
-                    cls = Communicator.ResolveClass(typeId);
-                }
-                else if (_current.SliceCompactId.HasValue)
-                {
-                    cls = Communicator.ResolveCompactId(_current.SliceCompactId.Value);
-                }
-
-                if (cls != null)
-                {
-                    try
-                    {
-                        Debug.Assert(!cls.IsAbstract && !cls.IsInterface);
-                        v = (AnyClass?)Activator.CreateInstance(cls);
-                    }
-                    catch (Exception ex)
-                    {
-                        string typeIdString = typeId ?? _current.SliceCompactId!.ToString()!;
-                        throw new InvalidDataException(@$"failed to create an instance of type `{cls.Name
-                            } while reading a class with type ID {typeIdString}", ex);
-                    }
-                }
-
-                if (v != null)
-                {
-                    // We have an instance, get out of this loop.
-                    break;
-                }
-
-                // Slice off what we don't understand, and save the indirection table (if any) in
-                // deferredIndirectionTableList.
-                deferredIndirectionTableList ??= new List<int>();
-                deferredIndirectionTableList.Add(SkipSlice());
-
-                // If this is the last slice, keep the instance as an opaque UnknownSlicedClass object.
-                if ((_current.SliceFlags & EncodingDefinitions.SliceFlags.IsLastSlice) != 0)
-                {
-                    v = new UnknownSlicedClass();
-                    break;
-                }
-
-                typeId = ReadSliceHeaderIntoCurrent(); // Read next Slice header for next iteration.
-            }
-
-            if (++_classGraphDepth > Communicator.ClassGraphDepthMax)
-            {
-                throw new InvalidDataException("maximum class graph depth reached");
-            }
-
-            // Add the instance to the map/list of instances. This must be done before reading the instances (for
-            // circular references).
-            _instanceMap ??= new List<AnyClass>();
-            _instanceMap.Add(v);
-
-            // Read all the deferred indirection tables now that the instance is inserted in _instanceMap.
-            if (deferredIndirectionTableList?.Count > 0)
-            {
-                int savedPos = _pos;
-
-                Debug.Assert(_current.Slices?.Count == deferredIndirectionTableList.Count);
-                for (int i = 0; i < deferredIndirectionTableList.Count; ++i)
-                {
-                    int pos = deferredIndirectionTableList[i];
-                    if (pos > 0)
-                    {
-                        _pos = pos;
-                        _current.Slices[i].Instances = Array.AsReadOnly(ReadIndirectionTable());
-                    }
-                    // else remains empty
-                }
-                _pos = savedPos;
-            }
-
-            // Read the instance.
-            v.Read(this);
-            Pop(previousCurrent);
-
-            --_classGraphDepth;
-            return v;
-        }
-
-        // Create a new current instance of the specified slice type
-        // and return the previous current instance, if any.
-        private InstanceData? Push(InstanceType instanceType)
-        {
-            // Can't have a current instance already if we are reading an exception
-            Debug.Assert(instanceType == InstanceType.Class || _current == null);
-            InstanceData? oldInstance = _current;
-            _current = new InstanceData(instanceType);
-            return oldInstance;
-        }
-
-        // Replace the current instance by savedInstance
-        private void Pop(InstanceData? savedInstance)
-        {
-            Debug.Assert(_current != null);
-            _current = savedInstance;
-        }
-
-        /// <summary>Helper method for read numeric arrays, the array is fill using Buffer.BlockCopy.</summary>
-        /// <param name="dst">The numeric array to read.</param>
-        private void ReadNumericArray(Array dst)
-        {
-            Debug.Assert(_buffer.Array != null);
-            int byteCount = Buffer.ByteLength(dst);
-            Debug.Assert(_buffer.Count - _pos >= byteCount);
-            Buffer.BlockCopy(_buffer.Array, _buffer.Offset + _pos, dst, 0, byteCount);
-            _pos += byteCount;
-        }
-
-        private enum InstanceType { Class, Exception }
-
-        private sealed class InstanceData
-        {
-            internal InstanceData(InstanceType instanceType) => InstanceType = instanceType;
-
-            // Instance attributes
-            internal readonly InstanceType InstanceType;
-            internal List<SliceInfo>? Slices; // Preserved slices.
-
-            // Slice attributes
-            internal EncodingDefinitions.SliceFlags SliceFlags = default;
-            internal int SliceSize = 0;
-            internal string? SliceTypeId;
-            internal int? SliceCompactId;
-            // Indirection table of the current slice
-            internal AnyClass[]? IndirectionTable;
-            internal int? PosAfterIndirectionTable;
-        }
-
-        private readonly struct Encaps
-        {
-            // Previous upper limit of the buffer, if set
-            internal readonly int? OldLimit;
-
-            // Size of the encapsulation, as read from the stream
-            internal readonly int Size;
-
-            internal Encaps(int? oldLimit, int size)
-            {
-                OldLimit = oldLimit;
-                Size = size;
-            }
-        }
-
-        private readonly struct MainEncapsBackup
-        {
-            internal readonly Encaps Encaps;
-            internal readonly int Pos;
-
-            internal readonly Encoding Encoding;
-            internal readonly int MinTotalSeqSize;
-
-            internal MainEncapsBackup(Encaps encaps, int pos, Encoding encoding, int minTotalSeqSize)
-            {
-                Encaps = encaps;
-                Pos = pos;
-                Encoding = encoding;
-                MinTotalSeqSize = minTotalSeqSize;
             }
         }
 
@@ -1754,6 +1049,7 @@ namespace Ice
 
             object? IEnumerator.Current => Current;
             public bool IsReadOnly => true;
+
             private T _current;
             private bool _enumeratorRetrieved = false;
             private readonly InputStream _inputStream;
@@ -1763,12 +1059,12 @@ namespace Ice
             // Disable this warning as the _current field is never read before it is initialized in MoveNext. Declaring
             // this field as nullable is not an option for a genericT  that can be used with reference and value types.
 #pragma warning disable CS8618 // Non-nullable field is uninitialized. Consider declaring as nullable.
-            internal Collection(InputStream istr, InputStreamReader<T> reader, int minSize)
+            internal Collection(InputStream istr, int minElementSize, InputStreamReader<T> reader)
 #pragma warning restore CS8618
             {
+                Count = istr.ReadAndCheckSeqSize(minElementSize);
                 _inputStream = istr;
                 _reader = reader;
-                Count = istr.ReadAndCheckSeqSize(minSize);
             }
 
             public IEnumerator<T> GetEnumerator()
@@ -1814,7 +1110,6 @@ namespace Ice
             }
 
             public bool Remove(T item) => throw new NotSupportedException();
-
             public void Reset() => throw new NotSupportedException();
         }
     }

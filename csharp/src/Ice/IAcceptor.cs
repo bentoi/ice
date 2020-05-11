@@ -49,5 +49,4 @@ namespace IceInternal
             return result.Task;
         }
     }
-
 }

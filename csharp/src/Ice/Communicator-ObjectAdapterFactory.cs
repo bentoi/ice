@@ -85,7 +85,7 @@ namespace Ice
         /// <param name="taskScheduler">The optional task scheduler to use for dispatching requests.</param>
         /// <returns>The new object adapter.</returns>
         public ObjectAdapter CreateObjectAdapter(bool serializeDispatch = false, TaskScheduler? taskScheduler = null)
-            => AddObjectAdapter(serializeDispatch: serializeDispatch, taskScheduler : taskScheduler);
+            => AddObjectAdapter(serializeDispatch: serializeDispatch, taskScheduler: taskScheduler);
 
         /// <summary>Creates a new object adapter with the specified endpoint string. Calling this method is equivalent
         /// to setting the name.Endpoints property and then calling
