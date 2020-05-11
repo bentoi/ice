@@ -1637,10 +1637,11 @@ namespace Ice
                 OutgoingMessage message;
                 lock (_mutex)
                 {
-                    if (_state > State.Closing || _outgoingMessages.Count == 0)
+                    if (_state > State.Closing)
                     {
                         return;
                     }
+                    Debug.Assert(_outgoingMessages.Count > 0);
                     message = _outgoingMessages.First!.Value;
                     TraceUtil.TraceSend(_communicator, message.OutgoingData!);
                 }
@@ -1680,23 +1681,33 @@ namespace Ice
                     lock (_mutex)
                     {
                         Debug.Assert(_state < State.Finished); // Finish is only called once WriteAsync returns
+                        if (_state > State.Closing)
+                        {
+                            return;
+                        }
+
                         TraceSentAndUpdateObserver(bytesSent);
                         if (_acmLastActivity > -1)
                         {
                             _acmLastActivity = Time.CurrentMonotonicTimeMillis();
                         }
+                    }
+                }
 
-                        if (offset == size)
-                        {
-                            _outgoingMessages.RemoveFirst();
+                lock (_mutex)
+                {
+                    _outgoingMessages.RemoveFirst();
 
-                            if (message.OutAsync != null && message.OutAsync.Sent())
-                            {
-                                // The progress callback is a synchronous callback, we can't call it directly
-                                // from this thread since it could block further writes.
-                                Task.Run(message.OutAsync.InvokeSent);
-                            }
-                        }
+                    if (message.OutAsync != null && message.OutAsync.Sent())
+                    {
+                        // The progress callback is a synchronous callback, we can't call it directly
+                        // from this thread since it could block further writes.
+                        Task.Run(message.OutAsync.InvokeSent);
+                    }
+
+                    if (_outgoingMessages.Count == 0)
+                    {
+                        return;
                     }
                 }
             }

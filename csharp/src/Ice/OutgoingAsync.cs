@@ -447,7 +447,8 @@ namespace IceInternal
                     try
                     {
                         _sent = false;
-                        Proxy.IceReference.GetRequestHandler().SendAsyncRequest(this);
+                        Handler = Proxy.IceReference.GetRequestHandler();
+                        Handler.SendAsyncRequest(this);
                         return; // We're done!
                     }
                     catch (RetryException)
