@@ -519,7 +519,7 @@ namespace Ice
                 }
 
                 // TODO: We still rely on the endpoint timeout here, remove and change the override close timeout to
-                // Ice.CloseTimeout (or just rely on ACM timeout?)
+                // Ice.CloseTimeout (or just rely on ACM timeout)
                 int timeout = acm.Timeout;
                 if (_state >= State.Closing)
                 {
@@ -873,13 +873,7 @@ namespace Ice
             if (!_endpoint.IsDatagram)
             {
                 // Before we shut down, we send a close connection message.
-                if ((Send(new OutgoingMessage(_closeConnectionMessage, false)) &
-                    OutgoingAsyncBase.AsyncStatusSent) != 0)
-                {
-                    // TODO: Benoit: Send always returns Queued for now , this will need fixing to allow
-                    // synchronous writes and awaitable SendAsyncRequest
-                    Debug.Assert(false);
-                }
+                Send(new OutgoingMessage(_closeConnectionMessage, false));
             }
         }
 
@@ -1024,7 +1018,7 @@ namespace Ice
                 _validated = true;
             }
 
-            // Read the reminder of the message if needed
+            // Read the remainder of the message if needed
             if (!_endpoint.IsDatagram)
             {
                 if (size > readBuffer.Array!.Length)
@@ -1227,8 +1221,8 @@ namespace Ice
 
         private async ValueTask ReadAsync()
         {
-            // Read asynchronously incoming frames and dispatch the incoming if needed. The read will throw
-            // and cause the loop to end when the connection is closed.
+            // Read asynchronously incoming frames and dispatch the incoming if needed. ReadIncomingAsync can throw
+            // when the connection is closed.
             while (true)
             {
                 var (incoming, adapter) = await ReadIncomingAsync().ConfigureAwait(false);
@@ -1250,7 +1244,10 @@ namespace Ice
                     {
                         // Start a new Read IO task and run the incoming dispatch. We start the new ReadAsync from
                         // a separate task because ReadAsync could complete synchronously and we don't want the
-                        // dispatch from this read to run before we actually ran the dispatch from this block.
+                        // dispatch from this read to run before we actually ran the dispatch from this block. An
+                        // alternative could be to start a task to run the incoming dispatch and continue reading
+                        // with this loop. It would have a negative impact on latency however since execution of
+                        // the incoming dispatch would potentially require a thread context switch.
                         if (adapter?.TaskScheduler != null)
                         {
                             await TaskRun(() =>
@@ -1347,6 +1344,9 @@ namespace Ice
 
             if (closing)
             {
+                // Notify the transport of the graceful connection closure. The transport returns whether or not
+                // the closing is completed. It might not be completed in case there's still a Read task pending.
+                // If it's the case, the connection will be closed once the pending Read task throws an exception.
                 bool completed;
                 try
                 {
@@ -1354,6 +1354,7 @@ namespace Ice
                 }
                 catch (Exception)
                 {
+                    // TODO: Debug.Assert(false) instead with the transport refactoring?
                     completed = true;
                 }
                 if (completed)
@@ -1371,17 +1372,16 @@ namespace Ice
             }
         }
 
-        private int Send(OutgoingMessage message)
+        private void Send(OutgoingMessage message)
         {
             Debug.Assert(_state < State.Closed);
-            // TODO: Benoit: Refactor to write and await the calling thread to avoid having writing
-            // on a thread pool thread
+            // TODO: Benoit: Refactor to write and await the calling thread to avoid having writing on a thread
+            // pool thread
             _outgoingMessages.AddLast(message);
             if (_outgoingMessages.Count == 1)
             {
                 Task.Run(() => _ = RunIO(WriteAsync));
             }
-            return OutgoingAsyncBase.AsyncStatusQueued;
         }
 
         private void SetState(State state, System.Exception ex)

@@ -314,10 +314,6 @@ namespace IceInternal
         protected const int StateSent = 0x4;
         protected const int StateEndCalled = 0x8;
         protected const int StateCachedBuffers = 0x10;
-
-        public const int AsyncStatusQueued = 0;
-        public const int AsyncStatusSent = 1;
-        public const int AsyncStatusInvokeSentCallback = 2;
     }
 
     //

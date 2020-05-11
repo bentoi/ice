@@ -64,7 +64,7 @@ namespace IceInternal
 
         public Connection? GetConnection() => null;
 
-        public int InvokeAsyncRequest(ProxyOutgoingAsyncBase outAsync, bool synchronous)
+        public void InvokeAsyncRequest(ProxyOutgoingAsyncBase outAsync, bool synchronous)
         {
             //
             // Increase the direct count to prevent the thread pool from being destroyed before
@@ -119,7 +119,6 @@ namespace IceInternal
                     // TODO: do something with the value task
                 }
             }
-            return OutgoingAsyncBase.AsyncStatusQueued;
         }
 
         private bool SentAsync(OutgoingAsyncBase outAsync)
