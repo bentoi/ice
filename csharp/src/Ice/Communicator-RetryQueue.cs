@@ -9,9 +9,9 @@ using System.Threading.Tasks;
 
 namespace ZeroC.Ice
 {
-    public class RetryTask : ITimerTask, ICancellationHandler
+    internal class RetryTask : ITimerTask, ICancellationHandler
     {
-        public RetryTask(Communicator communicator, ProxyOutgoingAsyncBase outAsync)
+        public RetryTask(Communicator communicator, ProxyOutgoing outAsync)
         {
             _communicator = communicator;
             _outAsync = outAsync;
@@ -30,7 +30,7 @@ namespace ZeroC.Ice
             _communicator.RemoveRetryTask(this);
         }
 
-        public void AsyncRequestCanceled(OutgoingAsyncBase outAsync, System.Exception ex)
+        public void AsyncRequestCanceled(Outgoing outAsync, System.Exception ex)
         {
             Debug.Assert(_outAsync == outAsync);
             if (_communicator.CancelRetryTask(this))
@@ -55,12 +55,12 @@ namespace ZeroC.Ice
         }
 
         private readonly Communicator _communicator;
-        private readonly ProxyOutgoingAsyncBase _outAsync;
+        private readonly ProxyOutgoing _outAsync;
     }
 
     public sealed partial class Communicator
     {
-        internal void AddRetryTask(ProxyOutgoingAsyncBase outAsync, int interval)
+        internal void AddRetryTask(ProxyOutgoing outAsync, int interval)
         {
             lock (this)
             {

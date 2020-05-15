@@ -24,37 +24,37 @@ namespace IceInternal
         public IRequestHandler? Update(IRequestHandler previousHandler, IRequestHandler? newHandler) =>
             previousHandler == this ? newHandler : this;
 
-        public void SendAsyncRequest(ProxyOutgoingAsyncBase outAsync) => outAsync.InvokeCollocated(this);
+        public void SendAsyncRequest(ProxyOutgoing outgoing) => outgoing.InvokeCollocated(this);
 
-        public void AsyncRequestCanceled(OutgoingAsyncBase outAsync, Exception ex)
+        public void AsyncRequestCanceled(Outgoing outgoing, Exception ex)
         {
             lock (this)
             {
-                if (_sendAsyncRequests.TryGetValue(outAsync, out int requestId))
+                if (_sendAsyncRequests.TryGetValue(outgoing, out int requestId))
                 {
                     if (requestId > 0)
                     {
-                        _asyncRequests.Remove(requestId);
+                        _requests.Remove(requestId);
                     }
-                    _sendAsyncRequests.Remove(outAsync);
-                    if (outAsync.Exception(ex))
+                    _sendAsyncRequests.Remove(outgoing);
+                    if (outgoing.Exception(ex))
                     {
-                        Task.Run(outAsync.InvokeException);
+                        Task.Run(outgoing.InvokeException);
                     }
                     _adapter.DecDirectCount(); // invokeAll won't be called, decrease the direct count.
                     return;
                 }
-                if (outAsync is OutgoingAsync o)
+                if (outgoing is InvokeOutgoing o)
                 {
                     Debug.Assert(o != null);
-                    foreach (KeyValuePair<int, OutgoingAsyncBase> e in _asyncRequests)
+                    foreach (KeyValuePair<int, InvokeOutgoing> e in _requests)
                     {
                         if (e.Value == o)
                         {
-                            _asyncRequests.Remove(e.Key);
-                            if (outAsync.Exception(ex))
+                            _requests.Remove(e.Key);
+                            if (outgoing.Exception(ex))
                             {
-                                Task.Run(outAsync.InvokeException);
+                                Task.Run(outgoing.InvokeException);
                             }
                             return;
                         }
@@ -65,7 +65,7 @@ namespace IceInternal
 
         public Connection? GetConnection() => null;
 
-        public void InvokeAsyncRequest(ProxyOutgoingAsyncBase outAsync, bool synchronous)
+        public void InvokeAsyncRequest(InvokeOutgoing outgoing, bool synchronous)
         {
             //
             // Increase the direct count to prevent the thread pool from being destroyed before
@@ -78,15 +78,15 @@ namespace IceInternal
             {
                 lock (this)
                 {
-                    outAsync.Cancelable(this); // This will throw if the request is canceled
+                    outgoing.Cancelable(this); // This will throw if the request is canceled
 
-                    if (!outAsync.IsOneway)
+                    if (!outgoing.IsOneway)
                     {
                         requestId = ++_requestId;
-                        _asyncRequests.Add(requestId, outAsync);
+                        _requests.Add(requestId, outgoing);
                     }
 
-                    _sendAsyncRequests.Add(outAsync, requestId);
+                    _sendAsyncRequests.Add(outgoing, requestId);
                 }
             }
             catch (Exception)
@@ -95,8 +95,8 @@ namespace IceInternal
                 throw;
             }
 
-            outAsync.AttachCollocatedObserver(_adapter, requestId, outAsync.RequestFrame.Size);
-            if (_adapter.TaskScheduler != null || !synchronous || outAsync.IsOneway || _reference.InvocationTimeout > 0)
+            outgoing.AttachCollocatedObserver(_adapter, requestId, outgoing.RequestFrame.Size);
+            if (_adapter.TaskScheduler != null || !synchronous || outgoing.IsOneway || _reference.InvocationTimeout > 0)
             {
                 // Don't invoke from the user thread if async or invocation timeout is set. We also don't dispatch
                 // oneway from the user thread to match the non-collocated behavior where the oneway synchronous
@@ -104,40 +104,40 @@ namespace IceInternal
                 Task.Factory.StartNew(
                     () =>
                     {
-                        if (SentAsync(outAsync))
+                        if (SentAsync(outgoing))
                         {
-                            ValueTask vt = InvokeAllAsync(outAsync.RequestFrame, requestId);
+                            ValueTask vt = InvokeAllAsync(outgoing.RequestFrame, requestId);
                             // TODO: do something with the value task
                         }
                     }, default, TaskCreationOptions.None, _adapter.TaskScheduler ?? TaskScheduler.Default);
             }
             else // Optimization: directly call invokeAll
             {
-                if (SentAsync(outAsync))
+                if (SentAsync(outgoing))
                 {
-                    Debug.Assert(outAsync.RequestFrame != null);
-                    ValueTask vt = InvokeAllAsync(outAsync.RequestFrame, requestId);
+                    Debug.Assert(outgoing.RequestFrame != null);
+                    ValueTask vt = InvokeAllAsync(outgoing.RequestFrame, requestId);
                     // TODO: do something with the value task
                 }
             }
         }
 
-        private bool SentAsync(OutgoingAsyncBase outAsync)
+        private bool SentAsync(Outgoing outgoing)
         {
             lock (this)
             {
-                if (!_sendAsyncRequests.Remove(outAsync))
+                if (!_sendAsyncRequests.Remove(outgoing))
                 {
                     return false; // The request timed-out.
                 }
 
-                if (!outAsync.Sent())
+                if (!outgoing.Sent())
                 {
                     return true;
                 }
             }
             // The progress callback is always called from the default task scheduler
-            Task.Run(outAsync.InvokeSent);
+            Task.Run(outgoing.InvokeSent);
             return true;
         }
 
@@ -218,7 +218,7 @@ namespace IceInternal
 
         private void SendResponse(int requestId, OutgoingResponseFrame responseFrame)
         {
-            OutgoingAsyncBase? outAsync;
+            InvokeOutgoing? outgoing;
             lock (this)
             {
                 var responseBuffer = new ArraySegment<byte>(VectoredBufferExtensions.ToArray(
@@ -228,19 +228,19 @@ namespace IceInternal
                     TraceUtil.TraceRecv(_adapter.Communicator, responseBuffer);
                 }
                 responseBuffer = responseBuffer.Slice(Ice1Definitions.HeaderSize + 4);
-                if (_asyncRequests.TryGetValue(requestId, out outAsync))
+                if (_requests.TryGetValue(requestId, out outgoing))
                 {
-                    if (!outAsync.Response(new IncomingResponseFrame(_adapter.Communicator, responseBuffer)))
+                    if (!outgoing.Response(new IncomingResponseFrame(_adapter.Communicator, responseBuffer)))
                     {
-                        outAsync = null;
+                        outgoing = null;
                     }
-                    _asyncRequests.Remove(requestId);
+                    _requests.Remove(requestId);
                 }
             }
 
-            if (outAsync != null)
+            if (outgoing != null)
             {
-                outAsync.InvokeResponse();
+                outgoing.InvokeResponse();
             }
         }
 
@@ -251,29 +251,29 @@ namespace IceInternal
                 return; // Ignore exception for oneway messages.
             }
 
-            OutgoingAsyncBase? outAsync;
+            InvokeOutgoing? outgoing;
             lock (this)
             {
-                if (_asyncRequests.TryGetValue(requestId, out outAsync))
+                if (_requests.TryGetValue(requestId, out outgoing))
                 {
-                    if (!outAsync.Exception(ex))
+                    if (!outgoing.Exception(ex))
                     {
-                        outAsync = null;
+                        outgoing = null;
                     }
-                    _asyncRequests.Remove(requestId);
+                    _requests.Remove(requestId);
                 }
             }
 
-            if (outAsync != null)
+            if (outgoing != null)
             {
-                outAsync.InvokeException();
+                outgoing.InvokeException();
             }
         }
 
         private readonly Reference _reference;
         private readonly ObjectAdapter _adapter;
         private int _requestId;
-        private readonly Dictionary<OutgoingAsyncBase, int> _sendAsyncRequests = new Dictionary<OutgoingAsyncBase, int>();
-        private readonly Dictionary<int, OutgoingAsyncBase> _asyncRequests = new Dictionary<int, OutgoingAsyncBase>();
+        private readonly Dictionary<Outgoing, int> _sendAsyncRequests = new Dictionary<Outgoing, int>();
+        private readonly Dictionary<int, InvokeOutgoing> _requests = new Dictionary<int, InvokeOutgoing>();
     }
 }

@@ -32,7 +32,7 @@ namespace IceInternal
         public IRequestHandler? Update(IRequestHandler? previousHandler, IRequestHandler? newHandler) =>
             previousHandler == this ? newHandler : this;
 
-        public void SendAsyncRequest(ProxyOutgoingAsyncBase outAsync)
+        public void SendAsyncRequest(ProxyOutgoing outAsync)
         {
             lock (this)
             {
@@ -48,10 +48,10 @@ namespace IceInternal
                 }
             }
             Debug.Assert(_connection != null);
-            outAsync.InvokeRemote(_connection, _compress, !outAsync.IsOneway);
+            outAsync.InvokeRemote(_connection, _compress);
         }
 
-        public void AsyncRequestCanceled(OutgoingAsyncBase outAsync, System.Exception ex)
+        public void AsyncRequestCanceled(Outgoing outAsync, System.Exception ex)
         {
             lock (this)
             {
@@ -62,7 +62,7 @@ namespace IceInternal
 
                 if (!Initialized())
                 {
-                    LinkedListNode<ProxyOutgoingAsyncBase>? p = _requests.First;
+                    LinkedListNode<ProxyOutgoing>? p = _requests.First;
                     while (p != null)
                     {
                         if (p.Value == outAsync)
@@ -155,7 +155,7 @@ namespace IceInternal
                 // Ignore
             }
 
-            foreach (ProxyOutgoingAsyncBase outAsync in _requests)
+            foreach (ProxyOutgoing outAsync in _requests)
             {
                 if (outAsync.Exception(_exception))
                 {
@@ -239,11 +239,11 @@ namespace IceInternal
             }
 
             System.Exception? exception = null;
-            foreach (ProxyOutgoingAsyncBase outAsync in _requests)
+            foreach (ProxyOutgoing outAsync in _requests)
             {
                 try
                 {
-                    outAsync.InvokeRemote(_connection, _compress, !outAsync.IsOneway);
+                    outAsync.InvokeRemote(_connection, _compress);
                 }
                 catch (RetryException ex)
                 {
@@ -312,7 +312,7 @@ namespace IceInternal
         private bool _initialized;
         private bool _flushing;
 
-        private readonly LinkedList<ProxyOutgoingAsyncBase> _requests = new LinkedList<ProxyOutgoingAsyncBase>();
+        private readonly LinkedList<ProxyOutgoing> _requests = new LinkedList<ProxyOutgoing>();
         private IRequestHandler _requestHandler;
     }
 }

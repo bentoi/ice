@@ -12,128 +12,22 @@ using System.Threading.Tasks;
 
 namespace IceInternal
 {
-    public interface IOutgoingAsyncCompletionCallback
+
+    public abstract class Outgoing
     {
-        void Init(OutgoingAsyncBase og);
+        public readonly bool IsOneway;
+        protected readonly Communicator Communicator;
+        protected readonly bool Synchronous;
+        protected bool IsSent;
+        protected IInvocationObserver? Observer;
+        protected IChildInvocationObserver? ChildObserver;
 
-        bool HandleSent(bool done, bool alreadySent, OutgoingAsyncBase og);
-        bool HandleException(Exception ex, OutgoingAsyncBase og);
-
-        bool HandleResponse(bool userThread, bool ok, OutgoingAsyncBase og);
-
-        void HandleInvokeSent(bool sentSynchronously, bool done, bool alreadySent, OutgoingAsyncBase og);
-        void HandleInvokeException(Exception ex, OutgoingAsyncBase og);
-        void HandleInvokeResponse(bool ok, OutgoingAsyncBase og);
-    }
-
-    public abstract class OutgoingAsyncBase
-    {
-        public virtual bool Sent() => SentImpl(true);
-
-        public virtual bool Exception(Exception ex) => ExceptionImpl(ex);
-
-        public virtual bool Response(IncomingResponseFrame responseFrame)
-        {
-            Debug.Assert(false); // Must be overridden by request that can handle responses
-            return false;
-        }
-        public void InvokeSent()
-        {
-            try
-            {
-                _completionCallback.HandleInvokeSent(SentSynchronously, _doneInSent, _alreadySent, this);
-            }
-            catch (Exception ex)
-            {
-                Warning(ex);
-            }
-
-            if (Observer != null && _doneInSent)
-            {
-                Observer.Detach();
-                Observer = null;
-            }
-        }
-        public void InvokeException()
-        {
-            Debug.Assert(_ex != null);
-            try
-            {
-                _completionCallback.HandleInvokeException(_ex, this);
-            }
-            catch (Exception ex)
-            {
-                Warning(ex);
-            }
-
-            if (Observer != null)
-            {
-                Observer.Detach();
-                Observer = null;
-            }
-        }
-
-        public void InvokeResponse()
-        {
-            if (_ex != null)
-            {
-                InvokeException();
-                return;
-            }
-
-            try
-            {
-                try
-                {
-                    _completionCallback.HandleInvokeResponse((State & StateOK) != 0, this);
-                }
-                catch (AggregateException ex)
-                {
-                    Debug.Assert(ex.InnerException != null);
-                    throw ex.InnerException;
-                }
-                catch (Exception ex)
-                {
-                    if (_completionCallback.HandleException(ex, this))
-                    {
-                        _completionCallback.HandleInvokeException(ex, this);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Warning(ex);
-            }
-
-            if (Observer != null)
-            {
-                Observer.Detach();
-                Observer = null;
-            }
-        }
-
-        public void Cancelable(ICancellationHandler handler)
-        {
-            lock (this)
-            {
-                if (_cancellationException != null)
-                {
-                    try
-                    {
-                        throw _cancellationException;
-                    }
-                    catch (Exception)
-                    {
-                        _cancellationException = null;
-                        throw;
-                    }
-                }
-                _cancellationHandler = handler;
-            }
-        }
-
-        // TODO: add more details in message
-        public void Cancel() => Cancel(new OperationCanceledException("invocation on remote Ice object canceled"));
+        private bool _alreadySent;
+        private Exception? _cancellationException;
+        private ICancellationHandler? _cancellationHandler;
+        private readonly CancellationToken _cancel;
+        private Exception? _exception;
+        private readonly IProgress<bool>? _progress;
 
         public void AttachRemoteObserver(ConnectionInfo info, Endpoint endpt, int requestId, int size)
         {
@@ -161,49 +55,130 @@ namespace IceInternal
             }
         }
 
-        public virtual void ThrowUserException()
+        public void Cancelable(ICancellationHandler handler)
         {
+            lock (this)
+            {
+                if (_cancellationException != null)
+                {
+                    try
+                    {
+                        throw _cancellationException;
+                    }
+                    catch (Exception)
+                    {
+                        _cancellationException = null;
+                        throw;
+                    }
+                }
+                _cancellationHandler = handler;
+            }
         }
 
-        public bool IsSynchronous() => Synchronous;
+        // TODO: add more details in message
+        public void Cancel() => Cancel(new OperationCanceledException("invocation on remote Ice object canceled"));
 
-        protected OutgoingAsyncBase(Communicator communicator, IOutgoingAsyncCompletionCallback completionCallback)
+        public virtual bool Exception(Exception ex) => ExceptionImpl(ex);
+
+        public void InvokeException()
+        {
+            Debug.Assert(_exception != null);
+            SetException(_exception);
+
+            Observer?.Detach();
+        }
+
+        public void InvokeSent()
+        {
+            try
+            {
+                if (_progress != null && !_alreadySent)
+                {
+                    // TODO: Add back support for sentSynchronously to the IProgress.Report callback?
+                    _progress.Report(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                // TODO: this is only used to report exceptions from IProgress.Report... fix the property name?
+                if (Communicator.GetPropertyAsBool("Ice.Warn.AMICallback") ?? true)
+                {
+                    Communicator.Logger.Warning("exception raised by AMI callback:\n" + ex);
+                }
+            }
+
+            if (IsOneway)
+            {
+                InvokeResponse();
+            }
+        }
+
+        public void InvokeResponse()
+        {
+            if (_exception != null)
+            {
+                InvokeException();
+                return;
+            }
+
+            SetResult();
+
+            Observer?.Detach();
+        }
+
+        protected abstract void SetException(Exception ex);
+        protected abstract void SetResult();
+
+        protected Outgoing(Communicator communicator, bool oneway, bool synchronous, IProgress<bool>? progress,
+            CancellationToken cancel)
         {
             Communicator = communicator;
-            SentSynchronously = false;
-            Synchronous = false;
-            _doneInSent = false;
-            _alreadySent = false;
-            State = 0;
+            IsOneway = oneway;
+            Synchronous = synchronous;
 
-            _completionCallback = completionCallback;
-            _completionCallback.Init(this);
+            IsSent = false;
+
+            _alreadySent = false;
+
+            _cancel = cancel;
+            _progress = progress;
+            if (_cancel.CanBeCanceled)
+            {
+                _cancel.Register(Cancel);
+            }
         }
 
         public abstract List<ArraySegment<byte>> GetRequestData(int requestId);
 
-        protected virtual bool SentImpl(bool done)
+        public virtual bool Sent()
         {
             lock (this)
             {
-                _alreadySent = (State & StateSent) > 0;
-                State |= StateSent;
-                if (done)
+                _alreadySent = IsSent;
+                IsSent = true;
+                if (IsOneway)
                 {
-                    _doneInSent = true;
                     if (ChildObserver != null)
                     {
                         ChildObserver.Detach();
                         ChildObserver = null;
                     }
                     _cancellationHandler = null;
+
+                    if (Synchronous)
+                    {
+                        Debug.Assert(_progress == null);
+                        SetResult();
+                        Observer?.Detach();
+                        return false;
+                    }
                 }
 
-                bool invoke = _completionCallback.HandleSent(done, _alreadySent, this);
-                if (!invoke && _doneInSent && Observer != null)
+                // Invoke the sent callback only if not already invoked.
+                bool invoke = IsOneway || (_progress != null && !_alreadySent);
+                if (!invoke && IsOneway)
                 {
-                    Observer.Detach();
-                    Observer = null;
+                    Observer?.Detach();
                 }
                 return invoke;
             }
@@ -213,7 +188,7 @@ namespace IceInternal
         {
             lock (this)
             {
-                _ex = ex;
+                _exception = ex;
 
                 if (ChildObserver != null)
                 {
@@ -227,42 +202,36 @@ namespace IceInternal
                 {
                     Observer.Failed(ex.GetType().FullName ?? "System.Exception");
                 }
-                bool invoke = _completionCallback.HandleException(ex, this);
-                if (!invoke && Observer != null)
+
+                if (Synchronous)
                 {
-                    Observer.Detach();
-                    Observer = null;
+                    SetException(ex);
+                    Observer?.Detach();
+                    return false;
                 }
-                return invoke;
+                else
+                {
+                    return true;
+                }
             }
         }
 
-        protected virtual bool ResponseImpl(bool userThread, bool ok, bool invoke)
+        protected virtual bool ResponseImpl()
         {
             lock (this)
             {
-                if (ok)
-                {
-                    State |= StateOK;
-                }
-
                 _cancellationHandler = null;
 
-                try
+                if (Synchronous)
                 {
-                    invoke &= _completionCallback.HandleResponse(userThread, ok, this);
+                    SetResult();
+                    Observer?.Detach();
+                    return false;
                 }
-                catch (Exception ex)
+                else
                 {
-                    _ex = ex;
-                    invoke = _completionCallback.HandleException(ex, this);
+                    return true;
                 }
-                if (!invoke && Observer != null)
-                {
-                    Observer.Detach();
-                    Observer = null;
-                }
-                return invoke;
             }
         }
 
@@ -283,38 +252,7 @@ namespace IceInternal
             handler.AsyncRequestCanceled(this, ex);
         }
 
-        protected void Warning(Exception ex)
-        {
-            if (Communicator.GetPropertyAsBool("Ice.Warn.AMICallback") ?? true)
-            {
-                Communicator.Logger.Warning("exception raised by AMI callback:\n" + ex);
-            }
-        }
-
         protected IInvocationObserver? GetObserver() => Observer;
-
-        public bool SentSynchronously { get; protected set; }
-
-        protected Communicator Communicator;
-        protected Connection? CachedConnection;
-        protected bool Synchronous;
-        protected int State;
-
-        protected IInvocationObserver? Observer;
-        protected IChildInvocationObserver? ChildObserver;
-
-        private bool _doneInSent;
-        private bool _alreadySent;
-        private Exception? _ex;
-        private Exception? _cancellationException;
-        private ICancellationHandler? _cancellationHandler;
-        private readonly IOutgoingAsyncCompletionCallback _completionCallback;
-
-        protected const int StateOK = 0x1;
-        protected const int StateDone = 0x2;
-        protected const int StateSent = 0x4;
-        protected const int StateEndCalled = 0x8;
-        protected const int StateCachedBuffers = 0x10;
     }
 
     //
@@ -323,15 +261,15 @@ namespace IceInternal
     // correct notified of failures and make sure the retry task is
     // correctly canceled when the invocation completes.
     //
-    public abstract class ProxyOutgoingAsyncBase : OutgoingAsyncBase, ITimerTask
+    public abstract class ProxyOutgoing : Outgoing, ITimerTask
     {
-        public OutgoingRequestFrame RequestFrame { get; protected set; }
-        public IncomingResponseFrame? ResponseFrame { get; protected set; }
-        public abstract void InvokeRemote(Connection connection, bool compress, bool response);
+        protected bool IsIdempotent;
+        protected readonly IObjectPrx Proxy;
+        protected IRequestHandler? Handler;
+        // true for a oneway-capable operation called on a oneway proxy, false otherwise
+        private int _cnt;
+        public abstract void InvokeRemote(Connection connection, bool compress);
         public abstract void InvokeCollocated(CollocatedRequestHandler handler);
-
-        public override List<ArraySegment<byte>> GetRequestData(int requestId) =>
-            Ice1Definitions.GetRequestData(RequestFrame, requestId);
 
         public override bool Exception(Exception exc)
         {
@@ -341,8 +279,6 @@ namespace IceInternal
                 ChildObserver.Detach();
                 ChildObserver = null;
             }
-
-            CachedConnection = null;
 
             //
             // NOTE: at this point, synchronization isn't needed, no other threads should be
@@ -355,7 +291,7 @@ namespace IceInternal
                 // the retry interval is 0. This method can be called with the
                 // connection locked so we can't just retry here.
                 //
-                Communicator.AddRetryTask(this, Proxy.IceHandleException(exc, Handler, IsIdempotent, _sent, ref _cnt));
+                Communicator.AddRetryTask(this, Proxy.IceHandleException(exc, Handler, IsIdempotent, IsSent, ref _cnt));
                 return false;
             }
             catch (Exception ex)
@@ -393,16 +329,12 @@ namespace IceInternal
 
         public void Retry() => InvokeImpl(false);
 
-        protected ProxyOutgoingAsyncBase(IObjectPrx prx,
-                                         IOutgoingAsyncCompletionCallback completionCallback,
-                                         OutgoingRequestFrame requestFrame) :
-            base(prx.Communicator, completionCallback)
+        protected ProxyOutgoing(IObjectPrx prx, bool oneway, bool synchronous, IProgress<bool>? progress,
+            CancellationToken cancel)
+            : base(prx.Communicator, oneway, synchronous, progress, cancel)
         {
             Proxy = prx;
-            IsOneway = false;
             _cnt = 0;
-            _sent = false;
-            RequestFrame = requestFrame;
         }
 
         protected void InvokeImpl(bool userThread)
@@ -426,7 +358,7 @@ namespace IceInternal
                 {
                     try
                     {
-                        _sent = false;
+                        IsSent = false;
                         Handler = Proxy.IceReference.GetRequestHandler();
                         Handler.SendAsyncRequest(this);
                         return; // We're done!
@@ -447,7 +379,7 @@ namespace IceInternal
                             ChildObserver.Detach();
                             ChildObserver = null;
                         }
-                        int interval = Proxy.IceHandleException(ex, Handler, IsIdempotent, _sent, ref _cnt);
+                        int interval = Proxy.IceHandleException(ex, Handler, IsIdempotent, IsSent, ref _cnt);
                         if (interval > 0)
                         {
                             Communicator.AddRetryTask(this, interval);
@@ -476,19 +408,19 @@ namespace IceInternal
                 }
             }
         }
-        protected override bool SentImpl(bool done)
+
+        public override bool Sent()
         {
-            _sent = true;
-            if (done)
+            if (IsOneway)
             {
-                ResponseFrame = new IncomingResponseFrame(Communicator, Ice1Definitions.EmptyResponsePayload);
                 if (Proxy.IceReference.InvocationTimeout != -1)
                 {
                     Communicator.Timer().Cancel(this);
                 }
             }
-            return base.SentImpl(done);
+            return base.Sent();
         }
+
         protected override bool ExceptionImpl(Exception ex)
         {
             if (Proxy.IceReference.InvocationTimeout != -1)
@@ -498,13 +430,13 @@ namespace IceInternal
             return base.ExceptionImpl(ex);
         }
 
-        protected override bool ResponseImpl(bool userThread, bool ok, bool invoke)
+        protected override bool ResponseImpl()
         {
             if (Proxy.IceReference.InvocationTimeout != -1)
             {
                 Communicator.Timer().Cancel(this);
             }
-            return base.ResponseImpl(userThread, ok, invoke);
+            return base.ResponseImpl();
         }
 
         // TODO: add facet and operation to message
@@ -534,43 +466,48 @@ namespace IceInternal
             }
             return context;
         }
-
-        protected bool IsIdempotent;
-        protected readonly IObjectPrx Proxy;
-        protected IRequestHandler? Handler;
-
-        // true for a oneway-capable operation called on a oneway proxy, false otherwise
-        protected internal bool IsOneway;
-
-        private int _cnt;
-        private bool _sent;
     }
 
     //
     // Class for handling Slice operation invocations
     //
-    public class OutgoingAsync : ProxyOutgoingAsyncBase
+    public class InvokeOutgoing : ProxyOutgoing
     {
-        public OutgoingAsync(IObjectPrx prx, IOutgoingAsyncCompletionCallback completionCallback,
-            OutgoingRequestFrame requestFrame, bool oneway = false)
-            : base(prx, completionCallback, requestFrame)
+        public OutgoingRequestFrame RequestFrame { get; protected set; }
+        public IncomingResponseFrame? ResponseFrame { get; protected set; }
+        public Task<IncomingResponseFrame> Task => _taskCompletionSource.Task;
+        public override List<ArraySegment<byte>> GetRequestData(int requestId) =>
+            Ice1Definitions.GetRequestData(RequestFrame, requestId);
+
+        private readonly TaskCompletionSource<IncomingResponseFrame> _taskCompletionSource;
+
+        public InvokeOutgoing(IObjectPrx prx, OutgoingRequestFrame requestFrame, bool oneway, bool synchronous,
+            IProgress<bool>? progress = null, CancellationToken cancel = default)
+            : base(prx, oneway, synchronous, progress, cancel)
         {
+            RequestFrame = requestFrame;
             Encoding = Proxy.Encoding;
-            Synchronous = false;
-            IsOneway = oneway;
             IsIdempotent = requestFrame.IsIdempotent;
+            _taskCompletionSource = new TaskCompletionSource<IncomingResponseFrame>();
         }
 
-        public override bool Sent() => SentImpl(IsOneway); // done = true
+        protected override void SetResult() => _taskCompletionSource.SetResult(ResponseFrame!);
 
-        public override bool Response(IncomingResponseFrame responseFrame)
+        protected override void SetException(Exception ex) => _taskCompletionSource.SetException(ex);
+
+        public override bool Sent()
+        {
+            if (IsOneway)
+            {
+                ResponseFrame = new IncomingResponseFrame(Communicator, Ice1Definitions.EmptyResponsePayload);
+            }
+            return base.Sent();
+        }
+
+        public bool Response(IncomingResponseFrame responseFrame)
         {
             ResponseFrame = responseFrame;
-            //
-            // NOTE: this method is called from ConnectionI.parseMessage
-            // with the connection locked. Therefore, it must not invoke
-            // any user callbacks.
-            //
+
             Debug.Assert(!IsOneway); // Can only be called for twoways.
 
             if (ChildObserver != null)
@@ -609,7 +546,7 @@ namespace IceInternal
                         throw ResponseFrame.ReadUnhandledException();
                     }
                 }
-                return ResponseImpl(false, ResponseFrame.ReplyStatus == ReplyStatus.OK, true);
+                return ResponseImpl();
             }
             catch (Exception ex)
             {
@@ -617,30 +554,17 @@ namespace IceInternal
             }
         }
 
-        public override void InvokeRemote(Connection connection, bool compress, bool response)
-        {
-            CachedConnection = connection;
-            connection.SendAsyncRequest(this, compress, response);
-        }
+        public override void InvokeRemote(Connection connection, bool compress) =>
+            connection.SendAsyncRequest(this, compress);
 
-        public override void InvokeCollocated(CollocatedRequestHandler handler)
-        {
-            // The stream cannot be cached if the proxy is not a twoway or there is an invocation timeout set.
-            if (IsOneway || Proxy.IceReference.InvocationTimeout != -1)
-            {
-                // Disable caching by marking the streams as cached!
-                State |= StateCachedBuffers;
-            }
+        public override void InvokeCollocated(CollocatedRequestHandler handler) =>
             handler.InvokeAsyncRequest(this, Synchronous);
-        }
 
-        // Called by IceInvokeAsync
-        internal void Invoke(string operation, IReadOnlyDictionary<string, string>? context, bool synchronous)
+        internal void Invoke()
         {
-            context ??= ProxyAndCurrentContext();
-            Observer = ObserverHelper.GetInvocationObserver(Proxy, operation, context);
+            IReadOnlyDictionary<string, string>? context = RequestFrame.Context ?? ProxyAndCurrentContext();
+            Observer = ObserverHelper.GetInvocationObserver(Proxy, RequestFrame.Operation, context);
 
-            Synchronous = synchronous;
             InvocationMode mode = Proxy.IceReference.InvocationMode;
             if (mode == InvocationMode.BatchOneway || mode == InvocationMode.BatchDatagram)
             {
@@ -662,15 +586,35 @@ namespace IceInternal
     //
     // Class for handling the proxy's GetConnection request.
     //
-    internal class ProxyGetConnection : ProxyOutgoingAsyncBase
+    internal class ProxyGetConnection : ProxyOutgoing
     {
-        public ProxyGetConnection(IObjectPrx prx, IOutgoingAsyncCompletionCallback completionCallback)
-            : base(prx, completionCallback, null!) => IsIdempotent = false;
+        public Task<Connection?> Task => _taskCompletionSource.Task;
+        private Connection? _connection;
+        private readonly TaskCompletionSource<Connection?> _taskCompletionSource;
 
-        public override void InvokeRemote(Connection connection, bool compress, bool response)
+        public ProxyGetConnection(IObjectPrx prx, bool synchronous, IProgress<bool>? progress = null,
+            CancellationToken cancel = default)
+            : base(prx, oneway: true, synchronous, progress, cancel)
         {
-            CachedConnection = connection;
-            if (ResponseImpl(false, true, true))
+            IsIdempotent = false;
+            _taskCompletionSource = new TaskCompletionSource<Connection?>();
+        }
+
+        public override List<ArraySegment<byte>> GetRequestData(int requestId)
+        {
+            // This isn't supposed to be called since we don't call SendAsyncRequest.
+            Debug.Assert(false);
+            return null!;
+        }
+
+        protected override void SetResult() => _taskCompletionSource.SetResult(_connection);
+
+        protected override void SetException(Exception ex) => _taskCompletionSource.SetException(ex);
+
+        public override void InvokeRemote(Connection connection, bool compress)
+        {
+            _connection = connection;
+            if (ResponseImpl())
             {
                 InvokeResponse();
             }
@@ -678,106 +622,18 @@ namespace IceInternal
 
         public override void InvokeCollocated(CollocatedRequestHandler handler)
         {
-            if (ResponseImpl(false, true, true))
+            if (ResponseImpl())
             {
                 InvokeResponse();
             }
         }
 
-        public Connection? GetConnection() => CachedConnection;
-
-        public void Invoke(string operation, bool synchronous)
+        public void Invoke()
         {
             // GetConnection succeeds for oneway, twoway and datagram proxies, and is not considered two-way only
             // since it's a local operation.
-            Debug.Assert(!IsOneway); // always constructed with IsOneway set to false
-            Synchronous = synchronous;
-            Observer = ObserverHelper.GetInvocationObserver(Proxy, operation, Reference.EmptyContext);
+            Observer = ObserverHelper.GetInvocationObserver(Proxy, "ice_getConnection", Reference.EmptyContext);
             InvokeImpl(true); // userThread = true
         }
-    }
-
-    public abstract class TaskCompletionCallback<T> : TaskCompletionSource<T>, IOutgoingAsyncCompletionCallback
-    {
-        public TaskCompletionCallback(IProgress<bool>? progress, CancellationToken cancellationToken)
-        {
-            Progress = progress;
-            _cancellationToken = cancellationToken;
-        }
-
-        public void Init(OutgoingAsyncBase outgoing)
-        {
-            if (_cancellationToken.CanBeCanceled)
-            {
-                _cancellationToken.Register(outgoing.Cancel);
-            }
-        }
-
-        public bool HandleSent(bool done, bool alreadySent, OutgoingAsyncBase og)
-        {
-            if (done && og.IsSynchronous())
-            {
-                Debug.Assert(Progress == null);
-                HandleInvokeSent(false, done, alreadySent, og);
-                return false;
-            }
-            return done || (Progress != null && !alreadySent); // Invoke the sent callback only if not already invoked.
-        }
-
-        public bool HandleException(Exception ex, OutgoingAsyncBase og)
-        {
-            //
-            // If this is a synchronous call, we can notify the task from this thread to avoid
-            // the thread context switch. We know there aren't any continuations setup with the
-            // task.
-            //
-            if (og.IsSynchronous())
-            {
-                HandleInvokeException(ex, og);
-                return false;
-            }
-            else
-            {
-                return true;
-            }
-        }
-
-        public bool HandleResponse(bool userThread, bool ok, OutgoingAsyncBase og)
-        {
-            //
-            // If this is a synchronous call, we can notify the task from this thread to avoid the
-            // thread context switch. We know there aren't any continuations setup with the
-            // task.
-            //
-            if (userThread || og.IsSynchronous())
-            {
-                HandleInvokeResponse(ok, og);
-                return false;
-            }
-            else
-            {
-                return true;
-            }
-        }
-
-        public virtual void HandleInvokeSent(bool sentSynchronously, bool done, bool alreadySent, OutgoingAsyncBase og)
-        {
-            if (Progress != null && !alreadySent)
-            {
-                Progress.Report(sentSynchronously);
-            }
-            if (done)
-            {
-                SetResult(default!);
-            }
-        }
-
-        public void HandleInvokeException(Exception ex, OutgoingAsyncBase og) => SetException(ex);
-
-        public abstract void HandleInvokeResponse(bool ok, OutgoingAsyncBase og);
-
-        private readonly CancellationToken _cancellationToken;
-
-        protected readonly IProgress<bool>? Progress;
     }
 }

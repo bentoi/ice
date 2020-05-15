@@ -206,9 +206,10 @@ namespace ZeroC.Ice
                         // router, we must use the same timeout as the already
                         // existing connection.
                         //
-                        if (Router.GetConnection() != null)
+                        Connection? connection = Router.GetConnection();
+                        if (connection != null)
                         {
-                            clientProxy = clientProxy.Clone(connectionTimeout: Router.GetConnection().Timeout);
+                            clientProxy = clientProxy.Clone(connectionTimeout: connection.Timeout);
                         }
 
                         _clientEndpoints = clientProxy.IceReference.Endpoints;

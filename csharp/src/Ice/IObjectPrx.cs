@@ -298,34 +298,6 @@ namespace ZeroC.Ice
             }
         }
 
-        // Temporary helper class for IceInvokeAsync
-        internal class InvokeTaskCompletionCallback : TaskCompletionCallback<IncomingResponseFrame>
-        {
-            internal InvokeTaskCompletionCallback(IProgress<bool>? progress, CancellationToken cancellationToken)
-                : base(progress, cancellationToken)
-            {
-            }
-
-            public override void HandleInvokeSent(bool sentSynchronously, bool done, bool alreadySent,
-                OutgoingAsyncBase outgoing)
-            {
-                if (Progress != null && !alreadySent)
-                {
-                    Progress.Report(sentSynchronously);
-                }
-
-                if (done)
-                {
-                    IncomingResponseFrame? response = ((ProxyOutgoingAsyncBase)outgoing).ResponseFrame;
-                    Debug.Assert(response != null);
-                    SetResult(response);
-                }
-            }
-
-            public override void HandleInvokeResponse(bool ok, OutgoingAsyncBase outgoing) =>
-                SetResult(((ProxyOutgoingAsyncBase)outgoing).ResponseFrame!);
-        }
-
         private static OutgoingRequestWithParam<string, bool>? _iceI_IsARequest;
         private static OutgoingRequestWithParam<string, bool> IceI_IsARequest =>
             _iceI_IsARequest ??= new OutgoingRequestWithParam<string, bool>("ice_isA", idempotent: true,

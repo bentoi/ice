@@ -132,7 +132,7 @@ namespace ZeroC.Ice
         private IConnectionObserver? _observer;
         private readonly LinkedList<OutgoingMessage> _outgoingMessages = new LinkedList<OutgoingMessage>();
         private int _pendingIO;
-        private readonly Dictionary<int, OutgoingAsyncBase> _requests = new Dictionary<int, OutgoingAsyncBase>();
+        private readonly Dictionary<int, InvokeOutgoing> _requests = new Dictionary<int, InvokeOutgoing>();
         private State _state; // The current state.
         private readonly ITransceiver _transceiver;
         private bool _validated = false;
@@ -222,17 +222,29 @@ namespace ZeroC.Ice
         }
 
         /// <summary>Send a heartbeat message.</summary>
-        public void Heartbeat() => HeartbeatAsync().Wait();
+        public void Heartbeat()
+        {
+            var outgoing = new HeartbeatOutgoing(_communicator, true);
+            outgoing.Invoke(this);
+            try
+            {
+                outgoing.Task.Wait();
+            }
+            catch (AggregateException ex)
+            {
+                Debug.Assert(ex.InnerException != null);
+                throw ex.InnerException;
+            }
+        }
 
         /// <summary>Send an asynchronous heartbeat message.</summary>
         /// <param name="progress">Sent progress provider.</param>
         /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
         public Task HeartbeatAsync(IProgress<bool>? progress = null, CancellationToken cancel = new CancellationToken())
         {
-            var completed = new HeartbeatTaskCompletionCallback(progress, cancel);
-            var outgoing = new HeartbeatOutgoingAsync(this, _communicator, completed);
-            outgoing.Invoke();
-            return completed.Task;
+            var outgoing = new HeartbeatOutgoing(_communicator, false, progress, cancel);
+            outgoing.Invoke(this);
+            return outgoing.Task;
         }
 
         /// <summary>Set the active connection management parameters.</summary>
@@ -406,7 +418,7 @@ namespace ZeroC.Ice
         }
 
         // TODO: Benoit: This needs to be internal, ICancellationHandler needs to be fixed, for another PR.
-        public void AsyncRequestCanceled(OutgoingAsyncBase outAsync, System.Exception ex)
+        public void AsyncRequestCanceled(Outgoing outgoing, System.Exception ex)
         {
             //
             // NOTE: This isn't called from a thread pool thread.
@@ -419,7 +431,7 @@ namespace ZeroC.Ice
                     return; // The request has already been or will be shortly notified of the failure.
                 }
 
-                OutgoingMessage? o = _outgoingMessages.FirstOrDefault(m => m.OutAsync == outAsync);
+                OutgoingMessage? o = _outgoingMessages.FirstOrDefault(m => m.Outgoing == outgoing);
                 if (o != null)
                 {
                     if (o.RequestId > 0)
@@ -435,24 +447,24 @@ namespace ZeroC.Ice
                     {
                         _outgoingMessages.Remove(o);
                     }
-                    o.OutAsync = null;
-                    if (outAsync.Exception(ex))
+                    o.Outgoing = null;
+                    if (outgoing.Exception(ex))
                     {
-                        Task.Run(outAsync.InvokeException);
+                        Task.Run(outgoing.InvokeException);
                     }
                     return;
                 }
 
-                if (outAsync is OutgoingAsync)
+                if (outgoing is InvokeOutgoing)
                 {
-                    foreach (KeyValuePair<int, OutgoingAsyncBase> kvp in _requests)
+                    foreach (KeyValuePair<int, InvokeOutgoing> kvp in _requests)
                     {
-                        if (kvp.Value == outAsync)
+                        if (kvp.Value == outgoing)
                         {
                             _requests.Remove(kvp.Key);
-                            if (outAsync.Exception(ex))
+                            if (outgoing.Exception(ex))
                             {
-                                Task.Run(outAsync.InvokeException);
+                                Task.Run(outgoing.InvokeException);
                             }
                             return;
                         }
@@ -551,7 +563,7 @@ namespace ZeroC.Ice
         // TODO: Benoit: SendAsyncRequest needs to be changed to be an awaitable method that returns
         // once the request is sent. The connection code won't have to deal with sent callback anymore,
         // it will be the job of the caller.
-        internal void SendAsyncRequest(OutgoingAsyncBase outgoing, bool compress, bool response)
+        internal void SendAsyncRequest(Outgoing outgoing, bool compress)
         {
             lock (_mutex)
             {
@@ -574,7 +586,7 @@ namespace ZeroC.Ice
                 //
                 outgoing.Cancelable(this);
                 int requestId = 0;
-                if (response)
+                if (!outgoing.IsOneway)
                 {
                     //
                     // Create a new unique request ID.
@@ -606,9 +618,9 @@ namespace ZeroC.Ice
                     throw _exception!;
                 }
 
-                if (response)
+                if (!outgoing.IsOneway)
                 {
-                    _requests[requestId] = outgoing;
+                    _requests[requestId] = (outgoing as InvokeOutgoing)!;
                 }
             }
         }
@@ -801,9 +813,9 @@ namespace ZeroC.Ice
             {
                 foreach (OutgoingMessage o in _outgoingMessages)
                 {
-                    if (o.OutAsync != null && o.OutAsync.Exception(_exception!))
+                    if (o.Outgoing != null && o.Outgoing.Exception(_exception!))
                     {
-                        o.OutAsync.InvokeException();
+                        o.Outgoing.InvokeException();
                     }
                     if (o.RequestId > 0) // Make sure Completed isn't called twice.
                     {
@@ -814,7 +826,7 @@ namespace ZeroC.Ice
                 _outgoingMessages.Clear();
             }
 
-            foreach (OutgoingAsyncBase o in _requests.Values)
+            foreach (Outgoing o in _requests.Values)
             {
                 if (o.Exception(_exception!))
                 {
@@ -1166,13 +1178,13 @@ namespace ZeroC.Ice
                         TraceUtil.TraceRecv(_communicator, readBuffer);
                         readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
                         int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
-                        if (_requests.TryGetValue(requestId, out OutgoingAsyncBase? outAsync))
+                        if (_requests.TryGetValue(requestId, out InvokeOutgoing? outgoing))
                         {
                             _requests.Remove(requestId);
 
-                            if (outAsync.Response(new IncomingResponseFrame(_communicator, readBuffer.Slice(4))))
+                            if (outgoing.Response(new IncomingResponseFrame(_communicator, readBuffer.Slice(4))))
                             {
-                                incoming = () => { outAsync.InvokeResponse(); return default; };
+                                incoming = () => { outgoing.InvokeResponse(); return default; };
                             }
 
                             if (_requests.Count == 0)
@@ -1697,11 +1709,11 @@ namespace ZeroC.Ice
                 {
                     _outgoingMessages.RemoveFirst();
 
-                    if (message.OutAsync != null && message.OutAsync.Sent())
+                    if (message.Outgoing != null && message.Outgoing.Sent())
                     {
                         // The progress callback is a synchronous callback, we can't call it directly
                         // from this thread since it could block further writes.
-                        Task.Run(message.OutAsync.InvokeSent);
+                        Task.Run(message.Outgoing.InvokeSent);
                     }
 
                     if (_outgoingMessages.Count == 0)
@@ -1712,20 +1724,27 @@ namespace ZeroC.Ice
             }
         }
 
-        private class HeartbeatOutgoingAsync : OutgoingAsyncBase
+        private class HeartbeatOutgoing : Outgoing
         {
-            public HeartbeatOutgoingAsync(Connection connection,
-                                          Communicator communicator,
-                                          IOutgoingAsyncCompletionCallback completionCallback) :
-                base(communicator, completionCallback) => _connection = connection;
+            public Task Task => _taskCompletionSource.Task;
+            private readonly TaskCompletionSource<bool> _taskCompletionSource;
+
+            public HeartbeatOutgoing(Communicator communicator, bool synchronous, IProgress<bool>? progress = null,
+                CancellationToken cancel = default)
+                : base(communicator, oneway: true, synchronous, progress, cancel) =>
+                _taskCompletionSource = new TaskCompletionSource<bool>();
+
+            protected override void SetResult() => _taskCompletionSource.SetResult(true);
+
+            protected override void SetException(Exception ex) => _taskCompletionSource.SetException(ex);
 
             public override List<ArraySegment<byte>> GetRequestData(int requestId) => _validateConnectionMessage;
 
-            public void Invoke()
+            public void Invoke(Connection connection)
             {
                 try
                 {
-                    _connection.SendAsyncRequest(this, false, false);
+                    connection.SendAsyncRequest(this, false);
                 }
                 catch (RetryException ex)
                 {
@@ -1742,18 +1761,6 @@ namespace ZeroC.Ice
                     }
                 }
             }
-
-            private readonly Connection _connection;
-        }
-
-        private class HeartbeatTaskCompletionCallback : TaskCompletionCallback<object>
-        {
-            public HeartbeatTaskCompletionCallback(IProgress<bool>? progress,
-                                                   CancellationToken cancellationToken) :
-                base(progress, cancellationToken)
-            {
-            }
-            public override void HandleInvokeResponse(bool ok, OutgoingAsyncBase og) => SetResult(null!);
         }
 
         // TODO: Benoit: Remove with the refactoring of SendAsyncRequest
@@ -1765,17 +1772,16 @@ namespace ZeroC.Ice
                 Compress = compress;
             }
 
-            internal OutgoingMessage(OutgoingAsyncBase outgoing, List<ArraySegment<byte>> data, bool compress,
-                int requestId)
+            internal OutgoingMessage(Outgoing outgoing, List<ArraySegment<byte>> data, bool compress, int requestId)
             {
-                OutAsync = outgoing;
+                Outgoing = outgoing;
                 OutgoingData = data;
                 Compress = compress;
                 RequestId = requestId;
             }
 
             internal List<ArraySegment<byte>>? OutgoingData;
-            internal OutgoingAsyncBase? OutAsync;
+            internal Outgoing? Outgoing;
             internal bool Compress;
             internal int RequestId;
         }

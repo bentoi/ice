@@ -31,10 +31,10 @@ namespace IceInternal
             return this;
         }
 
-        public void SendAsyncRequest(ProxyOutgoingAsyncBase outAsync) =>
-            outAsync.InvokeRemote(_connection, _compress, !outAsync.IsOneway);
+        public void SendAsyncRequest(ProxyOutgoing outAsync) =>
+            outAsync.InvokeRemote(_connection, _compress);
 
-        public void AsyncRequestCanceled(OutgoingAsyncBase outAsync, System.Exception ex) =>
+        public void AsyncRequestCanceled(Outgoing outAsync, System.Exception ex) =>
             _connection.AsyncRequestCanceled(outAsync, ex);
 
         public ZeroC.Ice.Connection GetConnection() => _connection;

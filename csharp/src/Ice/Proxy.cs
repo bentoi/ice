@@ -269,16 +269,14 @@ namespace ZeroC.Ice
         /// Returns the Connection for this proxy. If the proxy does not yet have an established connection,
         /// it first attempts to create a connection.
         /// </summary>
-        /// <returns>The Connection for this proxy.</returns>
-        /// <exception name="CollocationOptimizationException">If the proxy uses collocation optimization and denotes a
-        /// collocated object.</exception>
-        public static Connection GetConnection(this IObjectPrx prx)
+        /// <returns>The Connection for this proxy or null if collocation optimization is used.</returns>
+        public static Connection? GetConnection(this IObjectPrx prx)
         {
             try
             {
-                var completed = new GetConnectionTaskCompletionCallback();
-                new ProxyGetConnection(prx, completed).Invoke("ice_getConnection", true);
-                return completed.Task.Result;
+                var outgoing = new ProxyGetConnection(prx, synchronous: true);
+                outgoing.Invoke();
+                return outgoing.Task.Result;
             }
             catch (AggregateException ex)
             {
@@ -287,13 +285,18 @@ namespace ZeroC.Ice
             }
         }
 
-        public static Task<Connection> GetConnectionAsync(this IObjectPrx prx,
+        /// <summary>
+        /// Returns the Connection for this proxy. If the proxy does not yet have an established connection,
+        /// it first attempts to create a connection.
+        /// </summary>
+        /// <returns>The Connection for this proxy or null if collocation optimization is used.</returns>
+        public static Task<Connection?> GetConnectionAsync(this IObjectPrx prx,
                                                           IProgress<bool>? progress = null,
                                                           CancellationToken cancel = new CancellationToken())
         {
-            var completed = new GetConnectionTaskCompletionCallback(progress, cancel);
-            new ProxyGetConnection(prx, completed).Invoke("ice_getConnection", false);
-            return completed.Task;
+            var outgoing = new ProxyGetConnection(prx, synchronous: false, progress, cancel);
+            outgoing.Invoke();
+            return outgoing.Task;
         }
 
         /// <summary>
@@ -302,8 +305,6 @@ namespace ZeroC.Ice
         /// </summary>
         /// <returns>The cached Connection for this proxy (null if the proxy does not have
         /// an established connection).</returns>
-        /// <exception name="CollocationOptimizationException">If the proxy uses collocation optimization and denotes a
-        /// collocated object.</exception>
         public static Connection? GetCachedConnection(this IObjectPrx prx) => prx.IceReference.GetCachedConnection();
 
         /// <summary>Sends a request synchronously.</summary>
@@ -319,10 +320,9 @@ namespace ZeroC.Ice
         {
             try
             {
-                var completed = new IObjectPrx.InvokeTaskCompletionCallback(null, default);
-                new OutgoingAsync(proxy, completed, request, oneway: oneway).Invoke(request.Operation, request.Context,
-                                                                                   synchronous: true);
-                return completed.Task.Result;
+                var outgoing = new InvokeOutgoing(proxy, request, oneway: oneway, synchronous: true);
+                outgoing.Invoke();
+                return outgoing.Task.Result;
             }
             catch (AggregateException ex)
             {
@@ -347,10 +347,9 @@ namespace ZeroC.Ice
                                                               IProgress<bool>? progress = null,
                                                               CancellationToken cancel = default)
         {
-            var completed = new IObjectPrx.InvokeTaskCompletionCallback(progress, cancel);
-            new OutgoingAsync(proxy, completed, request, oneway: oneway).Invoke(request.Operation, request.Context,
-                                                                               synchronous: false);
-            return completed.Task;
+            var outgoing = new InvokeOutgoing(proxy, request, oneway: oneway, synchronous: false, progress, cancel);
+            outgoing.Invoke();
+            return outgoing.Task;
         }
 
         /// <summary>Forwards an incoming request to another Ice object.</summary>
@@ -373,18 +372,6 @@ namespace ZeroC.Ice
                 await proxy.InvokeAsync(forwardedRequest, oneway: oneway, progress, cancel)
                     .ConfigureAwait(false);
             return new OutgoingResponseFrame(request.Encoding, response.Payload);
-        }
-
-        private class GetConnectionTaskCompletionCallback : TaskCompletionCallback<Connection>
-        {
-            public GetConnectionTaskCompletionCallback(IProgress<bool>? progress = null,
-                                                       CancellationToken cancellationToken = new CancellationToken())
-                : base(progress, cancellationToken)
-            {
-            }
-
-            public override void HandleInvokeResponse(bool ok, OutgoingAsyncBase og) =>
-                SetResult(((ProxyGetConnection)og).GetConnection()!);
         }
     }
 }
