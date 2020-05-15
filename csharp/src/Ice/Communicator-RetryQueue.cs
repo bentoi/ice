@@ -48,13 +48,9 @@ namespace ZeroC.Ice
 
         public void Destroy()
         {
-            try
+            if (_outAsync.Exception(new CommunicatorDestroyedException()))
             {
-                _outAsync.Abort(new CommunicatorDestroyedException());
-            }
-            catch (CommunicatorDestroyedException)
-            {
-                // Abort can throw if there's no callback, just ignore in this case
+                Task.Run(_outAsync.InvokeException);
             }
         }
 

@@ -277,7 +277,7 @@ namespace ZeroC.Ice
             try
             {
                 var completed = new GetConnectionTaskCompletionCallback();
-                IceI_getConnection(prx, completed, true);
+                new ProxyGetConnection(prx, completed).Invoke("ice_getConnection", true);
                 return completed.Task.Result;
             }
             catch (AggregateException ex)
@@ -292,21 +292,8 @@ namespace ZeroC.Ice
                                                           CancellationToken cancel = new CancellationToken())
         {
             var completed = new GetConnectionTaskCompletionCallback(progress, cancel);
-            IceI_getConnection(prx, completed, false);
+            new ProxyGetConnection(prx, completed).Invoke("ice_getConnection", false);
             return completed.Task;
-        }
-
-        private static void IceI_getConnection(IObjectPrx prx, IOutgoingAsyncCompletionCallback completed, bool synchronous)
-        {
-            var outgoing = new ProxyGetConnection(prx, completed);
-            try
-            {
-                outgoing.Invoke("ice_getConnection", synchronous);
-            }
-            catch (Exception ex)
-            {
-                outgoing.Abort(ex);
-            }
         }
 
         /// <summary>

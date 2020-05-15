@@ -392,23 +392,6 @@ namespace IceInternal
         }
 
         public void Retry() => InvokeImpl(false);
-        public void Abort(Exception ex)
-        {
-            Debug.Assert(ChildObserver == null);
-            if (ExceptionImpl(ex))
-            {
-                Task.Run(InvokeException);
-            }
-            else if (ex is CommunicatorDestroyedException)
-            {
-                //
-                // If it's a communicator destroyed exception, swallow
-                // it but instead notify the user thread. Even if no callback
-                // was provided.
-                //
-                throw ex;
-            }
-        }
 
         protected ProxyOutgoingAsyncBase(IObjectPrx prx,
                                          IOutgoingAsyncCompletionCallback completionCallback,
@@ -481,7 +464,7 @@ namespace IceInternal
             {
                 //
                 // If called from the user thread we re-throw, the exception
-                // will be caught by the caller and abort() will be called.
+                // will be caught by the caller.
                 //
                 if (userThread)
                 {
@@ -651,24 +634,12 @@ namespace IceInternal
             handler.InvokeAsyncRequest(this, Synchronous);
         }
 
-        public new void Abort(Exception ex)
-        {
-            InvocationMode mode = Proxy.IceReference.InvocationMode;
-            // not implemented
-            Debug.Assert(mode != InvocationMode.BatchOneway && mode != InvocationMode.BatchDatagram);
-            base.Abort(ex);
-        }
-
         // Called by IceInvokeAsync
         internal void Invoke(string operation, IReadOnlyDictionary<string, string>? context, bool synchronous)
         {
             context ??= ProxyAndCurrentContext();
             Observer = ObserverHelper.GetInvocationObserver(Proxy, operation, context);
-            Invoke(synchronous);
-        }
 
-        protected void Invoke(bool synchronous)
-        {
             Synchronous = synchronous;
             InvocationMode mode = Proxy.IceReference.InvocationMode;
             if (mode == InvocationMode.BatchOneway || mode == InvocationMode.BatchDatagram)
@@ -682,48 +653,14 @@ namespace IceInternal
                 throw new InvalidOperationException("cannot make two-way call on a datagram proxy");
             }
 
-            //
-            // NOTE: invokeImpl doesn't throw so this can be called from the
-            // try block with the catch block calling abort() in case of an
-            // exception.
-            //
             InvokeImpl(true); // userThread = true
-        }
-
-        public void Invoke(string operation,
-                           bool oneway,
-                           IReadOnlyDictionary<string, string>? context,
-                           bool synchronous)
-        {
-            try
-            {
-                Proxy.IceReference.Protocol.CheckSupported();
-                IsOneway = oneway;
-                context ??= ProxyAndCurrentContext();
-                Observer = ObserverHelper.GetInvocationObserver(Proxy, operation, context);
-
-                switch (Proxy.IceReference.InvocationMode)
-                {
-                    case InvocationMode.BatchOneway:
-                    case InvocationMode.BatchDatagram:
-                    {
-                        Debug.Assert(false); // not implemented
-                        break;
-                    }
-                }
-                Invoke(synchronous);
-            }
-            catch (Exception ex)
-            {
-                Abort(ex);
-            }
         }
 
         protected readonly Encoding Encoding;
     }
 
     //
-    // Class for handling the proxy's begin_ice_getConnection request.
+    // Class for handling the proxy's GetConnection request.
     //
     internal class ProxyGetConnection : ProxyOutgoingAsyncBase
     {
