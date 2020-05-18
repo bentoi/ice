@@ -844,7 +844,8 @@ IceInternal::LocatorInfo::finishRequest(const ReferencePtr& ref,
                                         const Ice::ObjectPrxPtr& proxy,
                                         bool notRegistered)
 {
-    if(!proxy || proxy->_getReference()->isIndirect())
+    const ReferencePtr resultRef = proxy ? proxy->_getReference() : ReferencePtr();
+    if(!resultRef || resultRef->isIndirect())
     {
         //
         // Remove the cached references of well-known objects for which we tried
@@ -858,12 +859,14 @@ IceInternal::LocatorInfo::finishRequest(const ReferencePtr& ref,
 
     if(!ref->isWellKnown())
     {
-        if(proxy && !proxy->_getReference()->isIndirect()) // Cache the adapter endpoints.
+        if(resultRef && !resultRef->isIndirect())
         {
-            _table->addAdapterEndpoints(ref->getAdapterId(), proxy->_getReference()->getEndpoints());
+            // Cache the adapter endpoints.
+            _table->addAdapterEndpoints(ref->getAdapterId(), resultRef->getEndpoints());
         }
-        else if(notRegistered) // If the adapter isn't registered anymore, remove it from the cache.
+        else if(notRegistered)
         {
+            // If the adapter isn't registered anymore, remove it from the cache.
             _table->removeAdapterEndpoints(ref->getAdapterId());
         }
 
@@ -873,12 +876,16 @@ IceInternal::LocatorInfo::finishRequest(const ReferencePtr& ref,
     }
     else
     {
-        if(proxy && !proxy->_getReference()->isWellKnown()) // Cache the well-known object reference.
+        if(proxy && !resultRef->isWellKnown() && isSupported(ref->getEncoding(), resultRef->getEncoding()))
         {
-            _table->addObjectReference(ref->getIdentity(), proxy->_getReference());
+            // Cache the well-known object reference. We only add proxies to the cache which support
+            // the requested encoding. Unlike adapter IDs, the locator might return proxies with an
+            // incompatible encoding.
+            _table->addObjectReference(ref->getIdentity(), resultRef);
         }
-        else if(notRegistered) // If the well-known object isn't registered anymore, remove it from the cache.
+        else if(notRegistered)
         {
+            // If the well-known object isn't registered anymore, remove it from the cache.
             _table->removeObjectReference(ref->getIdentity());
         }
 

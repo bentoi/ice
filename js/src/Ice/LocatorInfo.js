@@ -398,7 +398,8 @@ class LocatorInfo
 
     finishRequest(ref, wellKnownRefs, proxy, notRegistered)
     {
-        if(proxy === null || proxy._getReference().isIndirect())
+        const resultRef = proxy !== null ? proxy._getReference() : null;
+        if(resultRef === null || resultRef.isIndirect())
         {
             //
             // Remove the cached references of well-known objects for which we tried
@@ -412,10 +413,10 @@ class LocatorInfo
 
         if(!ref.isWellKnown())
         {
-            if(proxy !== null && !proxy._getReference().isIndirect())
+            if(resultRef !== null && !resultRef.isIndirect())
             {
                 // Cache the adapter endpoints.
-                this._table.addAdapterEndpoints(ref.getAdapterId(), proxy._getReference().getEndpoints());
+                this._table.addAdapterEndpoints(ref.getAdapterId(), resultRef.getEndpoints());
             }
             else if(notRegistered) // If the adapter isn't registered anymore, remove it from the cache.
             {
@@ -427,10 +428,13 @@ class LocatorInfo
         }
         else
         {
-            if(proxy !== null && !proxy._getReference().isWellKnown())
+            if(resultRef !== null && !resultRef.isWellKnown() &&
+               Protocol.isSupported(ref.getEncoding(), resultRef.getEncoding()))
             {
-                // Cache the well-known object reference.
-                this._table.addObjectReference(ref.getIdentity(), proxy._getReference());
+                // Cache the well-known object reference. We only add proxies to the cache which support
+                // the requested encoding. Unlike adapter IDs, the locator might return proxies with an
+                // incompatible encoding.
+                this._table.addObjectReference(ref.getIdentity(), resultRef);
             }
             else if(notRegistered) // If the well-known object isn't registered anymore, remove it from the cache.
             {

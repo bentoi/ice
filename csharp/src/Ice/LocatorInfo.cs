@@ -616,8 +616,8 @@ namespace IceInternal
         private void
         finishRequest(Reference @ref, List<Reference> wellKnownRefs, Ice.ObjectPrx proxy, bool notRegistered)
         {
-            Ice.ObjectPrxHelperBase @base = proxy as Ice.ObjectPrxHelperBase;
-            if(proxy == null || @base.iceReference().isIndirect())
+            Reference resultRef = proxy != null ? (proxy as Ice.ObjectPrxHelperBase).iceReference() : null;
+            if(resultRef == null || resultRef.isIndirect())
             {
                 //
                 // Remove the cached references of well-known objects for which we tried
@@ -631,13 +631,14 @@ namespace IceInternal
 
             if(!@ref.isWellKnown())
             {
-                if(proxy != null && !@base.iceReference().isIndirect())
+                if(resultRef != null && !resultRef.isIndirect())
                 {
                     // Cache the adapter endpoints.
-                    _table.addAdapterEndpoints(@ref.getAdapterId(), @base.iceReference().getEndpoints());
+                    _table.addAdapterEndpoints(@ref.getAdapterId(), resultRef.getEndpoints());
                 }
-                else if(notRegistered) // If the adapter isn't registered anymore, remove it from the cache.
+                else if(notRegistered)
                 {
+                    // If the adapter isn't registered anymore, remove it from the cache.
                     _table.removeAdapterEndpoints(@ref.getAdapterId());
                 }
 
@@ -649,13 +650,17 @@ namespace IceInternal
             }
             else
             {
-                if(proxy != null && !@base.iceReference().isWellKnown())
+                if(resultRef != null && !resultRef.isWellKnown() &&
+                   Protocol.isSupported(@ref.getEncoding(), resultRef.getEncoding()))
                 {
-                    // Cache the well-known object reference.
-                    _table.addObjectReference(@ref.getIdentity(), @base.iceReference());
+                    // Cache the well-known object reference. We only add proxies to the cache which support
+                    // the requested encoding. Unlike adapter IDs, the locator might return proxies with an
+                    // incompatible encoding.
+                    _table.addObjectReference(@ref.getIdentity(), resultRef);
                 }
-                else if(notRegistered) // If the well-known object isn't registered anymore, remove it from the cache.
+                else if(notRegistered)
                 {
+                    // If the well-known object isn't registered anymore, remove it from the cache.
                     _table.removeObjectReference(@ref.getIdentity());
                 }
 

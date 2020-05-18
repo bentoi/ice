@@ -685,7 +685,8 @@ public final class LocatorInfo
     finishRequest(Reference ref, java.util.List<Reference> wellKnownRefs, com.zeroc.Ice.ObjectPrx proxy,
                   boolean notRegistered)
     {
-        if(proxy == null || ((com.zeroc.Ice._ObjectPrxI)proxy)._getReference().isIndirect())
+        final Reference resultRef = proxy != null ? ((com.zeroc.Ice._ObjectPrxI)proxy)._getReference() : null;
+        if(resultRef == null || resultRef.isIndirect())
         {
             //
             // Remove the cached references of well-known objects for which we tried
@@ -699,11 +700,10 @@ public final class LocatorInfo
 
         if(!ref.isWellKnown())
         {
-            if(proxy != null && !((com.zeroc.Ice._ObjectPrxI)proxy)._getReference().isIndirect())
+            if(resultRef != null && !resultRef.isIndirect())
             {
                 // Cache the adapter endpoints.
-                _table.addAdapterEndpoints(ref.getAdapterId(),
-                                           ((com.zeroc.Ice._ObjectPrxI)proxy)._getReference().getEndpoints());
+                _table.addAdapterEndpoints(ref.getAdapterId(), resultRef.getEndpoints());
             }
             else if(notRegistered) // If the adapter isn't registered anymore, remove it from the cache.
             {
@@ -718,10 +718,13 @@ public final class LocatorInfo
         }
         else
         {
-            if(proxy != null && !((com.zeroc.Ice._ObjectPrxI)proxy)._getReference().isWellKnown())
+            if(resultRef != null && !resultRef.isWellKnown() &&
+               Protocol.isSupported(ref.getEncoding(), resultRef.getEncoding()))
             {
-                // Cache the well-known object reference.
-                _table.addObjectReference(ref.getIdentity(), ((com.zeroc.Ice._ObjectPrxI)proxy)._getReference());
+                // Cache the well-known object reference. We only add proxies to the cache which support
+                // the requested encoding. Unlike adapter IDs, the locator might return proxies with an
+                // incompatible encoding.
+                _table.addObjectReference(ref.getIdentity(), resultRef);
             }
             else if(notRegistered) // If the well-known object isn't registered anymore, remove it from the cache.
             {
