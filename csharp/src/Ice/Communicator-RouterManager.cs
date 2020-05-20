@@ -5,17 +5,12 @@
 using IceInternal;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace ZeroC.Ice
 {
     public sealed class RouterInfo
     {
-        public interface IGetClientEndpointsCallback
-        {
-            void SetEndpoints(IReadOnlyList<Endpoint> endpoints);
-            void SetException(System.Exception ex);
-        }
-
         public interface IAddProxyCallback
         {
             void AddedProxy();
@@ -41,7 +36,7 @@ namespace ZeroC.Ice
                 return true;
             }
 
-            return !(obj is RouterInfo rhs) ? false : Router.Equals(rhs.Router);
+            return (obj is RouterInfo rhs) && Router.Equals(rhs.Router);
         }
 
         public override int GetHashCode() => Router.GetHashCode();
@@ -49,7 +44,7 @@ namespace ZeroC.Ice
         // No mutex lock necessary, _router is immutable.
         public IRouterPrx Router { get; }
 
-        public IReadOnlyList<Endpoint> GetClientEndpoints()
+        public async ValueTask<IReadOnlyList<Endpoint>> GetClientEndpointsAsync()
         {
             lock (this)
             {
@@ -59,38 +54,8 @@ namespace ZeroC.Ice
                 }
             }
 
-            (IObjectPrx? proxy, bool? hasRoutingTable) = Router.GetClientProxy();
+            (IObjectPrx? proxy, bool? hasRoutingTable) = await Router.GetClientProxyAsync();
             return SetClientEndpoints(proxy!, hasRoutingTable ?? true);
-        }
-
-        public void GetClientEndpoints(IGetClientEndpointsCallback callback)
-        {
-            IReadOnlyList<Endpoint>? clientEndpoints = null;
-            lock (this)
-            {
-                clientEndpoints = _clientEndpoints;
-            }
-
-            if (clientEndpoints != null) // Lazy initialization.
-            {
-                callback.SetEndpoints(clientEndpoints);
-                return;
-            }
-
-            Router.GetClientProxyAsync().ContinueWith(
-                (t) =>
-                {
-                    try
-                    {
-                        (IObjectPrx? prx, bool? hasRoutingTable) = t.Result;
-                        callback.SetEndpoints(SetClientEndpoints(prx!, hasRoutingTable ?? true));
-                    }
-                    catch (System.AggregateException ae)
-                    {
-                        callback.SetException(ae.InnerException!);
-                    }
-                },
-                System.Threading.Tasks.TaskScheduler.Current);
         }
 
         public IReadOnlyList<Endpoint> GetServerEndpoints()

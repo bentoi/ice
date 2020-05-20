@@ -275,11 +275,11 @@ namespace ZeroC.Ice.location
             }
             Task.WaitAll(results.ToArray());
             results.Clear();
-            TestHelper.Assert(locator.getRequestCount() > count && locator.getRequestCount() < count + 999);
             if (locator.getRequestCount() > count + 800)
             {
                 output.Write("queuing = " + (locator.getRequestCount() - count));
             }
+            TestHelper.Assert(locator.getRequestCount() > count && locator.getRequestCount() < count + 999);
             count = locator.getRequestCount();
             hello = hello.Clone(adapterId: "unknown");
             for (int i = 0; i < 1000; i++)

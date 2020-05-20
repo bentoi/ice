@@ -4,6 +4,7 @@
 
 using IceInternal;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace ZeroC.Ice
 {
@@ -11,59 +12,60 @@ namespace ZeroC.Ice
     {
         // All the reference here are routable references.
 
-        internal IRequestHandler GetRequestHandler(Reference rf)
+        internal async ValueTask<IRequestHandler> GetRequestHandler(Reference reference)
         {
-            if (rf.IsCollocationOptimized)
+            if (reference.IsCollocationOptimized)
             {
-                ObjectAdapter? adapter = FindObjectAdapter(rf);
+                ObjectAdapter? adapter = FindObjectAdapter(reference);
                 if (adapter != null)
                 {
-                    return rf.SetRequestHandler(new CollocatedRequestHandler(rf, adapter));
+                    return new CollocatedRequestHandler(reference, adapter);
                 }
             }
 
-            bool connect = false;
-            ConnectRequestHandler? handler;
-            if (rf.IsConnectionCached)
+            if (reference.IsConnectionCached)
             {
+                Task<IRequestHandler>? task;
+                bool connect = false;
                 lock (_handlers)
                 {
-                    if (!_handlers.TryGetValue(rf, out handler))
+                    if (!_handlers.TryGetValue(reference, out task))
                     {
-                        handler = new ConnectRequestHandler(rf);
-                        _handlers.Add(rf, handler);
+                        task = reference.GetConnectionRequestHandlerAsync().AsTask();
+                        _handlers.Add(reference, task);
                         connect = true;
+                    }
+                    else
+                    {
+                        task = Chain(task);
+                        _handlers[reference] = task;
+                    }
+                }
+
+                try
+                {
+                    return await task!.ConfigureAwait(false); // TODO: Compress flag
+                }
+                finally
+                {
+                    if (connect)
+                    {
+                        lock (_handlers)
+                        {
+                            _handlers.Remove(reference);
+                        }
                     }
                 }
             }
             else
             {
-                handler = new ConnectRequestHandler(rf);
-                connect = true;
+                return await reference.GetConnectionRequestHandlerAsync();
             }
 
-            if (connect)
-            {
-                rf.GetConnection(handler);
-            }
-            return rf.SetRequestHandler(handler.Connect(rf));
+            static async Task<IRequestHandler> Chain(Task<IRequestHandler> task) => await task.ConfigureAwait(false);
         }
 
-        internal void RemoveConnectRequestHandler(Reference rf, ConnectRequestHandler handler)
-        {
-            if (rf.IsConnectionCached)
-            {
-                lock (_handlers)
-                {
-                    if (_handlers.TryGetValue(rf, out ConnectRequestHandler? h) && h == handler)
-                    {
-                        _handlers.Remove(rf);
-                    }
-                }
-            }
-        }
-
-        private readonly Dictionary<Reference, ConnectRequestHandler> _handlers =
-            new Dictionary<Reference, ConnectRequestHandler>();
+        private readonly Dictionary<Reference, Task<IRequestHandler>> _handlers =
+            new Dictionary<Reference, Task<IRequestHandler>>();
     }
 }

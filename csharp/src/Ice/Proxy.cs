@@ -290,13 +290,13 @@ namespace ZeroC.Ice
         /// it first attempts to create a connection.
         /// </summary>
         /// <returns>The Connection for this proxy or null if collocation optimization is used.</returns>
-        public static Task<Connection?> GetConnectionAsync(this IObjectPrx prx,
-                                                          IProgress<bool>? progress = null,
-                                                          CancellationToken cancel = new CancellationToken())
+        public static async Task<Connection?> GetConnectionAsync(this IObjectPrx prx,
+                                                                 IProgress<bool>? progress = null,
+                                                                 CancellationToken cancel = new CancellationToken())
         {
             var outgoing = new ProxyGetConnection(prx, synchronous: false, progress, cancel);
-            outgoing.Invoke();
-            return outgoing.Task;
+            await outgoing.Invoke().ConfigureAwait(false);
+            return await outgoing.Task.ConfigureAwait(false);
         }
 
         /// <summary>

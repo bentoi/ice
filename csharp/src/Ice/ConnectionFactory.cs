@@ -141,42 +141,52 @@ namespace IceInternal
             _monitor.Destroy();
         }
 
-        public void Create(IReadOnlyList<Endpoint> endpts, bool hasMore, EndpointSelectionType selType,
-                           ICreateConnectionCallback callback)
+        // TODO: Fix the code to use async/await for CreateAsync.
+        private class CreateConnectionCallback : ICreateConnectionCallback
         {
-            Debug.Assert(endpts.Count > 0);
+            private readonly TaskCompletionSource<(Connection, bool)> _source =
+                new TaskCompletionSource<(Connection, bool)>();
 
-            //
-            // Apply the overrides.
-            //
-            IReadOnlyList<Endpoint> endpoints = ApplyOverrides(endpts).ToArray();
+            public Task<(Connection, bool)> Task => _source.Task;
+
+            void ICreateConnectionCallback.SetConnection(Connection connection, bool compress) =>
+                _source.SetResult((connection, compress));
+
+            void ICreateConnectionCallback.SetException(System.Exception ex) => _source.SetException(ex);
+        }
+
+        public async ValueTask<(Connection, bool)> CreateAsync(IEnumerable<Endpoint> endpoints, bool hasMore,
+            EndpointSelectionType selType)
+        {
+            Debug.Assert(endpoints.Any());
 
             //
             // Try to find a connection to one of the given endpoints.
             //
-            try
+            Connection? connection = FindConnection(endpoints, out bool compress);
+            if (connection != null)
             {
-                Connection? connection = FindConnection(endpoints, out bool compress);
-                if (connection != null)
-                {
-                    callback.SetConnection(connection, compress);
-                    return;
-                }
+                return (connection, compress);
             }
-            catch (System.Exception ex)
-            {
-                callback.SetException(ex);
-                return;
-            }
-            var cb = new ConnectCallback(this, endpoints, hasMore, callback, selType);
-            cb.GetConnectors();
+            var callback = new CreateConnectionCallback();
+            new ConnectCallback(this, endpoints, hasMore, callback, selType).GetConnectors();
+            return await callback.Task;
         }
 
         public void SetRouterInfo(RouterInfo routerInfo)
         {
             Debug.Assert(routerInfo != null);
             ObjectAdapter? adapter = routerInfo.Adapter;
-            IReadOnlyList<Endpoint> endpoints = routerInfo.GetClientEndpoints(); // Must be called outside the synchronization
+            IReadOnlyList<Endpoint> endpoints;
+            try
+            {
+                endpoints = routerInfo.GetClientEndpointsAsync().Result;
+            }
+            catch (System.AggregateException ex)
+            {
+                Debug.Assert(ex.InnerException != null);
+                throw ex.InnerException;
+            }
 
             lock (this)
             {
@@ -258,15 +268,7 @@ namespace IceInternal
             _pendingConnectCount = 0;
         }
 
-        private IEnumerable<Endpoint> ApplyOverrides(IReadOnlyList<Endpoint> endpoints)
-        {
-            // TODO: why do we apply only the timeout override?
-            return endpoints.Select(endpoint =>
-                (_communicator.OverrideTimeout != null) ? endpoint.NewTimeout(_communicator.OverrideTimeout.Value) :
-                    endpoint);
-        }
-
-        private Connection? FindConnection(IReadOnlyList<Endpoint> endpoints, out bool compress)
+        private Connection? FindConnection(IEnumerable<Endpoint> endpoints, out bool compress)
         {
             lock (this)
             {
@@ -275,7 +277,7 @@ namespace IceInternal
                     throw new CommunicatorDestroyedException();
                 }
 
-                Debug.Assert(endpoints.Count > 0);
+                Debug.Assert(endpoints.Any());
 
                 foreach (Endpoint endpoint in endpoints)
                 {
@@ -715,10 +717,10 @@ namespace IceInternal
 
         private class ConnectCallback : IEndpointConnectors
         {
-            internal ConnectCallback(OutgoingConnectionFactory f, IReadOnlyList<Endpoint> endpoints, bool more,
+            internal ConnectCallback(OutgoingConnectionFactory f, IEnumerable<Endpoint> endpoints, bool more,
                                      ICreateConnectionCallback cb, EndpointSelectionType selType)
             {
-                Debug.Assert(endpoints.Count > 0);
+                Debug.Assert(endpoints.Any());
 
                 _factory = f;
                 _endpoints = endpoints;
@@ -948,7 +950,7 @@ namespace IceInternal
             private readonly OutgoingConnectionFactory _factory;
             private readonly bool _hasMore;
             private readonly ICreateConnectionCallback _callback;
-            private readonly IReadOnlyList<Endpoint> _endpoints;
+            private readonly IEnumerable<Endpoint> _endpoints;
             private readonly EndpointSelectionType _selType;
             private readonly IEnumerator<Endpoint> _endpointEnumerator;
             private bool _hasMoreEndpoints;

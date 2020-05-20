@@ -327,7 +327,7 @@ namespace IceInternal
             }
         }
 
-        public void Retry() => InvokeImpl(false);
+        public void Retry() => _ = InvokeImpl(true);
 
         protected ProxyOutgoing(IObjectPrx prx, bool oneway, bool synchronous, IProgress<bool>? progress,
             CancellationToken cancel)
@@ -337,11 +337,11 @@ namespace IceInternal
             _cnt = 0;
         }
 
-        protected void InvokeImpl(bool userThread)
+        protected async ValueTask InvokeImpl(bool retried)
         {
             try
             {
-                if (userThread)
+                if (!retried)
                 {
                     int invocationTimeout = Proxy.IceReference.InvocationTimeout;
                     if (invocationTimeout > 0)
@@ -359,7 +359,7 @@ namespace IceInternal
                     try
                     {
                         IsSent = false;
-                        Handler = Proxy.IceReference.GetRequestHandler();
+                        Handler = await Proxy.IceReference.GetRequestHandlerAsync().ConfigureAwait(false);
                         Handler.SendAsyncRequest(this);
                         return; // We're done!
                     }
@@ -395,10 +395,9 @@ namespace IceInternal
             catch (Exception ex)
             {
                 //
-                // If called from the user thread we re-throw, the exception
-                // will be caught by the caller.
+                // If called from the user thread we re-throw, the exception will be caught by the caller.
                 //
-                if (userThread)
+                if (!retried)
                 {
                     throw;
                 }
@@ -560,7 +559,7 @@ namespace IceInternal
         public override void InvokeCollocated(CollocatedRequestHandler handler) =>
             handler.InvokeAsyncRequest(this, Synchronous);
 
-        internal void Invoke()
+        internal async ValueTask Invoke()
         {
             IReadOnlyDictionary<string, string>? context = RequestFrame.Context ?? ProxyAndCurrentContext();
             Observer = ObserverHelper.GetInvocationObserver(Proxy, RequestFrame.Operation, context);
@@ -577,7 +576,7 @@ namespace IceInternal
                 throw new InvalidOperationException("cannot make two-way call on a datagram proxy");
             }
 
-            InvokeImpl(true); // userThread = true
+            await InvokeImpl(false);
         }
 
         protected readonly Encoding Encoding;
@@ -628,12 +627,12 @@ namespace IceInternal
             }
         }
 
-        public void Invoke()
+        public ValueTask Invoke()
         {
             // GetConnection succeeds for oneway, twoway and datagram proxies, and is not considered two-way only
             // since it's a local operation.
             Observer = ObserverHelper.GetInvocationObserver(Proxy, "ice_getConnection", Reference.EmptyContext);
-            InvokeImpl(true); // userThread = true
+            return InvokeImpl(false);
         }
     }
 }
