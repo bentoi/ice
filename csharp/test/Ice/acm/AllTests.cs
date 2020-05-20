@@ -198,7 +198,7 @@ namespace ZeroC.Ice.acm
             var proxy = Test.ITestIntfPrx.Parse(_adapter!.getTestIntf()!.ToString() ?? "", _communicator!);
             try
             {
-                proxy.GetConnection().SetCloseCallback(_ =>
+                proxy.GetConnection()!.SetCloseCallback(_ =>
                 {
                     lock (this)
                     {
@@ -207,7 +207,7 @@ namespace ZeroC.Ice.acm
                     }
                 });
 
-                proxy.GetConnection().SetHeartbeatCallback(_ =>
+                proxy.GetConnection()!.SetHeartbeatCallback(_ =>
                 {
                     lock (this)
                     {
@@ -355,7 +355,7 @@ namespace ZeroC.Ice.acm
 
             public override void RunTestCase(Test.IRemoteObjectAdapterPrx adapter, Test.ITestIntfPrx proxy)
             {
-                Connection connection = proxy.GetConnection();
+                Connection connection = proxy.GetConnection()!;
                 WaitForClosed();
                 lock (this)
                 {
@@ -396,7 +396,7 @@ namespace ZeroC.Ice.acm
                 base("close on idle and invocation", com, helper) => SetClientACM(1, 3, 0);
             public override void RunTestCase(Test.IRemoteObjectAdapterPrx adapter, Test.ITestIntfPrx proxy)
             {
-                Connection connection = proxy.GetConnection();
+                Connection connection = proxy.GetConnection()!;
                 WaitForClosed();
                 lock (this)
                 {
@@ -420,7 +420,7 @@ namespace ZeroC.Ice.acm
                 base("forceful close on idle and invocation", com, helper) => SetClientACM(1, 4, 0);
             public override void RunTestCase(Test.IRemoteObjectAdapterPrx adapter, Test.ITestIntfPrx proxy)
             {
-                Connection connection = proxy.GetConnection();
+                Connection connection = proxy.GetConnection()!;
                 WaitForClosed();
                 lock (this)
                 {
@@ -489,7 +489,7 @@ namespace ZeroC.Ice.acm
             public override void RunTestCase(Test.IRemoteObjectAdapterPrx adapter, Test.ITestIntfPrx proxy)
             {
                 proxy.startHeartbeatCount();
-                Connection con = proxy.GetConnection();
+                Connection con = proxy.GetConnection()!;
                 con.Heartbeat();
                 con.Heartbeat();
                 con.Heartbeat();

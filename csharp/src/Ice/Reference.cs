@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
 
@@ -1197,6 +1198,10 @@ namespace ZeroC.Ice
                         }
                         catch (Exception)
                         {
+                            if (endpoint == lastEndpoint)
+                            {
+                                throw;
+                            }
                         }
                     }
                 }
@@ -1233,7 +1238,7 @@ namespace ZeroC.Ice
             }
         }
 
-        internal async ValueTask<IRequestHandler> GetRequestHandlerAsync()
+        internal async ValueTask<IRequestHandler> GetRequestHandlerAsync(CancellationToken cancel)
         {
             if (IsFixed)
             {
@@ -1253,7 +1258,7 @@ namespace ZeroC.Ice
                     }
                 }
 
-                IRequestHandler handler = await Communicator.GetRequestHandler(this);
+                IRequestHandler handler = await Communicator.GetRequestHandlerAsync(this, cancel);
 
                 if (IsConnectionCached)
                 {

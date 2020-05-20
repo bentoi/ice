@@ -198,7 +198,7 @@ namespace ZeroC.Ice.ami
 
                         if (!collocated)
                         {
-                            Connection conn = await p.GetConnectionAsync();
+                            Connection? conn = await p.GetConnectionAsync();
                             TestHelper.Assert(conn != null);
                         }
 
@@ -256,7 +256,7 @@ namespace ZeroC.Ice.ami
 
                 if (!collocated)
                 {
-                    p.GetConnectionAsync().ContinueWith(previous => TestHelper.Assert(previous.Result != null)).Wait();
+                    p.GetConnectionAsync().AsTask().ContinueWith(previous => TestHelper.Assert(previous.Result != null)).Wait();
                 }
 
                 p.opAsync().ContinueWith(previous => previous.Wait()).Wait();
@@ -302,8 +302,9 @@ namespace ZeroC.Ice.ami
                     indirect.opAsync().Wait();
                     TestHelper.Assert(false);
                 }
-                catch (NoEndpointException)
+                catch (AggregateException ex)
                 {
+                    TestHelper.Assert(ex.InnerException is NoEndpointException);
                 }
 
                 //
@@ -339,8 +340,9 @@ namespace ZeroC.Ice.ami
                     i.IceIsAAsync("::Test::TestIntf").Wait();
                     TestHelper.Assert(false);
                 }
-                catch (NoEndpointException)
+                catch (AggregateException ex)
                 {
+                    TestHelper.Assert(ex.InnerException is NoEndpointException);
                 }
 
                 try
@@ -348,8 +350,9 @@ namespace ZeroC.Ice.ami
                     i.opAsync().Wait();
                     TestHelper.Assert(false);
                 }
-                catch (NoEndpointException)
+                catch (AggregateException ex)
                 {
+                    TestHelper.Assert(ex.InnerException is NoEndpointException);
                 }
 
                 try
@@ -357,8 +360,9 @@ namespace ZeroC.Ice.ami
                     i.opWithResultAsync().Wait();
                     TestHelper.Assert(false);
                 }
-                catch (NoEndpointException)
+                catch (AggregateException ex)
                 {
+                    TestHelper.Assert(ex.InnerException is NoEndpointException);
                 }
 
                 try
@@ -366,8 +370,9 @@ namespace ZeroC.Ice.ami
                     i.opWithUEAsync().Wait();
                     TestHelper.Assert(false);
                 }
-                catch (NoEndpointException)
+                catch (AggregateException ex)
                 {
+                    TestHelper.Assert(ex.InnerException is NoEndpointException);
                 }
 
                 // Ensures no exception is called when response is received

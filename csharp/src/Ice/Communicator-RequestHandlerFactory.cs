@@ -4,6 +4,7 @@
 
 using IceInternal;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ZeroC.Ice
@@ -12,7 +13,7 @@ namespace ZeroC.Ice
     {
         // All the reference here are routable references.
 
-        internal async ValueTask<IRequestHandler> GetRequestHandler(Reference reference)
+        internal async ValueTask<IRequestHandler> GetRequestHandlerAsync(Reference reference, CancellationToken cancel)
         {
             if (reference.IsCollocationOptimized)
             {
@@ -25,47 +26,64 @@ namespace ZeroC.Ice
 
             if (reference.IsConnectionCached)
             {
-                Task<IRequestHandler>? task;
                 bool connect = false;
+                TaskCompletionSource<IRequestHandler> source;
                 lock (_handlers)
                 {
-                    if (!_handlers.TryGetValue(reference, out task))
+                    if (!_handlers.TryGetValue(reference, out Queue<TaskCompletionSource<IRequestHandler>>? queue))
                     {
-                        task = reference.GetConnectionRequestHandlerAsync().AsTask();
-                        _handlers.Add(reference, task);
+                        queue = new Queue<TaskCompletionSource<IRequestHandler>>();
+                        _handlers.Add(reference, queue);
                         connect = true;
                     }
-                    else
-                    {
-                        task = Chain(task);
-                        _handlers[reference] = task;
-                    }
+                    source = new TaskCompletionSource<IRequestHandler>();
+                    queue!.Enqueue(source);
                 }
 
-                try
+                if (connect)
                 {
-                    return await task!.ConfigureAwait(false); // TODO: Compress flag
-                }
-                finally
-                {
-                    if (connect)
+                    // TODO: Optimize if GetConnectionRequestHandlerAsync completes synchronously.
+                    _ = reference.GetConnectionRequestHandlerAsync().AsTask().ContinueWith(async task =>
                     {
-                        lock (_handlers)
+                        try
                         {
-                            _handlers.Remove(reference);
+                            IRequestHandler handler = await task;
+                            lock (_handlers)
+                            {
+                                foreach (TaskCompletionSource<IRequestHandler> source in _handlers[reference])
+                                {
+                                    source.SetResult(handler);
+                                }
+                                _handlers.Remove(reference);
+                            }
                         }
-                    }
+                        catch (System.Exception ex)
+                        {
+                            lock (_handlers)
+                            {
+                                foreach (TaskCompletionSource<IRequestHandler> source in _handlers[reference])
+                                {
+                                    source.SetException(ex);
+                                }
+                                _handlers.Remove(reference);
+                            }
+                            throw;
+                        }
+                    }, TaskScheduler.Default); // TODO: Review?
+                }
+
+                using (cancel.Register(() => source.TrySetCanceled()))
+                {
+                    return await source.Task!.ConfigureAwait(false);
                 }
             }
             else
             {
-                return await reference.GetConnectionRequestHandlerAsync();
+                return await reference.GetConnectionRequestHandlerAsync().ConfigureAwait(false);
             }
-
-            static async Task<IRequestHandler> Chain(Task<IRequestHandler> task) => await task.ConfigureAwait(false);
         }
 
-        private readonly Dictionary<Reference, Task<IRequestHandler>> _handlers =
-            new Dictionary<Reference, Task<IRequestHandler>>();
+        private readonly Dictionary<Reference, Queue<TaskCompletionSource<IRequestHandler>>> _handlers =
+            new Dictionary<Reference, Queue<TaskCompletionSource<IRequestHandler>>>();
     }
 }

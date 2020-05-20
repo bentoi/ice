@@ -274,8 +274,8 @@ namespace ZeroC.Ice
         {
             try
             {
-                var outgoing = new ProxyGetConnection(prx, synchronous: true);
-                return outgoing.Invoke().Result;
+                var handler = prx.IceReference.GetRequestHandlerAsync(default).Result as ConnectionRequestHandler;
+                return handler?.GetConnection();
             }
             catch (AggregateException ex)
             {
@@ -289,12 +289,15 @@ namespace ZeroC.Ice
         /// it first attempts to create a connection.
         /// </summary>
         /// <returns>The Connection for this proxy or null if collocation optimization is used.</returns>
-        public static async Task<Connection?> GetConnectionAsync(this IObjectPrx prx,
-                                                                 IProgress<bool>? progress = null,
-                                                                 CancellationToken cancel = new CancellationToken())
+        public static async ValueTask<Connection?> GetConnectionAsync(this IObjectPrx prx,
+                                                                      IProgress<bool>? progress = null,
+                                                                      CancellationToken cancel = new CancellationToken())
         {
-            var outgoing = new ProxyGetConnection(prx, synchronous: false, progress, cancel);
-            return await outgoing.Invoke().ConfigureAwait(false);
+            ValueTask<IRequestHandler> task = prx.IceReference.GetRequestHandlerAsync(cancel);
+            IRequestHandler handler = await task.ConfigureAwait(false);
+            // TODO: do we want to call progress.Report when the connection was obtained? Is it useful to have
+            // a progress parameter here? Simpler might be to just remove it.
+            return (handler as ConnectionRequestHandler)?.GetConnection();
         }
 
         /// <summary>
@@ -338,14 +341,14 @@ namespace ZeroC.Ice
         /// <param name="progress">Sent progress provider.</param>
         /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
         /// <returns>A task holding the response frame.</returns>
-        public static ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
-                                                                   OutgoingRequestFrame request,
-                                                                   bool oneway = false,
-                                                                   IProgress<bool>? progress = null,
-                                                                   CancellationToken cancel = default)
+        public static async ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
+                                                                         OutgoingRequestFrame request,
+                                                                         bool oneway = false,
+                                                                         IProgress<bool>? progress = null,
+                                                                         CancellationToken cancel = default)
         {
             var outgoing = new InvokeOutgoing(proxy, request, oneway: oneway, synchronous: false, progress, cancel);
-            return outgoing.Invoke();
+            return await outgoing.Invoke().ConfigureAwait(false);
         }
 
         /// <summary>Forwards an incoming request to another Ice object.</summary>

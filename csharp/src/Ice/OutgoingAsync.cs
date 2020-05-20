@@ -21,10 +21,10 @@ namespace IceInternal
         protected bool IsSent;
         protected IInvocationObserver? Observer;
         protected IChildInvocationObserver? ChildObserver;
+        protected readonly CancellationToken CancellationToken;
         private bool _alreadySent;
         private Exception? _cancellationException;
         private ICancellationHandler? _cancellationHandler;
-        private readonly CancellationToken _cancel;
         private Exception? _exception;
         private readonly IProgress<bool>? _progress;
 
@@ -139,11 +139,11 @@ namespace IceInternal
 
             _alreadySent = false;
 
-            _cancel = cancel;
+            CancellationToken = cancel;
             _progress = progress;
-            if (_cancel.CanBeCanceled)
+            if (CancellationToken.CanBeCanceled)
             {
-                _cancel.Register(Cancel);
+                CancellationToken.Register(Cancel);
             }
         }
 
@@ -265,7 +265,6 @@ namespace IceInternal
         protected bool IsIdempotent;
         protected readonly IObjectPrx Proxy;
         protected IRequestHandler? Handler;
-        // true for a oneway-capable operation called on a oneway proxy, false otherwise
         private int _cnt;
         public abstract void InvokeRemote(Connection connection, bool compress);
         public abstract void InvokeCollocated(CollocatedRequestHandler handler);
@@ -358,7 +357,8 @@ namespace IceInternal
                     try
                     {
                         IsSent = false;
-                        Handler = await Proxy.IceReference.GetRequestHandlerAsync().ConfigureAwait(false);
+                        Handler =
+                            await Proxy.IceReference.GetRequestHandlerAsync(CancellationToken).ConfigureAwait(false);
                         Handler.SendAsyncRequest(this);
                         return; // We're done!
                     }
@@ -483,7 +483,6 @@ namespace IceInternal
             : base(prx, oneway, synchronous, progress, cancel)
         {
             RequestFrame = requestFrame;
-            Encoding = Proxy.Encoding;
             IsIdempotent = requestFrame.IsIdempotent;
             _taskCompletionSource = new TaskCompletionSource<IncomingResponseFrame>();
         }
@@ -574,64 +573,8 @@ namespace IceInternal
                 throw new InvalidOperationException("cannot make two-way call on a datagram proxy");
             }
 
-            await InvokeImpl(false);
-            return await _taskCompletionSource.Task;
-        }
-
-        protected readonly Encoding Encoding;
-    }
-
-    //
-    // Class for handling the proxy's GetConnection request.
-    //
-    internal class ProxyGetConnection : ProxyOutgoing
-    {
-        private Connection? _connection;
-        private readonly TaskCompletionSource<Connection?> _taskCompletionSource;
-
-        public ProxyGetConnection(IObjectPrx prx, bool synchronous, IProgress<bool>? progress = null,
-            CancellationToken cancel = default)
-            : base(prx, oneway: true, synchronous, progress, cancel)
-        {
-            IsIdempotent = false;
-            _taskCompletionSource = new TaskCompletionSource<Connection?>();
-        }
-
-        public override List<ArraySegment<byte>> GetRequestData(int requestId)
-        {
-            // This isn't supposed to be called since we don't call SendAsyncRequest.
-            Debug.Assert(false);
-            return null!;
-        }
-
-        protected override void SetResult() => _taskCompletionSource.SetResult(_connection);
-
-        protected override void SetException(Exception ex) => _taskCompletionSource.SetException(ex);
-
-        public override void InvokeRemote(Connection connection, bool compress)
-        {
-            _connection = connection;
-            if (ResponseImpl())
-            {
-                InvokeResponse();
-            }
-        }
-
-        public override void InvokeCollocated(CollocatedRequestHandler handler)
-        {
-            if (ResponseImpl())
-            {
-                InvokeResponse();
-            }
-        }
-
-        public async ValueTask<Connection?> Invoke()
-        {
-            // GetConnection succeeds for oneway, twoway and datagram proxies, and is not considered two-way only
-            // since it's a local operation.
-            Observer = ObserverHelper.GetInvocationObserver(Proxy, "ice_getConnection", Reference.EmptyContext);
-            await InvokeImpl(false);
-            return await _taskCompletionSource.Task;
+            await InvokeImpl(false).ConfigureAwait(false);
+            return await _taskCompletionSource.Task.ConfigureAwait(false);
         }
     }
 }

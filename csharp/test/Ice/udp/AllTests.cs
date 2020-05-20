@@ -127,7 +127,7 @@ namespace ZeroC.Ice.udp
                     //
                     TestHelper.Assert(seq.Length > 16384);
                 }
-                obj.GetConnection().Close(ConnectionClose.GracefullyWithWait);
+                obj.GetConnection()!.Close(ConnectionClose.GracefullyWithWait);
                 communicator.SetProperty("Ice.UDP.SndSize", "64000");
                 seq = new byte[50000];
                 try
@@ -205,8 +205,8 @@ namespace ZeroC.Ice.udp
 
             Console.Out.Write("testing udp bi-dir connection... ");
             Console.Out.Flush();
-            obj.GetConnection().Adapter = adapter;
-            objMcast.GetConnection().Adapter = adapter;
+            obj.GetConnection()!.Adapter = adapter;
+            objMcast.GetConnection()!.Adapter = adapter;
             nRetry = 5;
             while (nRetry-- > 0)
             {
