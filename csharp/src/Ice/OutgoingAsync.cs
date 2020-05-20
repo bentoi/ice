@@ -21,7 +21,6 @@ namespace IceInternal
         protected bool IsSent;
         protected IInvocationObserver? Observer;
         protected IChildInvocationObserver? ChildObserver;
-
         private bool _alreadySent;
         private Exception? _cancellationException;
         private ICancellationHandler? _cancellationHandler;
@@ -403,7 +402,7 @@ namespace IceInternal
                 }
                 else if (ExceptionImpl(ex)) // No retries, we're done
                 {
-                    Task.Run(InvokeException);
+                    await Task.Run(InvokeException);
                 }
             }
         }
@@ -474,7 +473,6 @@ namespace IceInternal
     {
         public OutgoingRequestFrame RequestFrame { get; protected set; }
         public IncomingResponseFrame? ResponseFrame { get; protected set; }
-        public Task<IncomingResponseFrame> Task => _taskCompletionSource.Task;
         public override List<ArraySegment<byte>> GetRequestData(int requestId) =>
             Ice1Definitions.GetRequestData(RequestFrame, requestId);
 
@@ -559,7 +557,7 @@ namespace IceInternal
         public override void InvokeCollocated(CollocatedRequestHandler handler) =>
             handler.InvokeAsyncRequest(this, Synchronous);
 
-        internal async ValueTask Invoke()
+        internal async ValueTask<IncomingResponseFrame> Invoke()
         {
             IReadOnlyDictionary<string, string>? context = RequestFrame.Context ?? ProxyAndCurrentContext();
             Observer = ObserverHelper.GetInvocationObserver(Proxy, RequestFrame.Operation, context);
@@ -568,7 +566,7 @@ namespace IceInternal
             if (mode == InvocationMode.BatchOneway || mode == InvocationMode.BatchDatagram)
             {
                 Debug.Assert(false); // not implemented
-                return;
+                return null;
             }
 
             if (mode == InvocationMode.Datagram && !IsOneway)
@@ -577,6 +575,7 @@ namespace IceInternal
             }
 
             await InvokeImpl(false);
+            return await _taskCompletionSource.Task;
         }
 
         protected readonly Encoding Encoding;
@@ -587,7 +586,6 @@ namespace IceInternal
     //
     internal class ProxyGetConnection : ProxyOutgoing
     {
-        public Task<Connection?> Task => _taskCompletionSource.Task;
         private Connection? _connection;
         private readonly TaskCompletionSource<Connection?> _taskCompletionSource;
 
@@ -627,12 +625,13 @@ namespace IceInternal
             }
         }
 
-        public ValueTask Invoke()
+        public async ValueTask<Connection?> Invoke()
         {
             // GetConnection succeeds for oneway, twoway and datagram proxies, and is not considered two-way only
             // since it's a local operation.
             Observer = ObserverHelper.GetInvocationObserver(Proxy, "ice_getConnection", Reference.EmptyContext);
-            return InvokeImpl(false);
+            await InvokeImpl(false);
+            return await _taskCompletionSource.Task;
         }
     }
 }

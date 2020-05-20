@@ -23,8 +23,7 @@ namespace ZeroC.Ice
             try
             {
                 var outgoing = new InvokeOutgoing(prx, request, oneway: false, synchronous: true);
-                outgoing.Invoke();
-                IncomingResponseFrame response = outgoing.Task.Result;
+                IncomingResponseFrame response = outgoing.Invoke().Result;
                 return response.ReadReturnValue(_reader);
             }
             catch (AggregateException ex)
@@ -40,10 +39,10 @@ namespace ZeroC.Ice
                                                          CancellationToken cancel)
         {
             var outgoing = new InvokeOutgoing(prx, request, oneway: false, synchronous: false, progress, cancel);
-            outgoing.Invoke();
-            return ReadReturnValueAsync(outgoing.Task, _reader);
+            ;
+            return ReadReturnValueAsync(outgoing.Invoke(), _reader);
 
-            static async Task<TReturnValue> ReadReturnValueAsync(Task<IncomingResponseFrame> task,
+            static async Task<TReturnValue> ReadReturnValueAsync(ValueTask<IncomingResponseFrame> task,
                                                                  InputStreamReader<TReturnValue> reader)
             {
                 IncomingResponseFrame response = await task.ConfigureAwait(false);
@@ -168,8 +167,7 @@ namespace ZeroC.Ice
             {
                 bool isOneway = _oneway || prx.IsOneway;
                 var outgoing = new InvokeOutgoing(prx, request, oneway: isOneway, synchronous: true);
-                outgoing.Invoke();
-                IncomingResponseFrame response = outgoing.Task.Result;
+                IncomingResponseFrame response = outgoing.Invoke().Result;
                 if (!isOneway)
                 {
                     response.ReadVoidReturnValue();
@@ -187,10 +185,9 @@ namespace ZeroC.Ice
         {
             bool isOneway = _oneway || prx.IsOneway;
             var outgoing = new InvokeOutgoing(prx, request, oneway: isOneway, synchronous: false, progress, cancel);
-            outgoing.Invoke();
-            return ReadVoidReturnValueAsync(outgoing.Task, isOneway);
+            return ReadVoidReturnValueAsync(outgoing.Invoke(), isOneway);
 
-            static async Task ReadVoidReturnValueAsync(Task<IncomingResponseFrame> task, bool oneway)
+            static async Task ReadVoidReturnValueAsync(ValueTask<IncomingResponseFrame> task, bool oneway)
             {
                 IncomingResponseFrame response = await task.ConfigureAwait(false);
                 if (!oneway)

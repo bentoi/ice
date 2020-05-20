@@ -169,7 +169,7 @@ namespace IceInternal
                 return (connection, compress);
             }
             var callback = new CreateConnectionCallback();
-            new ConnectCallback(this, endpoints, hasMore, callback, selType).GetConnectors();
+            await new ConnectCallback(this, hasMore, callback, selType).GetConnectorsAsync(endpoints);
             return await callback.Task;
         }
 
@@ -715,71 +715,15 @@ namespace IceInternal
             public Endpoint Endpoint;
         }
 
-        private class ConnectCallback : IEndpointConnectors
+        private class ConnectCallback
         {
-            internal ConnectCallback(OutgoingConnectionFactory f, IEnumerable<Endpoint> endpoints, bool more,
-                                     ICreateConnectionCallback cb, EndpointSelectionType selType)
+            internal ConnectCallback(OutgoingConnectionFactory f, bool more, ICreateConnectionCallback cb,
+                EndpointSelectionType selType)
             {
-                Debug.Assert(endpoints.Any());
-
                 _factory = f;
-                _endpoints = endpoints;
-                _endpointEnumerator = _endpoints.GetEnumerator();
-                _hasMoreEndpoints = _endpointEnumerator.MoveNext();
-                Debug.Assert(_hasMoreEndpoints); // even if there is only one endpoint, we have not read it yet with
-                                                // _endpointsEnumerator.Current
                 _hasMore = more;
                 _callback = cb;
                 _selType = selType;
-            }
-
-            //
-            // Methods from EndpointI_connectors
-            //
-            public void Connectors(List<IConnector> cons)
-            {
-                Debug.Assert(_currentEndpoint != null);
-                foreach (IConnector connector in cons)
-                {
-                    _connectors.Add(new ConnectorInfo(connector, _currentEndpoint));
-                }
-
-                if (_hasMoreEndpoints)
-                {
-                    NextEndpoint();
-                }
-                else
-                {
-                    Debug.Assert(_connectors.Count > 0);
-
-                    //
-                    // We now have all the connectors for the given endpoints. We can try to obtain the
-                    // connection.
-                    //
-                    GetConnection();
-                }
-            }
-
-            public void Exception(System.Exception ex)
-            {
-                _factory.HandleException(ex, _hasMore || _hasMoreEndpoints);
-                if (_hasMoreEndpoints)
-                {
-                    NextEndpoint();
-                }
-                else if (_connectors.Count > 0)
-                {
-                    //
-                    // We now have all the connectors for the given endpoints. We can try to obtain the
-                    // connection.
-                    //
-                    GetConnection();
-                }
-                else
-                {
-                    _callback.SetException(ex);
-                    _factory.DecPendingConnectCount(); // Must be called last.
-                }
             }
 
             public void SetConnection(Connection connection, bool compress)
@@ -817,41 +761,6 @@ namespace IceInternal
 
             public void RemoveFromPending() => _factory.RemoveFromPending(this, _connectors);
 
-            public void GetConnectors()
-            {
-                try
-                {
-                    //
-                    // Notify the factory that there's an async connect pending. This is necessary
-                    // to prevent the outgoing connection factory to be destroyed before all the
-                    // pending asynchronous connects are finished.
-                    //
-                    _factory.IncPendingConnectCount();
-                }
-                catch (System.Exception ex)
-                {
-                    _callback.SetException(ex);
-                    return;
-                }
-
-                NextEndpoint();
-            }
-
-            private void NextEndpoint()
-            {
-                try
-                {
-                    Debug.Assert(_hasMoreEndpoints);
-                    _currentEndpoint = _endpointEnumerator.Current;
-                    _hasMoreEndpoints = _endpointEnumerator.MoveNext();
-                    _currentEndpoint.ConnectorsAsync(_selType, this);
-                }
-                catch (System.Exception ex)
-                {
-                    Exception(ex);
-                }
-            }
-
             internal void GetConnection()
             {
                 try
@@ -881,13 +790,57 @@ namespace IceInternal
                     _factory.DecPendingConnectCount(); // Must be called last.
                 }
             }
+            public async ValueTask GetConnectorsAsync(IEnumerable<Endpoint> endpoints)
+            {
+                Debug.Assert(endpoints.Any());
+                try
+                {
+                    //
+                    // Notify the factory that there's an async connect pending. This is necessary
+                    // to prevent the outgoing connection factory to be destroyed before all the
+                    // pending asynchronous connects are finished.
+                    //
+                    _factory.IncPendingConnectCount();
+                }
+                catch (System.Exception ex)
+                {
+                    _callback.SetException(ex);
+                    return;
+                }
+
+                System.Exception? exception = null;
+                Endpoint last = endpoints.Last();
+                foreach (Endpoint endpoint in endpoints)
+                {
+                    try
+                    {
+                        IEnumerable<IConnector> ctrs = await endpoint.ConnectorsAsync(_selType).ConfigureAwait(false);
+                        _connectors.AddRange(ctrs.Select(item => new ConnectorInfo(item, endpoint)));
+                    }
+                    catch (System.Exception ex)
+                    {
+                        exception = ex;
+                        _factory.HandleException(ex, _hasMore || endpoint != last);
+                    }
+                }
+
+                if (_connectors.Count == 0)
+                {
+                    _callback.SetException(exception!);
+                    _factory.DecPendingConnectCount(); // Must be called last.
+                }
+                else
+                {
+                    GetConnection();
+                }
+            }
 
             internal async ValueTask NextConnectorAsync()
             {
                 System.Exception? lastException = null;
                 for (int i = 0; i < _connectors.Count; ++i)
                 {
-                    var connector = _connectors[i];
+                    ConnectorInfo connector = _connectors[i];
                     try
                     {
                         ICommunicatorObserver? obsv = _factory._communicator.Observer;
@@ -950,11 +903,7 @@ namespace IceInternal
             private readonly OutgoingConnectionFactory _factory;
             private readonly bool _hasMore;
             private readonly ICreateConnectionCallback _callback;
-            private readonly IEnumerable<Endpoint> _endpoints;
             private readonly EndpointSelectionType _selType;
-            private readonly IEnumerator<Endpoint> _endpointEnumerator;
-            private bool _hasMoreEndpoints;
-            private Endpoint? _currentEndpoint;
             private readonly List<ConnectorInfo> _connectors = new List<ConnectorInfo>();
             private IObserver? _observer;
         }

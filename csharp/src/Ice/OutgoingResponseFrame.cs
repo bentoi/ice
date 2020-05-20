@@ -4,7 +4,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 
 namespace ZeroC.Ice
 {
@@ -19,6 +18,9 @@ namespace ZeroC.Ice
 
         /// <summary>Returns a list of array segments with the contents of the frame payload.</summary>
         public IList<ArraySegment<byte>> Payload => Data;
+
+        /// <summary>The frame reply status <see cref="ReplyStatus"/>.</summary>
+        public ReplyStatus ReplyStatus => (ReplyStatus) Data[0][0];
 
         /// <summary>The frame byte count.</summary>
         public int Size { get; private set; }
@@ -102,12 +104,12 @@ namespace ZeroC.Ice
                         nameof(payload));
                 }
 
-                (Encoding encapsEncoding, int size) =
-                    InputStream.ReadEncapsulationHeader(Ice1Definitions.Encoding, payload.AsSpan(1));
+                (int size, Encoding encapsEncoding) = InputStream.ReadEncapsulationHeader(
+                    Ice1Definitions.Encoding, payload.AsSpan(1));
 
-                if (size != payload.Count - 1)
+                if (size + 4 + 1 != payload.Count) // 4 = size length with 1.1 encoding
                 {
-                    throw new ArgumentException($"invalid payload size `{size}'; expected `{payload.Count}'",
+                    throw new ArgumentException($"invalid payload size `{size}'; expected `{payload.Count - 5}'",
                         nameof(payload));
                 }
 

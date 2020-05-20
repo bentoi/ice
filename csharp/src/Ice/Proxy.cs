@@ -275,8 +275,7 @@ namespace ZeroC.Ice
             try
             {
                 var outgoing = new ProxyGetConnection(prx, synchronous: true);
-                outgoing.Invoke();
-                return outgoing.Task.Result;
+                return outgoing.Invoke().Result;
             }
             catch (AggregateException ex)
             {
@@ -295,8 +294,7 @@ namespace ZeroC.Ice
                                                                  CancellationToken cancel = new CancellationToken())
         {
             var outgoing = new ProxyGetConnection(prx, synchronous: false, progress, cancel);
-            await outgoing.Invoke().ConfigureAwait(false);
-            return await outgoing.Task.ConfigureAwait(false);
+            return await outgoing.Invoke().ConfigureAwait(false);
         }
 
         /// <summary>
@@ -321,8 +319,7 @@ namespace ZeroC.Ice
             try
             {
                 var outgoing = new InvokeOutgoing(proxy, request, oneway: oneway, synchronous: true);
-                outgoing.Invoke();
-                return outgoing.Task.Result;
+                return outgoing.Invoke().Result;
             }
             catch (AggregateException ex)
             {
@@ -341,15 +338,14 @@ namespace ZeroC.Ice
         /// <param name="progress">Sent progress provider.</param>
         /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
         /// <returns>A task holding the response frame.</returns>
-        public static Task<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
-                                                              OutgoingRequestFrame request,
-                                                              bool oneway = false,
-                                                              IProgress<bool>? progress = null,
-                                                              CancellationToken cancel = default)
+        public static ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
+                                                                   OutgoingRequestFrame request,
+                                                                   bool oneway = false,
+                                                                   IProgress<bool>? progress = null,
+                                                                   CancellationToken cancel = default)
         {
             var outgoing = new InvokeOutgoing(proxy, request, oneway: oneway, synchronous: false, progress, cancel);
-            outgoing.Invoke();
-            return outgoing.Task;
+            return outgoing.Invoke();
         }
 
         /// <summary>Forwards an incoming request to another Ice object.</summary>

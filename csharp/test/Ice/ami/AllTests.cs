@@ -540,7 +540,7 @@ namespace ZeroC.Ice.ami
                     // Local case: begin a request, close the connection gracefully, and make sure it waits
                     // for the request to complete.
                     //
-                    Connection con = p.GetConnection();
+                    Connection con = p.GetConnection()!;
                     var cb = new CallbackBase();
                     con.SetCloseCallback(_ => cb.Called());
                     Task t = p.sleepAsync(100);
@@ -611,7 +611,7 @@ namespace ZeroC.Ice.ami
                     // invocation to fail with ConnectionClosedLocallyException.
                     //
                     p = p.Clone(connectionId: "CloseGracefully"); // Start with a new connection.
-                    Connection con = p.GetConnection();
+                    Connection con = p.GetConnection()!;
                     var cb = new CallbackBase();
                     Task t = p.startDispatchAsync(
                         progress: new Progress(sentSynchronously => cb.Called()));
@@ -632,7 +632,7 @@ namespace ZeroC.Ice.ami
                     // Remote case: the server closes the connection gracefully, which means the connection
                     // will not be closed until all pending dispatched requests have completed.
                     //
-                    con = p.GetConnection();
+                    con = p.GetConnection()!;
                     cb = new CallbackBase();
                     con.SetCloseCallback(_ => cb.Called());
                     t = p.sleepAsync(100);
@@ -650,7 +650,7 @@ namespace ZeroC.Ice.ami
                     // There will be no retry and we expect the invocation to fail with ConnectionClosedLocallyException.
                     //
                     p.IcePing();
-                    Connection con = p.GetConnection();
+                    Connection con = p.GetConnection()!;
                     var cb = new CallbackBase();
                     Task t = p.startDispatchAsync(
                         progress: new Progress(sentSynchronously => cb.Called()));
