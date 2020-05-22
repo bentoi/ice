@@ -29,7 +29,7 @@ namespace ZeroC.Ice
             {
                 bool connect = false;
                 var source = new TaskCompletionSource<IRequestHandler>();
-                _handlers.AddOrUpdate(reference,
+                _pendingConnects.AddOrUpdate(reference,
                     key =>
                     {
                         // Add list to queue task completion sources
@@ -54,7 +54,8 @@ namespace ZeroC.Ice
                             IRequestHandler handler = await task.ConfigureAwait(false);
 
                             // Notify waiting asynchronous requests of the result
-                            _handlers.TryRemove(reference, out List<TaskCompletionSource<IRequestHandler>>? sources);
+                            _pendingConnects.TryRemove(reference,
+                                out List<TaskCompletionSource<IRequestHandler>>? sources);
                             foreach (TaskCompletionSource<IRequestHandler> source in sources!)
                             {
                                 source.SetResult(handler);
@@ -63,7 +64,8 @@ namespace ZeroC.Ice
                         catch (System.Exception ex)
                         {
                             // Notify waiting asynchronous requests of the exception
-                            _handlers.TryRemove(reference, out List<TaskCompletionSource<IRequestHandler>>? sources);
+                            _pendingConnects.TryRemove(reference,
+                                out List<TaskCompletionSource<IRequestHandler>>? sources);
                             foreach (TaskCompletionSource<IRequestHandler> source in sources!)
                             {
                                 source.SetException(ex);
@@ -83,7 +85,7 @@ namespace ZeroC.Ice
             }
         }
 
-        private readonly ConcurrentDictionary<Reference, List<TaskCompletionSource<IRequestHandler>>> _handlers =
+        private readonly ConcurrentDictionary<Reference, List<TaskCompletionSource<IRequestHandler>>> _pendingConnects =
             new ConcurrentDictionary<Reference, List<TaskCompletionSource<IRequestHandler>>>();
     }
 }
