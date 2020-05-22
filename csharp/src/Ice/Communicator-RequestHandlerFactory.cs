@@ -4,9 +4,9 @@
 
 using IceInternal;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace ZeroC.Ice
 {
@@ -27,65 +27,50 @@ namespace ZeroC.Ice
 
             if (reference.IsConnectionCached)
             {
-                bool connect = false;
-                var source = new TaskCompletionSource<IRequestHandler>();
-                _pendingConnects.AddOrUpdate(reference,
-                    key =>
-                    {
-                        // Add list to queue task completion sources
-                        var sources = new List<TaskCompletionSource<IRequestHandler>>() { source };
-                        connect = true;
-                        return sources;
-                    },
-                    (key, value) =>
-                    {
-                        // Update task completion source list
-                        value.Add(source);
-                        return value;
-                    });
-
-                if (connect)
+                ValueTask<IRequestHandler> connect = reference.GetConnectionRequestHandlerAsync();
+                if (connect.IsCompleted)
                 {
-                    // TODO: Optimize if GetConnectionRequestHandlerAsync completes synchronously.
-                    _ = reference.GetConnectionRequestHandlerAsync().AsTask().ContinueWith(async task =>
-                    {
-                        try
-                        {
-                            IRequestHandler handler = await task.ConfigureAwait(false);
-
-                            // Notify waiting asynchronous requests of the result
-                            _pendingConnects.TryRemove(reference,
-                                out List<TaskCompletionSource<IRequestHandler>>? sources);
-                            foreach (TaskCompletionSource<IRequestHandler> source in sources!)
-                            {
-                                source.SetResult(handler);
-                            }
-                        }
-                        catch (System.Exception ex)
-                        {
-                            // Notify waiting asynchronous requests of the exception
-                            _pendingConnects.TryRemove(reference,
-                                out List<TaskCompletionSource<IRequestHandler>>? sources);
-                            foreach (TaskCompletionSource<IRequestHandler> source in sources!)
-                            {
-                                source.SetException(ex);
-                            }
-                        }
-                    }, TaskScheduler.Default);
+                    // The task completes synchronously if the connection is already established so it's important to
+                    // check here if it's completed to avoid having to perform more costly code bellow to wait for the
+                    // connection establishment.
+                    return connect.Result;
                 }
 
-                using (cancel.Register(() => source.TrySetCanceled()))
+                // Add the task for the connection establishment on this reference to the pending connects dictionary.
+                // If an entry already exists, we chain a new task to the existing task and udate the dictionary entry
+                // with this chained task. This chaining ensures that requests waiting for the connection request
+                // handler will be sent in the same order as they were invoked.
+                Task<IRequestHandler> connectTask = connect.AsTask();
+                connectTask = _pendingConnects.AddOrUpdate(reference, connectTask, (key, value) => Chain(connectTask));
+
+                var cancelableTaskSource = new TaskCompletionSource<bool>();
+                using (cancel.Register(() => cancelableTaskSource.TrySetCanceled()))
                 {
-                    return await source.Task!.ConfigureAwait(false);
+                    Task completed = await Task.WhenAny(connectTask, cancelableTaskSource.Task).ConfigureAwait(false);
+                    if (completed == connectTask)
+                    {
+                        return await connectTask;
+                    }
+                    else
+                    {
+                        await cancelableTaskSource.Task;
+                        Debug.Assert(false);
+                        return null!;
+                    }
                 }
             }
             else
             {
                 return await reference.GetConnectionRequestHandlerAsync().ConfigureAwait(false);
             }
+
+            // Return a task that will complete only once the given task completes to guarantee ordering.
+            // TODO: Verify that this is actually needed! I.e: are continuations of multiple await on the same task
+            // run in the same order as they were awaited?
+            static async Task<IRequestHandler> Chain(Task<IRequestHandler> task) => await task.ConfigureAwait(false);
         }
 
-        private readonly ConcurrentDictionary<Reference, List<TaskCompletionSource<IRequestHandler>>> _pendingConnects =
-            new ConcurrentDictionary<Reference, List<TaskCompletionSource<IRequestHandler>>>();
+        private readonly ConcurrentDictionary<Reference, Task<IRequestHandler>> _pendingConnects =
+            new ConcurrentDictionary<Reference, Task<IRequestHandler>>();
     }
 }
