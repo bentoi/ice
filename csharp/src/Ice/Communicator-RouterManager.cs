@@ -54,7 +54,7 @@ namespace ZeroC.Ice
                 }
             }
 
-            (IObjectPrx? proxy, bool? hasRoutingTable) = await Router.GetClientProxyAsync();
+            (IObjectPrx? proxy, bool? hasRoutingTable) = await Router.GetClientProxyAsync().ConfigureAwait(false);
             return SetClientEndpoints(proxy!, hasRoutingTable ?? true);
         }
 

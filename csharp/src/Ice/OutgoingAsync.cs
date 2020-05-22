@@ -402,7 +402,7 @@ namespace IceInternal
                 }
                 else if (ExceptionImpl(ex)) // No retries, we're done
                 {
-                    await Task.Run(InvokeException);
+                    await Task.Run(InvokeException).ConfigureAwait(false);
                 }
             }
         }

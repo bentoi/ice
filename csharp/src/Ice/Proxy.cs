@@ -290,13 +290,10 @@ namespace ZeroC.Ice
         /// </summary>
         /// <returns>The Connection for this proxy or null if collocation optimization is used.</returns>
         public static async ValueTask<Connection?> GetConnectionAsync(this IObjectPrx prx,
-                                                                      IProgress<bool>? progress = null,
                                                                       CancellationToken cancel = new CancellationToken())
         {
             ValueTask<IRequestHandler> task = prx.IceReference.GetRequestHandlerAsync(cancel);
             IRequestHandler handler = await task.ConfigureAwait(false);
-            // TODO: do we want to call progress.Report when the connection was obtained? Is it useful to have
-            // a progress parameter here? Simpler might be to just remove it.
             return (handler as ConnectionRequestHandler)?.GetConnection();
         }
 
