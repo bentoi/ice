@@ -43,20 +43,27 @@ namespace ZeroC.Ice
                 Task<IRequestHandler> connectTask = connect.AsTask();
                 connectTask = _pendingConnects.AddOrUpdate(reference, connectTask, (key, value) => Chain(connectTask));
 
-                var cancelableTaskSource = new TaskCompletionSource<bool>();
-                using (cancel.Register(() => cancelableTaskSource.TrySetCanceled()))
+                if (cancel.CanBeCanceled)
                 {
-                    Task completed = await Task.WhenAny(connectTask, cancelableTaskSource.Task).ConfigureAwait(false);
-                    if (completed == connectTask)
+                    var cancelableSource = new TaskCompletionSource<bool>();
+                    using (cancel.Register(() => cancelableSource.TrySetCanceled()))
                     {
-                        return await connectTask;
+                        Task completed = await Task.WhenAny(connectTask, cancelableSource.Task).ConfigureAwait(false);
+                        if (completed == connectTask)
+                        {
+                            return await connectTask;
+                        }
+                        else
+                        {
+                            await cancelableSource.Task;
+                            Debug.Assert(false);
+                            return null!;
+                        }
                     }
-                    else
-                    {
-                        await cancelableTaskSource.Task;
-                        Debug.Assert(false);
-                        return null!;
-                    }
+                }
+                else
+                {
+                    return await connectTask;
                 }
             }
             else
