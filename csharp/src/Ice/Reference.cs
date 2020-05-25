@@ -1207,13 +1207,18 @@ namespace ZeroC.Ice
                 }
                 Debug.Assert(connection != null);
 
-                //
-                // If we have a router, set the object adapter for this router (if any) on the new connection,
-                // so that callbacks from the router can be received over this new connection.
-                //
-                if (RouterInfo != null && RouterInfo.Adapter != null)
+                if (RouterInfo != null)
                 {
-                    connection.Adapter = RouterInfo.Adapter;
+                    await RouterInfo.AddProxyAsync(IObjectPrx.Factory(this));
+
+                    //
+                    // Set the object adapter for this router (if any) on the new connection, so that callbacks from
+                    // the router can be received over this new connection.
+                    //
+                    if (RouterInfo.Adapter != null)
+                    {
+                        connection.Adapter = RouterInfo.Adapter;
+                    }
                 }
                 return new ConnectionRequestHandler(connection, compress);
             }

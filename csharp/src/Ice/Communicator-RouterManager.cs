@@ -70,11 +70,15 @@ namespace ZeroC.Ice
             return serverProxy.IceReference.Endpoints;
         }
 
-        public void AddProxy(IObjectPrx proxy)
+        public async ValueTask AddProxyAsync(IObjectPrx proxy)
         {
             Debug.Assert(proxy != null);
             lock (this)
             {
+                if (!_hasRoutingTable)
+                {
+                    return; // The router implementation doesn't maintain a routing table.
+                }
                 if (_identities.Contains(proxy.Identity))
                 {
                     //
@@ -84,42 +88,7 @@ namespace ZeroC.Ice
                 }
             }
 
-            AddAndEvictProxies(proxy, Router.AddProxies(new IObjectPrx[] { proxy }) as IObjectPrx[]);
-        }
-
-        public bool AddProxy(IObjectPrx proxy, IAddProxyCallback callback)
-        {
-            Debug.Assert(proxy != null);
-            lock (this)
-            {
-                if (!_hasRoutingTable)
-                {
-                    return true; // The router implementation doesn't maintain a routing table.
-                }
-                if (_identities.Contains(proxy.Identity))
-                {
-                    //
-                    // Only add the proxy to the router if it's not already in our local map.
-                    //
-                    return true;
-                }
-            }
-
-            Router.AddProxiesAsync(new IObjectPrx[] { proxy }).ContinueWith(
-                (t) =>
-                {
-                    try
-                    {
-                        AddAndEvictProxies(proxy, t.Result as IObjectPrx[]);
-                        callback.AddedProxy();
-                    }
-                    catch (System.AggregateException ae)
-                    {
-                        callback.SetException(ae.InnerException!);
-                    }
-                },
-                System.Threading.Tasks.TaskScheduler.Current);
-            return false;
+            AddAndEvictProxies(proxy, await Router.AddProxiesAsync(new IObjectPrx[] { proxy }) as IObjectPrx[]);
         }
 
         public ObjectAdapter? Adapter
