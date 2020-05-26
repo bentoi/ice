@@ -597,34 +597,36 @@ namespace IceInternal
 
         public override string ToString()
         {
-            if (_fd == null)
+            try
+            {
+                string s;
+                if (_incoming && !_bound)
+                {
+                    s = "local address = " + Network.AddrToString(_addr);
+                }
+                else if (_state == StateNotConnected)
+                {
+                    s = "local address = " + Network.LocalAddrToString(Network.GetLocalAddress(_fd));
+                    if (_peerAddr != null)
+                    {
+                        s += "\nremote address = " + Network.AddrToString(_peerAddr);
+                    }
+                }
+                else
+                {
+                    s = Network.FdToString(_fd);
+                }
+
+                if (_mcastAddr != null)
+                {
+                    s += "\nmulticast address = " + Network.AddrToString(_mcastAddr);
+                }
+                return s;
+            }
+            catch(ObjectDisposedException)
             {
                 return "<closed>";
             }
-
-            string s;
-            if (_incoming && !_bound)
-            {
-                s = "local address = " + Network.AddrToString(_addr);
-            }
-            else if (_state == StateNotConnected)
-            {
-                s = "local address = " + Network.LocalAddrToString(Network.GetLocalAddress(_fd));
-                if (_peerAddr != null)
-                {
-                    s += "\nremote address = " + Network.AddrToString(_peerAddr);
-                }
-            }
-            else
-            {
-                s = Network.FdToString(_fd);
-            }
-
-            if (_mcastAddr != null)
-            {
-                s += "\nmulticast address = " + Network.AddrToString(_mcastAddr);
-            }
-            return s;
         }
 
         public string ToDetailedString()

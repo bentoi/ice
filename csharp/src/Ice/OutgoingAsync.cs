@@ -325,7 +325,25 @@ namespace IceInternal
             }
         }
 
-        public void Retry() => _ = InvokeImpl(true);
+        public async Task Retry()
+        {
+            if (Observer != null)
+            {
+                Observer.Retried();
+            }
+
+            try
+            {
+                await InvokeImpl().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (ExceptionImpl(ex)) // No retries, we're done
+                {
+                    await Task.Run(InvokeException).ConfigureAwait(false);
+                }
+            }
+        }
 
         protected ProxyOutgoing(IObjectPrx prx, bool oneway, bool synchronous, IProgress<bool>? progress,
             CancellationToken cancel)
@@ -335,74 +353,44 @@ namespace IceInternal
             _cnt = 0;
         }
 
-        protected async ValueTask InvokeImpl(bool retried)
+        protected async ValueTask InvokeImpl()
         {
-            try
+            while (true)
             {
-                if (!retried)
+                try
                 {
-                    int invocationTimeout = Proxy.IceReference.InvocationTimeout;
-                    if (invocationTimeout > 0)
+                    IsSent = false;
+                    Handler =
+                        await Proxy.IceReference.GetRequestHandlerAsync(CancellationToken).ConfigureAwait(false);
+                    Handler.SendAsyncRequest(this);
+                    return; // We're done!
+                }
+                catch (RetryException)
+                {
+                    // Clear request handler and always retry.
+                    if (!Proxy.IceReference.IsFixed)
                     {
-                        Communicator.Timer().Schedule(this, invocationTimeout);
+                        Proxy.IceReference.UpdateRequestHandler(Handler, null);
                     }
                 }
-                else if (Observer != null)
+                catch (Exception ex)
                 {
-                    Observer.Retried();
-                }
-
-                while (true)
-                {
-                    try
+                    if (ChildObserver != null)
                     {
-                        IsSent = false;
-                        Handler =
-                            await Proxy.IceReference.GetRequestHandlerAsync(CancellationToken).ConfigureAwait(false);
-                        Handler.SendAsyncRequest(this);
-                        return; // We're done!
+                        ChildObserver.Failed(ex.GetType().FullName ?? "System.Exception");
+                        ChildObserver.Detach();
+                        ChildObserver = null;
                     }
-                    catch (RetryException)
+                    int interval = Proxy.IceHandleException(ex, Handler, IsIdempotent, IsSent, ref _cnt);
+                    if (interval > 0)
                     {
-                        // Clear request handler and always retry.
-                        if (!Proxy.IceReference.IsFixed)
-                        {
-                            Proxy.IceReference.UpdateRequestHandler(Handler, null);
-                        }
+                        Communicator.AddRetryTask(this, interval);
+                        return;
                     }
-                    catch (Exception ex)
+                    else if (Observer != null)
                     {
-                        if (ChildObserver != null)
-                        {
-                            ChildObserver.Failed(ex.GetType().FullName ?? "System.Exception");
-                            ChildObserver.Detach();
-                            ChildObserver = null;
-                        }
-                        int interval = Proxy.IceHandleException(ex, Handler, IsIdempotent, IsSent, ref _cnt);
-                        if (interval > 0)
-                        {
-                            Communicator.AddRetryTask(this, interval);
-                            return;
-                        }
-                        else if (Observer != null)
-                        {
-                            Observer.Retried();
-                        }
+                        Observer.Retried();
                     }
-                }
-            }
-            catch (Exception ex)
-            {
-                //
-                // If called from the user thread we re-throw, the exception will be caught by the caller.
-                //
-                if (!retried)
-                {
-                    throw;
-                }
-                else if (ExceptionImpl(ex)) // No retries, we're done
-                {
-                    await Task.Run(InvokeException).ConfigureAwait(false);
                 }
             }
         }
@@ -573,7 +561,13 @@ namespace IceInternal
                 throw new InvalidOperationException("cannot make two-way call on a datagram proxy");
             }
 
-            await InvokeImpl(false).ConfigureAwait(false);
+            int invocationTimeout = Proxy.IceReference.InvocationTimeout;
+            if (invocationTimeout > 0)
+            {
+                Communicator.Timer().Schedule(this, invocationTimeout);
+            }
+
+            await InvokeImpl().ConfigureAwait(false);
             return await _taskCompletionSource.Task.ConfigureAwait(false);
         }
     }

@@ -1071,11 +1071,13 @@ namespace ZeroC.Ice
             bool cached = false;
             if (RouterInfo != null)
             {
+                // Get the router client endpoints if a router is configured
                 endpoints = await RouterInfo.GetClientEndpointsAsync().ConfigureAwait(false);
             }
 
             if (endpoints == null || endpoints.Count == 0)
             {
+                // Get the proxy's endpoint or query the locator to get endpoints
                 if (Endpoints.Count > 0)
                 {
                     endpoints = Endpoints;
@@ -1158,7 +1160,8 @@ namespace ZeroC.Ice
                 filteredEndpoints = filteredEndpoints.OrderBy(endpoint => endpoint.IsSecure);
             }
 
-            if (!filteredEndpoints.Any())
+            endpoints = filteredEndpoints.ToArray();
+            if (endpoints.Count == 0)
             {
                 throw new NoEndpointException(ToString());
             }
@@ -1177,7 +1180,7 @@ namespace ZeroC.Ice
                     // Get an existing connection or create one if there's no existing connection to one of
                     // the given endpoints.
                     //
-                    (connection, compress) = await factory.CreateAsync(filteredEndpoints, false,
+                    (connection, compress) = await factory.CreateAsync(endpoints, false,
                         EndpointSelection).ConfigureAwait(false);
                 }
                 else
@@ -1187,8 +1190,8 @@ namespace ZeroC.Ice
                     // is different from just calling create() with all the endpoints since this might create a
                     // new connection even if there's an existing connection for one of the endpoints.
                     //
-                    Endpoint lastEndpoint = filteredEndpoints.Last();
-                    foreach (Endpoint endpoint in filteredEndpoints)
+                    Endpoint lastEndpoint = endpoints[endpoints.Count - 1];
+                    foreach (Endpoint endpoint in endpoints)
                     {
                         try
                         {

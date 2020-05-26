@@ -34,42 +34,58 @@ namespace ZeroC.Ice
                 Task<IRequestHandler> connectTask;
                 lock (_pendingConnects)
                 {
-                    if (_pendingConnects.TryGetValue(reference, out Task<IRequestHandler>? value))
+                    if (_pendingConnects.TryGetValue(reference, out Task<IRequestHandler>? previousTask))
                     {
-                        connectTask = ChainAsync(value!);
-                        _pendingConnects[reference] = connectTask;
+                        // A connect is pending, create a new task that completes when the previously queued task
+                        // completes.
+                        connectTask = ChainAsync(previousTask!);
                     }
                     else
                     {
+                        // No connect pending, try to obtain a new connection. If the outgoing connection factory
+                        // has a matching connection already established this will complete synchronously so it's
+                        // important to check for the status of the ValueTask here.
                         ValueTask<IRequestHandler> connect = reference.GetConnectionRequestHandlerAsync();
                         if (connect.IsCompleted)
                         {
                             return connect.Result;
                         }
-                        connectTask = connect.AsTask();
-                        _pendingConnects[reference] = connectTask;
-                        connectTask = CompleteConnectAsync(reference, connectTask);
+                        connectTask = ChainAsync(connect.AsTask());
                     }
+                    _pendingConnects[reference] = connectTask;
                 }
 
-                if (cancel.CanBeCanceled)
+                try
                 {
-                    var cancelableSource = new TaskCompletionSource<bool>();
-                    using (cancel.Register(() => cancelableSource.TrySetCanceled()))
+                    if (!connectTask.IsCompleted && cancel.CanBeCanceled)
                     {
-                        Task completed = await Task.WhenAny(connectTask, cancelableSource.Task).ConfigureAwait(false);
-                        if (completed != connectTask)
+                        var cancelable = new TaskCompletionSource<bool>();
+                        using (cancel.Register(() => cancelable.TrySetCanceled()))
                         {
-                            Debug.Assert(cancel.IsCancellationRequested);
-                            cancel.ThrowIfCancellationRequested();
+                            Task completed = await Task.WhenAny(connectTask, cancelable.Task).ConfigureAwait(false);
+                            if (completed != connectTask)
+                            {
+                                Debug.Assert(cancel.IsCancellationRequested);
+                                cancel.ThrowIfCancellationRequested();
+                            }
+                            Debug.Assert(connectTask.IsCompleted);
+                            return await connectTask.ConfigureAwait(false);
                         }
-                        Debug.Assert(connectTask.IsCompleted);
-                        return connectTask.Result;
+                    }
+                    else
+                    {
+                        return await connectTask.ConfigureAwait(false);
                     }
                 }
-                else
+                finally
                 {
-                    return await connectTask.ConfigureAwait(false);
+                    lock (_pendingConnects)
+                    {
+                        if (_pendingConnects[reference] == connectTask)
+                        {
+                            _pendingConnects.Remove(reference);
+                        }
+                    }
                 }
             }
             else
@@ -77,22 +93,8 @@ namespace ZeroC.Ice
                 return await reference.GetConnectionRequestHandlerAsync().ConfigureAwait(false);
             }
 
-            // Return a task that will complete only once the given task completes to guarantee ordering.
-            // TODO: Verify that this is actually needed! I.e: are continuations of multiple await on the same task
-            // run in the same order as they were awaited?
             static async Task<IRequestHandler> ChainAsync(Task<IRequestHandler> task) =>
                 await task.ConfigureAwait(false);
-        }
-
-        private async Task<IRequestHandler> CompleteConnectAsync(Reference reference, Task<IRequestHandler> connectTask)
-        {
-            IRequestHandler handler = await connectTask.ConfigureAwait(false);
-            lock (_pendingConnects)
-            {
-                Debug.Assert(_pendingConnects.ContainsKey(reference));
-                _pendingConnects.Remove(reference);
-            }
-            return handler;
         }
 
         private readonly Dictionary<Reference, Task<IRequestHandler>> _pendingConnects =

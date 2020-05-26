@@ -155,10 +155,10 @@ namespace IceInternal
             void ICreateConnectionCallback.SetException(System.Exception ex) => _source.SetException(ex);
         }
 
-        public async ValueTask<(Connection, bool)> CreateAsync(IEnumerable<Endpoint> endpoints, bool hasMore,
+        public async ValueTask<(Connection, bool)> CreateAsync(IReadOnlyList<Endpoint> endpoints, bool hasMore,
             EndpointSelectionType selType)
         {
-            Debug.Assert(endpoints.Any());
+            Debug.Assert(endpoints.Count > 0);
 
             //
             // Try to find a connection to one of the given endpoints.
@@ -268,7 +268,7 @@ namespace IceInternal
             _pendingConnectCount = 0;
         }
 
-        private Connection? FindConnection(IEnumerable<Endpoint> endpoints, out bool compress)
+        private Connection? FindConnection(IReadOnlyList<Endpoint> endpoints, out bool compress)
         {
             lock (this)
             {
@@ -277,7 +277,7 @@ namespace IceInternal
                     throw new CommunicatorDestroyedException();
                 }
 
-                Debug.Assert(endpoints.Any());
+                Debug.Assert(endpoints.Count > 0);
 
                 foreach (Endpoint endpoint in endpoints)
                 {
