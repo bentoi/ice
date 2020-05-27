@@ -263,7 +263,7 @@ namespace ZeroC.Ice
         {
             if (!IceReference.IsFixed)
             {
-                IceReference.UpdateRequestHandler(handler, null); // Clear the request handler
+                IceReference.ClearRequestHandler(handler); // Clear the request handler
             }
 
             // We only retry after failing with a DispatchException or a local exception.

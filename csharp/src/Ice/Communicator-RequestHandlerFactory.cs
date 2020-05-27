@@ -4,6 +4,7 @@
 
 using IceInternal;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
@@ -12,8 +13,6 @@ namespace ZeroC.Ice
 {
     public sealed partial class Communicator
     {
-        // All the reference here are routable references.
-
         internal async ValueTask<IRequestHandler> GetRequestHandlerAsync(Reference reference, CancellationToken cancel)
         {
             if (reference.IsCollocationOptimized)
@@ -93,8 +92,11 @@ namespace ZeroC.Ice
                 return await reference.GetConnectionRequestHandlerAsync().ConfigureAwait(false);
             }
 
-            static async Task<IRequestHandler> ChainAsync(Task<IRequestHandler> task) =>
-                await task.ConfigureAwait(false);
+            // static async Task<IRequestHandler> ChainAsync(Task<IRequestHandler> task) =>
+            //     await task.ConfigureAwait(false);
+
+            static Task<IRequestHandler> ChainAsync(Task<IRequestHandler> task) =>
+                task.ContinueWith(t => t.Result, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Current);
         }
 
         private readonly Dictionary<Reference, Task<IRequestHandler>> _pendingConnects =

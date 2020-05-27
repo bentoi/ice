@@ -312,7 +312,7 @@ namespace IceInternal
                 // Clear request handler and always retry.
                 if (!Proxy.IceReference.IsFixed)
                 {
-                    Proxy.IceReference.UpdateRequestHandler(Handler, null);
+                    Proxy.IceReference.ClearRequestHandler(Handler);
                 }
                 Communicator.AddRetryTask(this, 0);
             }
@@ -362,6 +362,7 @@ namespace IceInternal
                     IsSent = false;
                     Handler =
                         await Proxy.IceReference.GetRequestHandlerAsync(CancellationToken).ConfigureAwait(false);
+                    Console.WriteLine(Thread.CurrentThread.ManagedThreadId);
                     Handler.SendAsyncRequest(this);
                     return; // We're done!
                 }
@@ -370,7 +371,7 @@ namespace IceInternal
                     // Clear request handler and always retry.
                     if (!Proxy.IceReference.IsFixed)
                     {
-                        Proxy.IceReference.UpdateRequestHandler(Handler, null);
+                        Proxy.IceReference.ClearRequestHandler(Handler);
                     }
                 }
                 catch (Exception ex)

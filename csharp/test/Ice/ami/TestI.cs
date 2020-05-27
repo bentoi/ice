@@ -110,8 +110,14 @@ namespace ZeroC.Ice.ami
             }
         }
 
+        public int set(int value, Current current)
+        {
+            return Interlocked.Exchange(ref _value, value);
+        }
+
         private bool _shutdown;
         private TaskCompletionSource<object?>? _pending = null;
+        private int _value;
     }
 
     public class TestIntf2 : Test.Outer.Inner.ITestIntf

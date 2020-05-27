@@ -120,6 +120,7 @@ namespace ZeroC.Ice.ami
             TestHelper.Assert(communicator != null);
 
             var p = ITestIntfPrx.Parse($"test:{helper.GetTestEndpoint(0)}", communicator);
+            var serialized = ITestIntfPrx.Parse($"serialized:{helper.GetTestEndpoint(1)}", communicator);
 
             TextWriter output = helper.GetWriter();
 
@@ -482,6 +483,44 @@ namespace ZeroC.Ice.ami
             };
             task().Wait();
             output.WriteLine("ok");
+
+            Task.Run(async () =>
+            {
+                if (serialized.GetConnection() == null)
+                {
+                    return; // Serialization not supported with collocation
+                }
+
+                output.Write("testing async serialization... ");
+                output.Flush();
+                try
+                {
+                    int previous = 0;
+                    int expected = 0;
+                    var tasks = new Task<int>[20];
+                    var context = new Dictionary<string, string>();
+                    for (int i = 0; i < 50; ++i)
+                    {
+                        for (int j = 0; j < tasks.Length; ++j)
+                        {
+                            context["value"] = j.ToString(); // This is for debugging
+                            tasks[j] = serialized.setAsync(j, context);
+                        }
+                        for (int j = 0; j < tasks.Length; ++j)
+                        {
+                            previous = await tasks[j].ConfigureAwait(false);
+                            TestHelper.Assert(previous == expected);
+                            expected = j;
+                        }
+                        serialized.GetConnection()!.Close(ConnectionClose.Gracefully);
+                    }
+                    output.WriteLine("ok");
+                }
+                catch (ObjectNotExistException)
+                {
+                    output.WriteLine("not supported");
+                }
+            }).Wait();
 
             if (p.GetConnection() != null)
             {

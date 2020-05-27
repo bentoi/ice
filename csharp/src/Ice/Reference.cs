@@ -1330,7 +1330,7 @@ namespace ZeroC.Ice
             return properties;
         }
 
-        internal void UpdateRequestHandler(IRequestHandler? previous, IRequestHandler? handler)
+        internal void ClearRequestHandler(IRequestHandler? previous)
         {
             Debug.Assert(!IsFixed);
             if (IsConnectionCached && previous != null)
@@ -1338,16 +1338,12 @@ namespace ZeroC.Ice
                 Debug.Assert(_requestHandlerMutex != null);
                 lock (_requestHandlerMutex)
                 {
-                    if (_requestHandler != null && _requestHandler != handler)
+                    //
+                    // Clear the request handler only if "previous" is the same as the current request handler.
+                    //
+                    if (_requestHandler == previous)
                     {
-                        //
-                        // Update the request handler only if "previous" is the same
-                        // as the current request handler. This is called after
-                        // connection binding by the connect request handler. We only
-                        // replace the request handler if the current handler is the
-                        // connect request handler.
-                        //
-                        _requestHandler = _requestHandler.Update(previous, handler);
+                        _requestHandler = null;
                     }
                 }
             }
