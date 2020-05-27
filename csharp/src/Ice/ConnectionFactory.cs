@@ -8,6 +8,7 @@ using ZeroC.Ice.Instrumentation;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace IceInternal
@@ -156,7 +157,7 @@ namespace IceInternal
         }
 
         public async ValueTask<(Connection, bool)> CreateAsync(IReadOnlyList<Endpoint> endpoints, bool hasMore,
-            EndpointSelectionType selType)
+            EndpointSelectionType selType, CancellationToken cancel)
         {
             Debug.Assert(endpoints.Count > 0);
 
@@ -168,6 +169,8 @@ namespace IceInternal
             {
                 return (connection, compress);
             }
+
+            // TODO: refactor to use async/await, cancellation token
             var callback = new CreateConnectionCallback();
             await new ConnectCallback(this, hasMore, callback, selType).GetConnectorsAsync(endpoints);
             return await callback.Task;

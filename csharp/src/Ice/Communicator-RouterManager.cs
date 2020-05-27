@@ -2,9 +2,9 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-using IceInternal;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ZeroC.Ice
@@ -44,7 +44,7 @@ namespace ZeroC.Ice
         // No mutex lock necessary, _router is immutable.
         public IRouterPrx Router { get; }
 
-        public async ValueTask<IReadOnlyList<Endpoint>> GetClientEndpointsAsync()
+        public async ValueTask<IReadOnlyList<Endpoint>> GetClientEndpointsAsync(CancellationToken cancel = default)
         {
             lock (this)
             {
@@ -54,7 +54,8 @@ namespace ZeroC.Ice
                 }
             }
 
-            (IObjectPrx? proxy, bool? hasRoutingTable) = await Router.GetClientProxyAsync().ConfigureAwait(false);
+            (IObjectPrx? proxy, bool? hasRoutingTable) =
+                await Router.GetClientProxyAsync(cancel: cancel).ConfigureAwait(false);
             return SetClientEndpoints(proxy!, hasRoutingTable ?? true);
         }
 
@@ -70,7 +71,7 @@ namespace ZeroC.Ice
             return serverProxy.IceReference.Endpoints;
         }
 
-        public async ValueTask AddProxyAsync(IObjectPrx proxy)
+        public async ValueTask AddProxyAsync(IObjectPrx proxy, CancellationToken cancel)
         {
             Debug.Assert(proxy != null);
             lock (this)
@@ -88,7 +89,8 @@ namespace ZeroC.Ice
                 }
             }
 
-            AddAndEvictProxies(proxy, await Router.AddProxiesAsync(new IObjectPrx[] { proxy }) as IObjectPrx[]);
+            AddAndEvictProxies(proxy,
+                await Router.AddProxiesAsync(new IObjectPrx[] { proxy }, cancel: cancel) as IObjectPrx[]);
         }
 
         public ObjectAdapter? Adapter

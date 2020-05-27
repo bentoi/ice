@@ -12,12 +12,11 @@ using System.Threading.Tasks;
 
 namespace IceInternal
 {
-
     public abstract class Outgoing
     {
         public readonly bool IsOneway;
+        public readonly bool Synchronous;
         protected readonly Communicator Communicator;
-        protected readonly bool Synchronous;
         protected bool IsSent;
         protected IInvocationObserver? Observer;
         protected IChildInvocationObserver? ChildObserver;
@@ -260,15 +259,17 @@ namespace IceInternal
     // correct notified of failures and make sure the retry task is
     // correctly canceled when the invocation completes.
     //
-    public abstract class ProxyOutgoing : Outgoing, ITimerTask
+    public class InvokeOutgoing : Outgoing, ITimerTask
     {
+        public OutgoingRequestFrame RequestFrame { get; protected set; }
+        public IncomingResponseFrame? ResponseFrame { get; protected set; }
+        public override List<ArraySegment<byte>> GetRequestData(int requestId) =>
+            Ice1Definitions.GetRequestData(RequestFrame, requestId);
         protected bool IsIdempotent;
         protected readonly IObjectPrx Proxy;
         protected IRequestHandler? Handler;
         private int _cnt;
-        public abstract void InvokeRemote(Connection connection, bool compress);
-        public abstract void InvokeCollocated(CollocatedRequestHandler handler);
-
+        private readonly TaskCompletionSource<IncomingResponseFrame> _taskCompletionSource;
         public override bool Exception(Exception exc)
         {
             if (ChildObserver != null)
@@ -345,11 +346,14 @@ namespace IceInternal
             }
         }
 
-        protected ProxyOutgoing(IObjectPrx prx, bool oneway, bool synchronous, IProgress<bool>? progress,
-            CancellationToken cancel)
+        public InvokeOutgoing(IObjectPrx prx, OutgoingRequestFrame requestFrame, bool oneway, bool synchronous,
+            IProgress<bool>? progress = null, CancellationToken cancel = default)
             : base(prx.Communicator, oneway, synchronous, progress, cancel)
         {
             Proxy = prx;
+            RequestFrame = requestFrame;
+            IsIdempotent = requestFrame.IsIdempotent;
+            _taskCompletionSource = new TaskCompletionSource<IncomingResponseFrame>();
             _cnt = 0;
         }
 
@@ -362,8 +366,7 @@ namespace IceInternal
                     IsSent = false;
                     Handler =
                         await Proxy.IceReference.GetRequestHandlerAsync(CancellationToken).ConfigureAwait(false);
-                    Console.WriteLine(Thread.CurrentThread.ManagedThreadId);
-                    Handler.SendAsyncRequest(this);
+                    Handler.SendRequestAsync(this);
                     return; // We're done!
                 }
                 catch (RetryException)
@@ -400,6 +403,7 @@ namespace IceInternal
         {
             if (IsOneway)
             {
+                ResponseFrame = new IncomingResponseFrame(Communicator, Ice1Definitions.EmptyResponsePayload);
                 if (Proxy.IceReference.InvocationTimeout != -1)
                 {
                     Communicator.Timer().Cancel(this);
@@ -453,41 +457,9 @@ namespace IceInternal
             }
             return context;
         }
-    }
-
-    //
-    // Class for handling Slice operation invocations
-    //
-    public class InvokeOutgoing : ProxyOutgoing
-    {
-        public OutgoingRequestFrame RequestFrame { get; protected set; }
-        public IncomingResponseFrame? ResponseFrame { get; protected set; }
-        public override List<ArraySegment<byte>> GetRequestData(int requestId) =>
-            Ice1Definitions.GetRequestData(RequestFrame, requestId);
-
-        private readonly TaskCompletionSource<IncomingResponseFrame> _taskCompletionSource;
-
-        public InvokeOutgoing(IObjectPrx prx, OutgoingRequestFrame requestFrame, bool oneway, bool synchronous,
-            IProgress<bool>? progress = null, CancellationToken cancel = default)
-            : base(prx, oneway, synchronous, progress, cancel)
-        {
-            RequestFrame = requestFrame;
-            IsIdempotent = requestFrame.IsIdempotent;
-            _taskCompletionSource = new TaskCompletionSource<IncomingResponseFrame>();
-        }
-
         protected override void SetResult() => _taskCompletionSource.SetResult(ResponseFrame!);
 
         protected override void SetException(Exception ex) => _taskCompletionSource.SetException(ex);
-
-        public override bool Sent()
-        {
-            if (IsOneway)
-            {
-                ResponseFrame = new IncomingResponseFrame(Communicator, Ice1Definitions.EmptyResponsePayload);
-            }
-            return base.Sent();
-        }
 
         public bool Response(IncomingResponseFrame responseFrame)
         {
@@ -538,12 +510,6 @@ namespace IceInternal
                 return Exception(ex);
             }
         }
-
-        public override void InvokeRemote(Connection connection, bool compress) =>
-            connection.SendAsyncRequest(this, compress);
-
-        public override void InvokeCollocated(CollocatedRequestHandler handler) =>
-            handler.InvokeAsyncRequest(this, Synchronous);
 
         internal async ValueTask<IncomingResponseFrame> Invoke()
         {

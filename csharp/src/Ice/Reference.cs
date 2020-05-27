@@ -1062,7 +1062,7 @@ namespace ZeroC.Ice
             }
         }
 
-        internal async ValueTask<IRequestHandler> GetConnectionRequestHandlerAsync()
+        internal async ValueTask<IRequestHandler> GetConnectionRequestHandlerAsync(CancellationToken cancel)
         {
             Debug.Assert(!IsFixed);
 
@@ -1072,7 +1072,7 @@ namespace ZeroC.Ice
             if (RouterInfo != null)
             {
                 // Get the router client endpoints if a router is configured
-                endpoints = await RouterInfo.GetClientEndpointsAsync().ConfigureAwait(false);
+                endpoints = await RouterInfo.GetClientEndpointsAsync(cancel).ConfigureAwait(false);
             }
 
             if (endpoints == null || endpoints.Count == 0)
@@ -1085,7 +1085,7 @@ namespace ZeroC.Ice
                 else if (LocatorInfo != null)
                 {
                     (endpoints, cached) =
-                        await LocatorInfo.GetEndpointsAsync(this, LocatorCacheTimeout).ConfigureAwait(false);
+                        await LocatorInfo.GetEndpointsAsync(this, LocatorCacheTimeout, cancel).ConfigureAwait(false);
                 }
             }
 
@@ -1181,7 +1181,7 @@ namespace ZeroC.Ice
                     // the given endpoints.
                     //
                     (connection, compress) = await factory.CreateAsync(endpoints, false,
-                        EndpointSelection).ConfigureAwait(false);
+                        EndpointSelection, cancel).ConfigureAwait(false);
                 }
                 else
                 {
@@ -1196,7 +1196,7 @@ namespace ZeroC.Ice
                         try
                         {
                             (connection, compress) = await factory.CreateAsync(new Endpoint[] { endpoint },
-                                endpoint != lastEndpoint, EndpointSelection).ConfigureAwait(false);
+                                endpoint != lastEndpoint, EndpointSelection, cancel).ConfigureAwait(false);
                             break;
                         }
                         catch (Exception)
@@ -1212,7 +1212,7 @@ namespace ZeroC.Ice
 
                 if (RouterInfo != null)
                 {
-                    await RouterInfo.AddProxyAsync(IObjectPrx.Factory(this));
+                    await RouterInfo.AddProxyAsync(IObjectPrx.Factory(this), cancel);
 
                     //
                     // Set the object adapter for this router (if any) on the new connection, so that callbacks from
@@ -1240,7 +1240,7 @@ namespace ZeroC.Ice
                         Communicator.Logger.Trace(traceLevels.RetryCat, "connection to cached endpoints failed\n" +
                             $"removing endpoints from cache and trying again\n{ex}");
                     }
-                    return await GetConnectionRequestHandlerAsync();
+                    return await GetConnectionRequestHandlerAsync(cancel);
                 }
                 throw;
             }

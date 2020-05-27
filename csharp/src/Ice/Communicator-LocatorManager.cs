@@ -339,8 +339,10 @@ namespace ZeroC.Ice
             void IGetEndpointsCallback.SetException(Exception ex) => _source.SetException(ex);
         }
 
-        internal async ValueTask<(IReadOnlyList<Endpoint>, bool)> GetEndpointsAsync(Reference reference, int ttl)
+        internal async ValueTask<(IReadOnlyList<Endpoint>, bool)> GetEndpointsAsync(Reference reference, int ttl,
+            CancellationToken cancel)
         {
+            // TODO: support for cancel, refactor to use async/await
             var callback = new GetEndpointsCallback();
             GetEndpoints(reference, null, ttl, callback);
             return await callback.Task.ConfigureAwait(false);

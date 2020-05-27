@@ -11,7 +11,7 @@ namespace ZeroC.Ice
 {
     internal class RetryTask : ITimerTask, ICancellationHandler
     {
-        public RetryTask(Communicator communicator, ProxyOutgoing outAsync)
+        public RetryTask(Communicator communicator, InvokeOutgoing outAsync)
         {
             _communicator = communicator;
             _outAsync = outAsync;
@@ -55,12 +55,12 @@ namespace ZeroC.Ice
         }
 
         private readonly Communicator _communicator;
-        private readonly ProxyOutgoing _outAsync;
+        private readonly InvokeOutgoing _outAsync;
     }
 
     public sealed partial class Communicator
     {
-        internal void AddRetryTask(ProxyOutgoing outAsync, int interval)
+        internal void AddRetryTask(InvokeOutgoing outAsync, int interval)
         {
             lock (this)
             {

@@ -501,6 +501,7 @@ namespace ZeroC.Ice.ami
                     var context = new Dictionary<string, string>();
                     for (int i = 0; i < 50; ++i)
                     {
+                        serialized.GetConnection();
                         for (int j = 0; j < tasks.Length; ++j)
                         {
                             context["value"] = j.ToString(); // This is for debugging

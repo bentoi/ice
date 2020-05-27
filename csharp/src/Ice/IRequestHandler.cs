@@ -11,7 +11,7 @@ namespace IceInternal
 
     public interface IRequestHandler : ICancellationHandler
     {
-        void SendAsyncRequest(ProxyOutgoing outgoing);
+        void SendRequestAsync(InvokeOutgoing outgoing);
 
         ZeroC.Ice.Connection? GetConnection();
     }

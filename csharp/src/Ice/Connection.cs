@@ -563,7 +563,7 @@ namespace ZeroC.Ice
         // TODO: Benoit: SendAsyncRequest needs to be changed to be an awaitable method that returns
         // once the request is sent. The connection code won't have to deal with sent callback anymore,
         // it will be the job of the caller.
-        internal void SendAsyncRequest(Outgoing outgoing, bool compress)
+        internal void SendRequestAsync(Outgoing outgoing, bool compress)
         {
             lock (_mutex)
             {
@@ -1780,7 +1780,7 @@ namespace ZeroC.Ice
             {
                 try
                 {
-                    connection.SendAsyncRequest(this, false);
+                    connection.SendRequestAsync(this, false);
                 }
                 catch (RetryException ex)
                 {

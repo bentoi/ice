@@ -21,11 +21,6 @@ namespace IceInternal
             _requestId = 0;
         }
 
-        public IRequestHandler? Update(IRequestHandler previousHandler, IRequestHandler? newHandler) =>
-            previousHandler == this ? newHandler : this;
-
-        public void SendAsyncRequest(ProxyOutgoing outgoing) => outgoing.InvokeCollocated(this);
-
         public void AsyncRequestCanceled(Outgoing outgoing, Exception ex)
         {
             lock (this)
@@ -65,7 +60,7 @@ namespace IceInternal
 
         public Connection? GetConnection() => null;
 
-        public void InvokeAsyncRequest(InvokeOutgoing outgoing, bool synchronous)
+        public void SendRequestAsync(InvokeOutgoing outgoing)
         {
             //
             // Increase the direct count to prevent the thread pool from being destroyed before
@@ -96,7 +91,8 @@ namespace IceInternal
             }
 
             outgoing.AttachCollocatedObserver(_adapter, requestId, outgoing.RequestFrame.Size);
-            if (_adapter.TaskScheduler != null || !synchronous || outgoing.IsOneway || _reference.InvocationTimeout > 0)
+            if (_adapter.TaskScheduler != null || !outgoing.Synchronous || outgoing.IsOneway ||
+                _reference.InvocationTimeout > 0)
             {
                 // Don't invoke from the user thread if async or invocation timeout is set. We also don't dispatch
                 // oneway from the user thread to match the non-collocated behavior where the oneway synchronous
