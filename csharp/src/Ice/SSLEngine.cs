@@ -2,8 +2,6 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-using ZeroC.Ice;
-
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -12,11 +10,13 @@ using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
+using ZeroC.Ice;
+
 namespace ZeroC.IceSSL
 {
     internal class SSLEngine
     {
-        internal SSLEngine(IceInternal.ITransportPluginFacade facade)
+        internal SSLEngine(ITransportPluginFacade facade)
         {
             _communicator = facade.Communicator;
             _logger = _communicator.Logger;
@@ -794,9 +794,9 @@ namespace ZeroC.IceSSL
             return result;
         }
 
-        private readonly Ice.Communicator _communicator;
-        private readonly Ice.ILogger _logger;
-        private readonly IceInternal.ITransportPluginFacade _facade;
+        private readonly Communicator _communicator;
+        private readonly ILogger _logger;
+        private readonly ITransportPluginFacade _facade;
         private readonly int _securityTraceLevel;
         private readonly string _securityTraceCategory;
         private bool _initialized;

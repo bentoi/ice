@@ -2,7 +2,6 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-using ZeroC.Ice;
 using ZeroC.Ice.Instrumentation;
 using System;
 using System.Collections.Generic;
@@ -10,7 +9,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace IceInternal
+namespace ZeroC.Ice
 {
     public abstract class Outgoing
     {

@@ -2,9 +2,9 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-namespace IceInternal
+namespace ZeroC.Ice
 {
-    public class ConnectionRequestHandler : IRequestHandler
+    internal class ConnectionRequestHandler : IRequestHandler
     {
         public IRequestHandler? Update(IRequestHandler previousHandler, IRequestHandler? newHandler)
         {
@@ -36,15 +36,15 @@ namespace IceInternal
         public void AsyncRequestCanceled(Outgoing outAsync, System.Exception ex) =>
             _connection.AsyncRequestCanceled(outAsync, ex);
 
-        public ZeroC.Ice.Connection GetConnection() => _connection;
+        public Connection GetConnection() => _connection;
 
-        public ConnectionRequestHandler(ZeroC.Ice.Connection connection, bool compress)
+        public ConnectionRequestHandler(Connection connection, bool compress)
         {
             _connection = connection;
             _compress = compress;
         }
 
-        private readonly ZeroC.Ice.Connection _connection;
+        private readonly Connection _connection;
         private readonly bool _compress;
     }
 }

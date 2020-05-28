@@ -276,7 +276,7 @@ namespace ZeroC.Ice
                 //
                 try
                 {
-                    args = IceUtilInternal.Options.Split(pluginSpec);
+                    args = Options.Split(pluginSpec);
                 }
                 catch (FormatException ex)
                 {
@@ -399,7 +399,7 @@ namespace ZeroC.Ice
                     throw new LoadException($"error loading plug-in `{entryPoint}'", ex);
                 }
             }
-
+            Debug.Assert(pluginFactory != null);
             _plugins.Add((name, pluginFactory.Create(this, name, args)));
         }
 

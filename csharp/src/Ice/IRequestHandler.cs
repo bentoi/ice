@@ -2,7 +2,7 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-namespace IceInternal
+namespace ZeroC.Ice
 {
     public interface ICancellationHandler
     {
@@ -13,6 +13,6 @@ namespace IceInternal
     {
         void SendRequestAsync(InvokeOutgoing outgoing);
 
-        ZeroC.Ice.Connection? GetConnection();
+        Connection? GetConnection();
     }
 }
