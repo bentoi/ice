@@ -8,6 +8,8 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
+using ZeroC.Ice.Instrumentation;
+
 namespace ZeroC.Ice
 {
     /// <summary>Proxy provides extension methods for IObjectPrx</summary>
@@ -273,7 +275,7 @@ namespace ZeroC.Ice
         {
             try
             {
-                var handler = prx.IceReference.GetRequestHandlerAsync(default).Result as ConnectionRequestHandler;
+                var handler = prx.IceReference.GetRequestHandlerAsync().Result as ConnectionRequestHandler;
                 return handler?.GetConnection();
             }
             catch (AggregateException ex)
@@ -291,7 +293,8 @@ namespace ZeroC.Ice
         public static async ValueTask<Connection?> GetConnectionAsync(this IObjectPrx prx,
                                                                       CancellationToken cancel = new CancellationToken())
         {
-            ValueTask<IRequestHandler> task = prx.IceReference.GetRequestHandlerAsync(cancel);
+            ValueTask<IRequestHandler> task =
+                prx.IceReference.GetRequestHandlerAsync().WaitWithTimeoutAsync(prx.IceReference.InvocationTimeout, cancel);
             IRequestHandler handler = await task.ConfigureAwait(false);
             return (handler as ConnectionRequestHandler)?.GetConnection();
         }
@@ -317,8 +320,7 @@ namespace ZeroC.Ice
         {
             try
             {
-                var outgoing = new InvokeOutgoing(proxy, request, oneway: oneway, synchronous: true);
-                return outgoing.Invoke().Result;
+                return InvokeAsync(proxy, request, oneway, synchronous: true).Result;
             }
             catch (AggregateException ex)
             {
@@ -337,15 +339,12 @@ namespace ZeroC.Ice
         /// <param name="progress">Sent progress provider.</param>
         /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
         /// <returns>A task holding the response frame.</returns>
-        public static async ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
-                                                                         OutgoingRequestFrame request,
-                                                                         bool oneway = false,
-                                                                         IProgress<bool>? progress = null,
-                                                                         CancellationToken cancel = default)
-        {
-            var outgoing = new InvokeOutgoing(proxy, request, oneway: oneway, synchronous: false, progress, cancel);
-            return await outgoing.Invoke().ConfigureAwait(false);
-        }
+        public static ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
+                                                                   OutgoingRequestFrame request,
+                                                                   bool oneway = false,
+                                                                   IProgress<bool>? progress = null,
+                                                                   CancellationToken cancel = default)
+            => InvokeAsync(proxy, request, oneway, synchronous: false, progress, cancel);
 
         /// <summary>Forwards an incoming request to another Ice object.</summary>
         /// <param name="proxy">The proxy for the target Ice object.</param>
@@ -367,6 +366,175 @@ namespace ZeroC.Ice
                 await proxy.InvokeAsync(forwardedRequest, oneway: oneway, progress, cancel)
                     .ConfigureAwait(false);
             return new OutgoingResponseFrame(request.Encoding, response.Payload);
+        }
+
+        private static async ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
+                                                                         OutgoingRequestFrame request,
+                                                                         bool oneway,
+                                                                         bool synchronous,
+                                                                         IProgress<bool>? progress = null,
+                                                                         CancellationToken cancel = default)
+        {
+            Reference reference = proxy.IceReference;
+
+            InvocationMode mode = reference.InvocationMode;
+            if (mode == InvocationMode.BatchOneway || mode == InvocationMode.BatchDatagram)
+            {
+                Debug.Assert(false); // not implemented
+                return null;
+            }
+
+            if (mode == InvocationMode.Datagram && !oneway)
+            {
+                throw new InvalidOperationException("cannot make two-way call on a datagram proxy");
+            }
+
+            IReadOnlyDictionary<string, string>? context = request.Context ?? reference.CurrentContext();
+            IInvocationObserver? observer = ObserverHelper.GetInvocationObserver(proxy, request.Operation, context);
+            int retryCount = 0;
+            try
+            {
+                long deadline = 0;
+                if (reference.InvocationTimeout > 0)
+                {
+                    deadline = Time.CurrentMonotonicTimeMillis() + reference.InvocationTimeout;
+                }
+
+                while (true)
+                {
+                    IRequestHandler? handler = null;
+                    bool sent = false;
+                    try
+                    {
+                        handler = await reference.GetRequestHandlerAsync().WaitUntilDeadlineAsync(deadline,
+                            cancel).ConfigureAwait(false);
+
+                        Task<IncomingResponseFrame>? responseTask = await handler!.SendRequestAsync(request, oneway,
+                            synchronous, observer).WaitUntilDeadlineAsync(deadline, cancel).ConfigureAwait(false);
+
+                        sent = true;
+                        if (progress != null)
+                        {
+                            _ = Task.Run(() => progress.Report(false));
+                        }
+
+                        Debug.Assert((oneway && responseTask == null) || (!oneway && responseTask != null));
+
+                        if (responseTask != null)
+                        {
+                            IncomingResponseFrame response =
+                                await responseTask.WaitUntilDeadlineAsync(deadline, cancel).ConfigureAwait(false);
+                            switch (response.ReplyStatus)
+                            {
+                                case ReplyStatus.OK:
+                                {
+                                    break;
+                                }
+                                case ReplyStatus.UserException:
+                                {
+                                    observer?.RemoteException();
+                                    break;
+                                }
+                                case ReplyStatus.ObjectNotExistException:
+                                case ReplyStatus.FacetNotExistException:
+                                case ReplyStatus.OperationNotExistException:
+                                {
+                                    throw response.ReadDispatchException();
+                                }
+                                case ReplyStatus.UnknownException:
+                                case ReplyStatus.UnknownLocalException:
+                                case ReplyStatus.UnknownUserException:
+                                {
+                                    throw response.ReadUnhandledException();
+                                }
+                            }
+                            return response;
+                        }
+                        else
+                        {
+                            return new IncomingResponseFrame(proxy.Communicator, Ice1Definitions.EmptyResponsePayload);
+                        }
+                    }
+                    catch (RetryException)
+                    {
+                        reference.ClearRequestHandler(handler);
+                    }
+                    catch (Exception ex)
+                    {
+                        reference.ClearRequestHandler(handler); // Clear the request handler
+
+                        // We only retry after failing with a DispatchException or a local exception.
+                        //
+                        // A ConnectionClosedByPeerException indicates graceful server shutdown, and is therefore always repeatable
+                        // without violating "at-most-once". That's because by sending a close connection message, the server
+                        // guarantees that all outstanding requests can safely be repeated.
+                        //
+                        // An ObjectNotExistException can always be retried as well without violating "at-most-once" (see the
+                        // implementation of the checkRetryAfterException method of the ProxyFactory class for the reasons why it
+                        // can be useful).
+                        //
+                        // If the request was not sent or the operation is idempotent it can also always be retried if the retry
+                        // count isn't reached.
+                        //
+                        // TODO: revisit retry logic
+                        if (ex is ObjectNotExistException || ex is ConnectionClosedByPeerException || !sent ||
+                            request.IsIdempotent)
+                        {
+                            try
+                            {
+                                int interval = reference.CheckRetryAfterException(ex, ref retryCount);
+                                if (interval > 0)
+                                {
+                                    // TODO: Cancel if the communicator is destroyed
+                                    await Task.Delay(interval).WaitUntilDeadlineAsync(deadline,
+                                        cancel).ConfigureAwait(false);
+                                }
+                            }
+                            catch (CommunicatorDestroyedException)
+                            {
+                                throw; // The communicator is already destroyed, so we cannot retry.
+                            }
+                        }
+                        else
+                        {
+                            throw; // Retry could break at-most-once semantics, don't retry.
+                        }
+                        observer?.Retried();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                observer?.Failed(ex.GetType().FullName ?? "System.Exception");
+                throw;
+            }
+            finally
+            {
+                // Use IDisposable for observers, this will allow using "using".
+                observer?.Detach();
+            }
+
+            // static async ValueTask AwaitWithTimeout(Task task, long timeoutTime)
+            // {
+            //     if (timeout < 0 || task.IsCompleted)
+            //     {
+            //         await task.ConfigureAwait(false);
+            //     }
+            //     else
+            //     {
+            //         var cancelTimeout = new CancellationTokenSource();
+            //         if (await Task.WhenAny(Task.Delay(timeout, cancelTimeout.Token), task).ConfigureAwait(false) ==
+            //             task)
+            //         {
+            //             cancelTimeout.Cancel();
+            //             await task.ConfigureAwait(false); // Unwrap the exception if it failed
+            //         }
+            //         else
+            //         {
+            //             throw new ConnectTimeoutException();
+            //         }
+            //     }
+            // }
         }
     }
 }

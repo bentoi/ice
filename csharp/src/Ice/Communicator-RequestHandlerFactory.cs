@@ -2,7 +2,6 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-using IceInternal;
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -14,9 +13,9 @@ namespace ZeroC.Ice
 {
     public sealed partial class Communicator
     {
-        private readonly Dictionary<Reference, Task<IRequestHandler>> _pendingConnects =
-            new Dictionary<Reference, Task<IRequestHandler>>();
-        internal async ValueTask<IRequestHandler> GetRequestHandlerAsync(Reference reference, CancellationToken cancel)
+        // private readonly Dictionary<Reference, Task<IRequestHandler>> _pendingConnects =
+        //     new Dictionary<Reference, Task<IRequestHandler>>();
+        internal async ValueTask<IRequestHandler> GetRequestHandlerAsync(Reference reference)
         {
             if (reference.IsCollocationOptimized)
             {
@@ -94,7 +93,7 @@ namespace ZeroC.Ice
             // {
             //     return await reference.GetConnectionRequestHandlerAsync().ConfigureAwait(false);
             // }
-            return await reference.GetConnectionRequestHandlerAsync(cancel).ConfigureAwait(false);
+            return await reference.GetConnectionRequestHandlerAsync().ConfigureAwait(false);
 
             // static async Task<IRequestHandler> ChainAsync(Task<IRequestHandler> task) =>
             //     await task.ConfigureAwait(false);

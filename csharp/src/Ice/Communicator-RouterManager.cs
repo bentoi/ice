@@ -44,7 +44,7 @@ namespace ZeroC.Ice
         // No mutex lock necessary, _router is immutable.
         public IRouterPrx Router { get; }
 
-        public async ValueTask<IReadOnlyList<Endpoint>> GetClientEndpointsAsync(CancellationToken cancel = default)
+        public async ValueTask<IReadOnlyList<Endpoint>> GetClientEndpointsAsync()
         {
             lock (this)
             {
@@ -54,8 +54,7 @@ namespace ZeroC.Ice
                 }
             }
 
-            (IObjectPrx? proxy, bool? hasRoutingTable) =
-                await Router.GetClientProxyAsync(cancel: cancel).ConfigureAwait(false);
+            (IObjectPrx? proxy, bool? hasRoutingTable) = await Router.GetClientProxyAsync().ConfigureAwait(false);
             return SetClientEndpoints(proxy!, hasRoutingTable ?? true);
         }
 
@@ -71,7 +70,7 @@ namespace ZeroC.Ice
             return serverProxy.IceReference.Endpoints;
         }
 
-        public async ValueTask AddProxyAsync(IObjectPrx proxy, CancellationToken cancel)
+        public async ValueTask AddProxyAsync(IObjectPrx proxy)
         {
             Debug.Assert(proxy != null);
             lock (this)
@@ -89,8 +88,7 @@ namespace ZeroC.Ice
                 }
             }
 
-            AddAndEvictProxies(proxy,
-                await Router.AddProxiesAsync(new IObjectPrx[] { proxy }, cancel: cancel) as IObjectPrx[]);
+            AddAndEvictProxies(proxy, await Router.AddProxiesAsync(new IObjectPrx[] { proxy }) as IObjectPrx[]);
         }
 
         public ObjectAdapter? Adapter

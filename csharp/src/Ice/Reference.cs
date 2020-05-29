@@ -771,6 +771,144 @@ namespace ZeroC.Ice
         {
         }
 
+        internal int CheckRetryAfterException(System.Exception ex, ref int cnt)
+        {
+            if (InvocationMode == InvocationMode.BatchOneway || InvocationMode == InvocationMode.BatchDatagram)
+            {
+                Debug.Assert(false); // batch no longer implemented anyway
+                throw ex;
+            }
+
+            //
+            // If it's a fixed proxy, retrying isn't useful as the proxy is tied to
+            // the connection and the request will fail with the exception.
+            //
+            if (IsFixed)
+            {
+                throw ex;
+            }
+
+            if (ex is ObjectNotExistException one)
+            {
+                RouterInfo? ri = RouterInfo;
+                if (ri != null && one.Operation.Equals("ice_add_proxy"))
+                {
+                    //
+                    // If we have a router, an ObjectNotExistException with an
+                    // operation name "ice_add_proxy" indicates to the client
+                    // that the router isn't aware of the proxy (for example,
+                    // because it was evicted by the router). In this case, we
+                    // must *always* retry, so that the missing proxy is added
+                    // to the router.
+                    //
+
+                    ri.ClearCache(this);
+
+                    if (Communicator.TraceLevels.Retry >= 1)
+                    {
+                        Communicator.Logger.Trace(Communicator.TraceLevels.RetryCat,
+                            $"retrying operation call to add proxy to router\n {ex}");
+                    }
+                    return 0; // We must always retry, so we don't look at the retry count.
+                }
+                else if (IsIndirect)
+                {
+                    //
+                    // We retry ObjectNotExistException if the reference is
+                    // indirect.
+                    //
+
+                    if (IsWellKnown)
+                    {
+                        LocatorInfo?.ClearCache(this);
+                    }
+                }
+                else
+                {
+                    //
+                    // For all other cases, we don't retry ObjectNotExistException.
+                    //
+                    throw ex;
+                }
+            }
+
+            //
+            // Don't retry if the communicator is destroyed, object adapter is deactivated,
+            // or connection is manually closed.
+            //
+            if (ex is CommunicatorDestroyedException ||
+                ex is ObjectAdapterDeactivatedException ||
+                ex is ConnectionClosedLocallyException)
+            {
+                throw ex;
+            }
+
+            //
+            // Don't retry on timeout and operation canceled exceptions.
+            //
+            if (ex is TimeoutException || ex is OperationCanceledException)
+            {
+                throw ex;
+            }
+
+            ++cnt;
+            Debug.Assert(cnt > 0);
+
+            int interval;
+            if (cnt == (Communicator.RetryIntervals.Length + 1) && ex is ConnectionClosedByPeerException)
+            {
+                //
+                // A connection closed exception is always retried at least once, even if the retry
+                // limit is reached.
+                //
+                interval = 0;
+            }
+            else if (cnt > Communicator.RetryIntervals.Length)
+            {
+                if (Communicator.TraceLevels.Retry >= 1)
+                {
+                    Communicator.Logger.Trace(Communicator.TraceLevels.RetryCat,
+                        $"cannot retry operation call because retry limit has been exceeded\n{ex}");
+                }
+                throw ex;
+            }
+            else
+            {
+                interval = Communicator.RetryIntervals[cnt - 1];
+            }
+
+            if (Communicator.TraceLevels.Retry >= 1)
+            {
+                string s = "retrying operation call";
+                if (interval > 0)
+                {
+                    s += " in " + interval + "ms";
+                }
+                s += $" because of exception\n{ex}";
+                Communicator.Logger.Trace(Communicator.TraceLevels.RetryCat, s);
+            }
+
+            return interval;
+        }
+
+        internal void ClearRequestHandler(IRequestHandler? previous)
+        {
+            if (!IsFixed && IsConnectionCached && previous != null)
+            {
+                Debug.Assert(_requestHandlerMutex != null);
+                lock (_requestHandlerMutex)
+                {
+                    //
+                    // Clear the request handler only if "previous" is the same as the current request handler.
+                    //
+                    if (_requestHandler == previous)
+                    {
+                        _requestHandler = null;
+                    }
+                }
+            }
+        }
+
         internal Reference Clone(string? adapterId = null,
                                  bool? cacheConnection = null,
                                  bool clearLocator = false,
@@ -1032,6 +1170,30 @@ namespace ZeroC.Ice
             }
         }
 
+        internal IReadOnlyDictionary<string, string> CurrentContext()
+        {
+            IReadOnlyDictionary<string, string> context;
+
+            if (Context.Count == 0)
+            {
+                context = Communicator.CurrentContext;
+            }
+            else if (Communicator.CurrentContext.Count == 0)
+            {
+                context = Context;
+            }
+            else
+            {
+                var combinedContext = new Dictionary<string, string>(Communicator.CurrentContext);
+                foreach ((string key, string value) in Context)
+                {
+                    combinedContext[key] = value;  // the proxy Context entry prevails.
+                }
+                context = combinedContext;
+            }
+            return context;
+        }
+
         internal Connection? GetCachedConnection()
         {
             if (IsFixed)
@@ -1060,7 +1222,7 @@ namespace ZeroC.Ice
             }
         }
 
-        internal async ValueTask<IRequestHandler> GetConnectionRequestHandlerAsync(CancellationToken cancel)
+        internal async ValueTask<IRequestHandler> GetConnectionRequestHandlerAsync()
         {
             Debug.Assert(!IsFixed);
 
@@ -1070,7 +1232,7 @@ namespace ZeroC.Ice
             if (RouterInfo != null)
             {
                 // Get the router client endpoints if a router is configured
-                endpoints = await RouterInfo.GetClientEndpointsAsync(cancel).ConfigureAwait(false);
+                endpoints = await RouterInfo.GetClientEndpointsAsync().ConfigureAwait(false);
             }
 
             if (endpoints == null || endpoints.Count == 0)
@@ -1083,7 +1245,7 @@ namespace ZeroC.Ice
                 else if (LocatorInfo != null)
                 {
                     (endpoints, cached) =
-                        await LocatorInfo.GetEndpointsAsync(this, LocatorCacheTimeout, cancel).ConfigureAwait(false);
+                        await LocatorInfo.GetEndpointsAsync(this, LocatorCacheTimeout).ConfigureAwait(false);
                 }
             }
 
@@ -1179,7 +1341,7 @@ namespace ZeroC.Ice
                     // the given endpoints.
                     //
                     (connection, compress) = await factory.CreateAsync(endpoints, false,
-                        EndpointSelection, cancel).ConfigureAwait(false);
+                        EndpointSelection).ConfigureAwait(false);
                 }
                 else
                 {
@@ -1194,7 +1356,7 @@ namespace ZeroC.Ice
                         try
                         {
                             (connection, compress) = await factory.CreateAsync(new Endpoint[] { endpoint },
-                                endpoint != lastEndpoint, EndpointSelection, cancel).ConfigureAwait(false);
+                                endpoint != lastEndpoint, EndpointSelection).ConfigureAwait(false);
                             break;
                         }
                         catch (Exception)
@@ -1210,7 +1372,7 @@ namespace ZeroC.Ice
 
                 if (RouterInfo != null)
                 {
-                    await RouterInfo.AddProxyAsync(IObjectPrx.Factory(this), cancel);
+                    await RouterInfo.AddProxyAsync(IObjectPrx.Factory(this));
 
                     //
                     // Set the object adapter for this router (if any) on the new connection, so that callbacks from
@@ -1238,13 +1400,13 @@ namespace ZeroC.Ice
                         Communicator.Logger.Trace(traceLevels.RetryCat, "connection to cached endpoints failed\n" +
                             $"removing endpoints from cache and trying again\n{ex}");
                     }
-                    return await GetConnectionRequestHandlerAsync(cancel);
+                    return await GetConnectionRequestHandlerAsync();
                 }
                 throw;
             }
         }
 
-        internal async ValueTask<IRequestHandler> GetRequestHandlerAsync(CancellationToken cancel)
+        internal async ValueTask<IRequestHandler> GetRequestHandlerAsync()
         {
             if (IsFixed)
             {
@@ -1264,7 +1426,7 @@ namespace ZeroC.Ice
                     }
                 }
 
-                IRequestHandler handler = await Communicator.GetRequestHandlerAsync(this, cancel);
+                IRequestHandler handler = await Communicator.GetRequestHandlerAsync(this);
 
                 if (IsConnectionCached)
                 {
@@ -1326,25 +1488,6 @@ namespace ZeroC.Ice
             }
 
             return properties;
-        }
-
-        internal void ClearRequestHandler(IRequestHandler? previous)
-        {
-            Debug.Assert(!IsFixed);
-            if (IsConnectionCached && previous != null)
-            {
-                Debug.Assert(_requestHandlerMutex != null);
-                lock (_requestHandlerMutex)
-                {
-                    //
-                    // Clear the request handler only if "previous" is the same as the current request handler.
-                    //
-                    if (_requestHandler == previous)
-                    {
-                        _requestHandler = null;
-                    }
-                }
-            }
         }
 
         // Marshal the reference.

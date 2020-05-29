@@ -2,11 +2,13 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-using ZeroC.Ice.Instrumentation;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
+
+using ZeroC.Ice.Instrumentation;
 
 namespace ZeroC.Ice
 {
@@ -20,46 +22,10 @@ namespace ZeroC.Ice
             _requestId = 0;
         }
 
-        public void AsyncRequestCanceled(Outgoing outgoing, Exception ex)
-        {
-            lock (this)
-            {
-                if (_sendAsyncRequests.TryGetValue(outgoing, out int requestId))
-                {
-                    if (requestId > 0)
-                    {
-                        _requests.Remove(requestId);
-                    }
-                    _sendAsyncRequests.Remove(outgoing);
-                    if (outgoing.Exception(ex))
-                    {
-                        Task.Run(outgoing.InvokeException);
-                    }
-                    _adapter.DecDirectCount(); // invokeAll won't be called, decrease the direct count.
-                    return;
-                }
-                if (outgoing is InvokeOutgoing o)
-                {
-                    Debug.Assert(o != null);
-                    foreach (KeyValuePair<int, InvokeOutgoing> e in _requests)
-                    {
-                        if (e.Value == o)
-                        {
-                            _requests.Remove(e.Key);
-                            if (outgoing.Exception(ex))
-                            {
-                                Task.Run(outgoing.InvokeException);
-                            }
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
         public Connection? GetConnection() => null;
 
-        public void SendRequestAsync(InvokeOutgoing outgoing)
+        public async ValueTask<Task<IncomingResponseFrame>?> SendRequestAsync(OutgoingRequestFrame outgoingRequestFrame,
+            bool oneway, bool synchronous, IInvocationObserver? observer)
         {
             //
             // Increase the direct count to prevent the thread pool from being destroyed before
@@ -67,76 +33,71 @@ namespace ZeroC.Ice
             //
             _adapter.IncDirectCount();
 
+            IChildInvocationObserver? childObserver = null;
             int requestId = 0;
-            try
+            lock (this)
             {
-                lock (this)
+                if (!oneway)
                 {
-                    outgoing.Cancelable(this); // This will throw if the request is canceled
+                    requestId = ++_requestId;
+                }
 
-                    if (!outgoing.IsOneway)
-                    {
-                        requestId = ++_requestId;
-                        _requests.Add(requestId, outgoing);
-                    }
+                if (observer != null)
+                {
+                    childObserver = observer.GetCollocatedObserver(_adapter, requestId, outgoingRequestFrame.Size);
+                    childObserver?.Attach();
+                }
 
-                    _sendAsyncRequests.Add(outgoing, requestId);
+                if (_adapter.Communicator.TraceLevels.Protocol >= 1)
+                {
+                    ProtocolTrace.TraceCollocatedFrame(_adapter.Communicator,
+                        (byte)Ice1Definitions.FrameType.Request, requestId, outgoingRequestFrame);
                 }
             }
-            catch (Exception)
-            {
-                _adapter.DecDirectCount();
-                throw;
-            }
 
-            outgoing.AttachCollocatedObserver(_adapter, requestId, outgoing.RequestFrame.Size);
-            if (_adapter.TaskScheduler != null || !outgoing.Synchronous || outgoing.IsOneway ||
-                _reference.InvocationTimeout > 0)
+            Task<IncomingResponseFrame> task;
+            if (_adapter.TaskScheduler != null || !synchronous || oneway || _reference.InvocationTimeout > 0)
             {
                 // Don't invoke from the user thread if async or invocation timeout is set. We also don't dispatch
                 // oneway from the user thread to match the non-collocated behavior where the oneway synchronous
                 // request returns as soon as it's sent over the transport.
-                Task.Factory.StartNew(
-                    () =>
-                    {
-                        if (SentAsync(outgoing))
-                        {
-                            ValueTask vt = InvokeAllAsync(outgoing.RequestFrame, requestId);
-                            // TODO: do something with the value task
-                        }
-                    }, default, TaskCreationOptions.None, _adapter.TaskScheduler ?? TaskScheduler.Default);
+                task = await Task.Factory.StartNew(async () => await InvokeAllAsync(outgoingRequestFrame, requestId),
+                    default, TaskCreationOptions.None, _adapter.TaskScheduler ?? TaskScheduler.Default);
+
+                if (oneway)
+                {
+                    return null;
+                }
             }
             else // Optimization: directly call invokeAll
             {
-                if (SentAsync(outgoing))
-                {
-                    Debug.Assert(outgoing.RequestFrame != null);
-                    ValueTask vt = InvokeAllAsync(outgoing.RequestFrame, requestId);
-                    // TODO: do something with the value task
-                }
+                task = InvokeAllAsync(outgoingRequestFrame, requestId).AsTask();
             }
-        }
+            return WaitForResponseAsync(task, childObserver);
 
-        private bool SentAsync(Outgoing outgoing)
-        {
-            lock (this)
+            static async Task<IncomingResponseFrame> WaitForResponseAsync(Task<IncomingResponseFrame> task,
+                IChildInvocationObserver? observer)
             {
-                if (!_sendAsyncRequests.Remove(outgoing))
+                try
                 {
-                    return false; // The request timed-out.
+                    IncomingResponseFrame incomingResponseFrame = await task.ConfigureAwait(false);
+                    observer?.Reply(incomingResponseFrame.Size);
+                    return incomingResponseFrame;
                 }
-
-                if (!outgoing.Sent())
+                catch (Exception ex)
                 {
-                    return true;
+                    observer?.Failed(ex.GetType().FullName ?? "System.Exception");
+                    throw;
+                }
+                finally
+                {
+                    observer?.Detach();
                 }
             }
-            // The progress callback is always called from the default task scheduler
-            Task.Run(outgoing.InvokeSent);
-            return true;
         }
 
-        private async ValueTask InvokeAllAsync(OutgoingRequestFrame outgoingRequest, int requestId)
+        private async ValueTask<IncomingResponseFrame> InvokeAllAsync(OutgoingRequestFrame outgoingRequest,
+            int requestId)
         {
             // The object adapter DirectCount was incremented by the caller and we are responsible to decrement it
             // upon completion.
@@ -144,15 +105,6 @@ namespace ZeroC.Ice
             IDispatchObserver? dispatchObserver = null;
             try
             {
-                if (_adapter.Communicator.TraceLevels.Protocol >= 1)
-                {
-                    ProtocolTrace.TraceCollocatedFrame(
-                        _adapter.Communicator,
-                        (byte)Ice1Definitions.FrameType.Request,
-                        requestId,
-                        outgoingRequest);
-                }
-
                 var incomingRequest = new IncomingRequestFrame(_adapter.Communicator, outgoingRequest);
                 var current = new Current(_adapter, incomingRequest, requestId);
 
@@ -164,6 +116,7 @@ namespace ZeroC.Ice
                     dispatchObserver?.Attach();
                 }
 
+                OutgoingResponseFrame? outgoingResponseFrame = null;
                 try
                 {
                     IObject? servant = current.Adapter.Find(current.Identity, current.Facet);
@@ -176,9 +129,8 @@ namespace ZeroC.Ice
                     ValueTask<OutgoingResponseFrame> vt = servant.DispatchAsync(incomingRequest, current);
                     if (requestId != 0)
                     {
-                        OutgoingResponseFrame response = await vt.ConfigureAwait(false);
-                        dispatchObserver?.Reply(response.Size);
-                        SendResponse(requestId, response);
+                        outgoingResponseFrame = await vt.ConfigureAwait(false);
+                        dispatchObserver?.Reply(outgoingResponseFrame.Size);
                     }
                 }
                 catch (Exception ex)
@@ -196,15 +148,31 @@ namespace ZeroC.Ice
                         }
 
                         Incoming.ReportException(actualEx, dispatchObserver, current);
-                        var response = new OutgoingResponseFrame(current, actualEx);
-                        dispatchObserver?.Reply(response.Size);
-                        SendResponse(requestId, response);
+                        outgoingResponseFrame = new OutgoingResponseFrame(current, actualEx);
+                        dispatchObserver?.Reply(outgoingResponseFrame.Size);
                     }
+                }
+
+                if (outgoingResponseFrame != null)
+                {
+                    var incomingResponseFrame = new IncomingResponseFrame(_adapter.Communicator,
+                        VectoredBufferExtensions.ToArray(outgoingResponseFrame!.Data));
+                    if (_adapter.Communicator.TraceLevels.Protocol >= 1)
+                    {
+                        ProtocolTrace.TraceCollocatedFrame(_adapter.Communicator, (byte)Ice1Definitions.FrameType.Reply,
+                            requestId, incomingResponseFrame);
+                    }
+                    return incomingResponseFrame;
+                }
+                else
+                {
+                    return null;
                 }
             }
             catch (Exception ex)
             {
-                HandleException(requestId, ex);
+                // TODO
+                throw;
             }
             finally
             {
@@ -213,68 +181,8 @@ namespace ZeroC.Ice
             }
         }
 
-        private void SendResponse(int requestId, OutgoingResponseFrame outgoingResponseFrame)
-        {
-            InvokeOutgoing? outgoing;
-            lock (this)
-            {
-                var incomingResponseFrame = new IncomingResponseFrame(
-                    _adapter.Communicator,
-                    VectoredBufferExtensions.ToArray(outgoingResponseFrame.Data));
-                if (_adapter.Communicator.TraceLevels.Protocol >= 1)
-                {
-                    ProtocolTrace.TraceCollocatedFrame(
-                        _adapter.Communicator,
-                        (byte)Ice1Definitions.FrameType.Reply,
-                        requestId,
-                        incomingResponseFrame);
-                }
-                if (_requests.TryGetValue(requestId, out outgoing))
-                {
-                    if (!outgoing.Response(incomingResponseFrame))
-                    {
-                        outgoing = null;
-                    }
-                    _requests.Remove(requestId);
-                }
-            }
-
-            if (outgoing != null)
-            {
-                outgoing.InvokeResponse();
-            }
-        }
-
-        private void HandleException(int requestId, Exception ex)
-        {
-            if (requestId == 0)
-            {
-                return; // Ignore exception for oneway messages.
-            }
-
-            InvokeOutgoing? outgoing;
-            lock (this)
-            {
-                if (_requests.TryGetValue(requestId, out outgoing))
-                {
-                    if (!outgoing.Exception(ex))
-                    {
-                        outgoing = null;
-                    }
-                    _requests.Remove(requestId);
-                }
-            }
-
-            if (outgoing != null)
-            {
-                outgoing.InvokeException();
-            }
-        }
-
         private readonly Reference _reference;
         private readonly ObjectAdapter _adapter;
         private int _requestId;
-        private readonly Dictionary<Outgoing, int> _sendAsyncRequests = new Dictionary<Outgoing, int>();
-        private readonly Dictionary<int, InvokeOutgoing> _requests = new Dictionary<int, InvokeOutgoing>();
     }
 }

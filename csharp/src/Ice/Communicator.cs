@@ -150,6 +150,7 @@ namespace ZeroC.Ice
         internal INetworkProxy? NetworkProxy { get; }
         internal bool PreferIPv6 { get; }
         internal int IPVersion { get; }
+        internal int[] RetryIntervals { get; }
         internal ACMConfig ServerACM { get; }
         internal TraceLevels TraceLevels { get; private set; }
 
@@ -197,7 +198,6 @@ namespace ZeroC.Ice
         private readonly ConcurrentDictionary<string, IRemoteExceptionFactory?> _remoteExceptionFactoryCache =
             new ConcurrentDictionary<string, IRemoteExceptionFactory?>();
         private readonly string[] _remoteExceptionFactoryNamespaces;
-        private readonly int[] _retryIntervals;
         private readonly Dictionary<EndpointType, BufSizeWarnInfo> _setBufSizeWarn =
             new Dictionary<EndpointType, BufSizeWarnInfo>();
         private int _state;
@@ -529,11 +529,11 @@ namespace ZeroC.Ice
 
                 if (arr == null)
                 {
-                    _retryIntervals = new int[] { 0 };
+                    RetryIntervals = new int[] { 0 };
                 }
                 else
                 {
-                    _retryIntervals = new int[arr.Length];
+                    RetryIntervals = new int[arr.Length];
                     for (int i = 0; i < arr.Length; i++)
                     {
                         int v = int.Parse(arr[i], CultureInfo.InvariantCulture);
@@ -542,11 +542,11 @@ namespace ZeroC.Ice
                         //
                         if (i == 0 && v == -1)
                         {
-                            _retryIntervals = Array.Empty<int>();
+                            RetryIntervals = Array.Empty<int>();
                             break;
                         }
 
-                        _retryIntervals[i] = v > 0 ? v : 0;
+                        RetryIntervals[i] = v > 0 ? v : 0;
                     }
                 }
 
@@ -905,8 +905,6 @@ namespace ZeroC.Ice
 
             _outgoingConnectionFactory?.WaitUntilFinished();
 
-            DestroyRetryQueue(); // Must be called before destroying thread pools.
-
             Observer?.SetObserverUpdater(null);
 
             if (Logger is ILoggerAdminLogger)
@@ -1177,128 +1175,6 @@ namespace ZeroC.Ice
         {
             _typeToEndpointFactory.Add(factory.Type(), factory);
             _transportToEndpointFactory.Add(factory.Transport(), factory);
-        }
-
-        internal int CheckRetryAfterException(System.Exception ex, Reference reference, ref int cnt)
-        {
-            ILogger logger = Logger;
-
-            if (reference.InvocationMode == InvocationMode.BatchOneway ||
-                reference.InvocationMode == InvocationMode.BatchDatagram)
-            {
-                Debug.Assert(false); // batch no longer implemented anyway
-                throw ex;
-            }
-
-            //
-            // If it's a fixed proxy, retrying isn't useful as the proxy is tied to
-            // the connection and the request will fail with the exception.
-            //
-            if (reference.IsFixed)
-            {
-                throw ex;
-            }
-
-            if (ex is ObjectNotExistException one)
-            {
-                RouterInfo? ri = reference.RouterInfo;
-                if (ri != null && one.Operation.Equals("ice_add_proxy"))
-                {
-                    //
-                    // If we have a router, an ObjectNotExistException with an
-                    // operation name "ice_add_proxy" indicates to the client
-                    // that the router isn't aware of the proxy (for example,
-                    // because it was evicted by the router). In this case, we
-                    // must *always* retry, so that the missing proxy is added
-                    // to the router.
-                    //
-
-                    ri.ClearCache(reference);
-
-                    if (TraceLevels.Retry >= 1)
-                    {
-                        logger.Trace(TraceLevels.RetryCat, $"retrying operation call to add proxy to router\n {ex}");
-                    }
-                    return 0; // We must always retry, so we don't look at the retry count.
-                }
-                else if (reference.IsIndirect)
-                {
-                    //
-                    // We retry ObjectNotExistException if the reference is
-                    // indirect.
-                    //
-
-                    if (reference.IsWellKnown)
-                    {
-                        reference.LocatorInfo?.ClearCache(reference);
-                    }
-                }
-                else
-                {
-                    //
-                    // For all other cases, we don't retry ObjectNotExistException.
-                    //
-                    throw ex;
-                }
-            }
-
-            //
-            // Don't retry if the communicator is destroyed, object adapter is deactivated,
-            // or connection is manually closed.
-            //
-            if (ex is CommunicatorDestroyedException ||
-                ex is ObjectAdapterDeactivatedException ||
-                ex is ConnectionClosedLocallyException)
-            {
-                throw ex;
-            }
-
-            //
-            // Don't retry on timeout and operation canceled exceptions.
-            //
-            if (ex is TimeoutException || ex is OperationCanceledException)
-            {
-                throw ex;
-            }
-
-            ++cnt;
-            Debug.Assert(cnt > 0);
-
-            int interval;
-            if (cnt == (_retryIntervals.Length + 1) && ex is ConnectionClosedByPeerException)
-            {
-                //
-                // A connection closed exception is always retried at least once, even if the retry
-                // limit is reached.
-                //
-                interval = 0;
-            }
-            else if (cnt > _retryIntervals.Length)
-            {
-                if (TraceLevels.Retry >= 1)
-                {
-                    string s = "cannot retry operation call because retry limit has been exceeded\n" + ex;
-                    logger.Trace(TraceLevels.RetryCat, s);
-                }
-                throw ex;
-            }
-            else
-            {
-                interval = _retryIntervals[cnt - 1];
-            }
-
-            if (TraceLevels.Retry >= 1)
-            {
-                string s = "retrying operation call";
-                if (interval > 0)
-                {
-                    s += " in " + interval + "ms";
-                }
-                s += " because of exception\n" + ex;
-                logger.Trace(TraceLevels.RetryCat, s);
-            }
-
-            return interval;
         }
 
         // Finds an endpoint factory previously registered using AddEndpointFactory.

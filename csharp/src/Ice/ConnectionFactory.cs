@@ -156,7 +156,7 @@ namespace ZeroC.Ice
         }
 
         public async ValueTask<(Connection, bool)> CreateAsync(IReadOnlyList<Endpoint> endpoints, bool hasMore,
-            EndpointSelectionType selType, CancellationToken cancel)
+            EndpointSelectionType selType)
         {
             Debug.Assert(endpoints.Count > 0);
 

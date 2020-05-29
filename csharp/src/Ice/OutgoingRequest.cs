@@ -2,7 +2,6 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-using IceInternal;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -19,28 +18,14 @@ namespace ZeroC.Ice
         private protected OutgoingRequest(InputStreamReader<TReturnValue> reader) => _reader = reader;
 
         private protected TReturnValue Invoke(IObjectPrx prx, OutgoingRequestFrame request)
-        {
-            try
-            {
-                var outgoing = new InvokeOutgoing(prx, request, oneway: false, synchronous: true);
-                IncomingResponseFrame response = outgoing.Invoke().Result;
-                return response.ReadReturnValue(_reader);
-            }
-            catch (AggregateException ex)
-            {
-                Debug.Assert(ex.InnerException != null);
-                throw ex.InnerException;
-            }
-        }
+            => prx.Invoke(request, oneway: false).ReadReturnValue(_reader);
 
         private protected Task<TReturnValue> InvokeAsync(IObjectPrx prx,
                                                          OutgoingRequestFrame request,
                                                          IProgress<bool>? progress,
                                                          CancellationToken cancel)
         {
-            var outgoing = new InvokeOutgoing(prx, request, oneway: false, synchronous: false, progress, cancel);
-            ;
-            return ReadReturnValueAsync(outgoing.Invoke(), _reader);
+            return ReadReturnValueAsync(prx.InvokeAsync(request, oneway: false, progress, cancel), _reader);
 
             static async Task<TReturnValue> ReadReturnValueAsync(ValueTask<IncomingResponseFrame> task,
                                                                  InputStreamReader<TReturnValue> reader)
@@ -163,20 +148,11 @@ namespace ZeroC.Ice
 
         private protected void Invoke(IObjectPrx prx, OutgoingRequestFrame request)
         {
-            try
+            bool isOneway = _oneway || prx.IsOneway;
+            IncomingResponseFrame response = prx.Invoke(request, isOneway);
+            if (!isOneway)
             {
-                bool isOneway = _oneway || prx.IsOneway;
-                var outgoing = new InvokeOutgoing(prx, request, oneway: isOneway, synchronous: true);
-                IncomingResponseFrame response = outgoing.Invoke().Result;
-                if (!isOneway)
-                {
-                    response.ReadVoidReturnValue();
-                }
-            }
-            catch (AggregateException ex)
-            {
-                Debug.Assert(ex.InnerException != null);
-                throw ex.InnerException;
+                response.ReadVoidReturnValue();
             }
         }
 
@@ -184,8 +160,7 @@ namespace ZeroC.Ice
                                            CancellationToken cancel)
         {
             bool isOneway = _oneway || prx.IsOneway;
-            var outgoing = new InvokeOutgoing(prx, request, oneway: isOneway, synchronous: false, progress, cancel);
-            return ReadVoidReturnValueAsync(outgoing.Invoke(), isOneway);
+            return ReadVoidReturnValueAsync(prx.InvokeAsync(request, isOneway, progress, cancel), isOneway);
 
             static async Task ReadVoidReturnValueAsync(ValueTask<IncomingResponseFrame> task, bool oneway)
             {

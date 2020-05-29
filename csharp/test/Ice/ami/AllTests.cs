@@ -502,6 +502,7 @@ namespace ZeroC.Ice.ami
                     for (int i = 0; i < 50; ++i)
                     {
                         serialized.GetConnection();
+                        serialized.IcePing();
                         for (int j = 0; j < tasks.Length; ++j)
                         {
                             context["value"] = j.ToString(); // This is for debugging
