@@ -150,10 +150,10 @@ namespace ZeroC.Ice
             ConnectionState.ConnectionStateClosed,       // State.Finished
         };
 
-        private static readonly List<ArraySegment<byte>> _closeConnectionMessage =
-            new List<ArraySegment<byte>> { Ice1Definitions.CloseConnectionMessage };
-        private static readonly List<ArraySegment<byte>> _validateConnectionMessage =
-            new List<ArraySegment<byte>> { Ice1Definitions.ValidateConnectionMessage };
+        private static readonly List<ArraySegment<byte>> _closeConnectionFrame =
+            new List<ArraySegment<byte>> { Ice1Definitions.CloseConnectionFrame };
+        private static readonly List<ArraySegment<byte>> _validateConnectionFrame =
+            new List<ArraySegment<byte>> { Ice1Definitions.ValidateConnectionFrame };
 
         /// <summary>Manually close the connection using the specified closure mode.</summary>
         /// <param name="mode">Determines how the connection will be closed.</param>
@@ -238,8 +238,7 @@ namespace ZeroC.Ice
         /// <summary>Send an asynchronous heartbeat message.</summary>
         /// <param name="progress">Sent progress provider.</param>
         /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
-        public async ValueTask HeartbeatAsync(IProgress<bool>? progress = null,
-            CancellationToken cancel = new CancellationToken())
+        public async ValueTask HeartbeatAsync(IProgress<bool>? progress = null, CancellationToken cancel = default)
         {
             ValueTask writeTask;
             lock (_mutex)
@@ -248,11 +247,7 @@ namespace ZeroC.Ice
                 {
                     throw _exception!;
                 }
-                if (_communicator.TraceLevels.Protocol > 0)
-                {
-                    ProtocolTrace.TraceSend(_communicator, _validateConnectionMessage[0]);
-                }
-                writeTask = WriteOutgoingAsync(_validateConnectionMessage, false);
+                _writeTask = writeTask = RunIO(() => WriteFrameAsync(_validateConnectionFrame));
             }
             await writeTask.WaitAsync(cancel).ConfigureAwait(false);
             progress?.Report(true);
@@ -472,11 +467,7 @@ namespace ZeroC.Ice
                         Debug.Assert(_state == State.Active);
                         if (!Endpoint.IsDatagram)
                         {
-                            if (_communicator.TraceLevels.Protocol > 0)
-                            {
-                                ProtocolTrace.TraceSend(_communicator, _validateConnectionMessage[0]);
-                            }
-                            _ = WriteOutgoingAsync(_validateConnectionMessage, false);
+                            _writeTask = RunIO(() => WriteFrameAsync(_validateConnectionFrame));
                         }
                     }
                 }
@@ -512,86 +503,76 @@ namespace ZeroC.Ice
             }
         }
 
-        internal async ValueTask<Task<IncomingResponseFrame>?> SendRequestAsync(OutgoingRequestFrame frame, bool oneway,
-            bool compress, IInvocationObserver? observer)
+        internal async ValueTask<Task<IncomingResponseFrame>?> SendRequestAsync(OutgoingRequestFrame request,
+            bool oneway, bool compress, IInvocationObserver? observer)
         {
             IChildInvocationObserver? childObserver = null;
+            ValueTask writeTask;
+            Task<IncomingResponseFrame>? responseTask = null;
+            lock (_mutex)
+            {
+                //
+                // If the exception is thrown before we even have a chance to send our request, we always try to
+                // send the request again.
+                //
+                if (_exception != null)
+                {
+                    throw new RetryException(_exception);
+                }
+
+                Debug.Assert(_state > State.NotInitialized);
+                Debug.Assert(_state < State.Closing);
+
+                int requestId = 0;
+                if (!oneway)
+                {
+                    //
+                    // Create a new unique request ID.
+                    //
+                    requestId = _nextRequestId++;
+                    if (requestId <= 0)
+                    {
+                        _nextRequestId = 1;
+                        requestId = _nextRequestId++;
+                    }
+
+                    var responseTaskSource = new TaskCompletionSource<IncomingResponseFrame>();
+                    _requests[requestId] = responseTaskSource;
+                    responseTask = responseTaskSource.Task;
+                }
+
+                // Ensure the message isn't bigger than what we can send with the transport.
+                // TODO: remove?
+                _transceiver.CheckSendSize(request.Size + Ice1Definitions.HeaderSize + 4);
+
+                if (observer != null)
+                {
+                    childObserver = observer.GetRemoteObserver(InitConnectionInfo(), Endpoint, requestId, request.Size);
+                    childObserver?.Attach();
+                }
+
+                _writeTask = writeTask = RunIO(() => WriteRequestAsync(request, requestId, compress));
+            }
+
             try
             {
-                List<ArraySegment<byte>> writeBuffer;
-                ValueTask writeTask;
-                Task<IncomingResponseFrame>? responseTask = null;
-                lock (_mutex)
-                {
-                    //
-                    // If the exception is thrown before we even have a chance to send our request, we always try to
-                    // send the request again.
-                    //
-                    if (_exception != null)
-                    {
-                        throw new RetryException(_exception);
-                    }
-
-                    Debug.Assert(_state > State.NotInitialized);
-                    Debug.Assert(_state < State.Closing);
-
-                    int requestId = 0;
-                    if (!oneway)
-                    {
-                        //
-                        // Create a new unique request ID.
-                        //
-                        requestId = _nextRequestId++;
-                        if (requestId <= 0)
-                        {
-                            _nextRequestId = 1;
-                            requestId = _nextRequestId++;
-                        }
-
-                        var responseTaskSource = new TaskCompletionSource<IncomingResponseFrame>();
-                        _requests[requestId] = responseTaskSource;
-                        responseTask = responseTaskSource.Task;
-                    }
-
-                    writeBuffer = Ice1Definitions.GetRequestData(frame, requestId);
-                    int size = writeBuffer.GetByteCount();
-
-                    // Ensure the message isn't bigger than what we can send with the transport.
-                    _transceiver.CheckSendSize(size);
-
-                    if (observer != null)
-                    {
-                        childObserver = observer.GetRemoteObserver(InitConnectionInfo(), Endpoint, requestId,
-                            size - (Ice1Definitions.HeaderSize + 4));
-                        childObserver?.Attach();
-                    }
-
-                    if (_communicator.TraceLevels.Protocol >= 1)
-                    {
-                        ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], frame);
-                    }
-                    writeTask = WriteOutgoingAsync(writeBuffer, compress);
-                }
-
                 await writeTask.ConfigureAwait(false);
-
-                if (oneway)
-                {
-                    return null;
-                }
-                else
-                {
-                    return WaitForResponseAsync(responseTask!, childObserver);
-                }
             }
             catch (Exception ex)
             {
                 childObserver?.Failed(ex.GetType().FullName ?? "System.Exception");
+                childObserver?.Detach();
                 throw;
             }
-            finally
+
+            if (oneway)
             {
                 childObserver?.Detach();
+                return null;
+            }
+            else
+            {
+                return WaitForResponseAsync(responseTask!, childObserver);
             }
 
             static async Task<IncomingResponseFrame> WaitForResponseAsync(Task<IncomingResponseFrame> task,
@@ -625,7 +606,7 @@ namespace ZeroC.Ice
                 int timeout = _communicator.OverrideConnectTimeout ?? Endpoint.Timeout;
 
                 // Initialize the transport
-                await AwaitWithTimeout(_transceiver.InitializeAsync().AsTask(), timeout).ConfigureAwait(false);
+                await _transceiver.InitializeAsync().WaitWithTimeoutAsync(timeout).ConfigureAwait(false);
 
                 ArraySegment<byte> readBuffer = default;
                 if (!Endpoint.IsDatagram) // Datagram connections are always implicitly validated.
@@ -633,13 +614,13 @@ namespace ZeroC.Ice
                     if (_connector == null) // The server side has the active role for connection validation.
                     {
                         int offset = 0;
-                        while (offset < _validateConnectionMessage.GetByteCount())
+                        while (offset < _validateConnectionFrame.GetByteCount())
                         {
-                            ValueTask<int> writeTask = _transceiver.WriteAsync(_validateConnectionMessage, offset);
-                            await AwaitWithTimeout(writeTask.AsTask(), timeout).ConfigureAwait(false);
+                            ValueTask<int> writeTask = _transceiver.WriteAsync(_validateConnectionFrame, offset);
+                            await writeTask.WaitWithTimeoutAsync(timeout).ConfigureAwait(false);
                             offset += writeTask.Result;
                         }
-                        Debug.Assert(offset == _validateConnectionMessage.GetByteCount());
+                        Debug.Assert(offset == _validateConnectionFrame.GetByteCount());
                     }
                     else // The client side has the passive role for connection validation.
                     {
@@ -648,7 +629,7 @@ namespace ZeroC.Ice
                         while (offset < Ice1Definitions.HeaderSize)
                         {
                             ValueTask<int> readTask = _transceiver.ReadAsync(readBuffer, offset);
-                            await AwaitWithTimeout(readTask.AsTask(), timeout).ConfigureAwait(false);
+                            await readTask.WaitWithTimeoutAsync(timeout).ConfigureAwait(false);
                             offset += readTask.Result;
                         }
 
@@ -680,8 +661,8 @@ namespace ZeroC.Ice
                     {
                         if (_connector == null) // The server side has the active role for connection validation.
                         {
-                            TraceSentAndUpdateObserver(_validateConnectionMessage.GetByteCount());
-                            ProtocolTrace.TraceSend(_communicator, Ice1Definitions.ValidateConnectionMessage);
+                            TraceSentAndUpdateObserver(_validateConnectionFrame.GetByteCount());
+                            ProtocolTrace.TraceSend(_communicator, Ice1Definitions.ValidateConnectionFrame);
                         }
                         else
                         {
@@ -729,6 +710,14 @@ namespace ZeroC.Ice
                 // synchronously new frames from this thread.
                 _ = Task.Run(() => RunIO(ReadAsync));
             }
+            catch (TimeoutException ex)
+            {
+                lock (_mutex)
+                {
+                    SetState(State.Closed, ex);
+                }
+                throw new ConnectTimeoutException();
+            }
             catch (Exception ex)
             {
                 lock (_mutex)
@@ -736,29 +725,6 @@ namespace ZeroC.Ice
                     SetState(State.Closed, ex);
                 }
                 throw;
-            }
-
-            // Helper to await task with timeout
-            static async ValueTask AwaitWithTimeout(Task task, int timeout)
-            {
-                if (timeout < 0 || task.IsCompleted)
-                {
-                    await task.ConfigureAwait(false);
-                }
-                else
-                {
-                    var cancelTimeout = new CancellationTokenSource();
-                    if (await Task.WhenAny(Task.Delay(timeout, cancelTimeout.Token), task).ConfigureAwait(false) ==
-                        task)
-                    {
-                        cancelTimeout.Cancel();
-                        await task.ConfigureAwait(false); // Unwrap the exception if it failed
-                    }
-                    else
-                    {
-                        throw new ConnectTimeoutException();
-                    }
-                }
             }
         }
 
@@ -847,17 +813,6 @@ namespace ZeroC.Ice
             return _info;
         }
 
-        private void InitiateShutdown()
-        {
-            Debug.Assert(_state == State.Closing && _dispatchCount == 0);
-
-            if (!Endpoint.IsDatagram)
-            {
-                // Before we shut down, we send a close connection message.
-                _ = WriteOutgoingAsync(_closeConnectionMessage, false);
-            }
-        }
-
         private async ValueTask InvokeAsync(Current current, IncomingRequestFrame request, byte compressionStatus)
         {
             IDispatchObserver? dispatchObserver = null;
@@ -916,30 +871,17 @@ namespace ZeroC.Ice
                     // Send the response if there's a response
                     if (_state < State.Closed && response != null)
                     {
-                        List<ArraySegment<byte>> writeBuffer =
-                            Ice1Definitions.GetResponseData(response, current.RequestId);
-                        if (_communicator.TraceLevels.Protocol > 0)
-                        {
-                            ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], response);
-                        }
-                        // TODO: should we await on WriteOutgoingAsync?
-                        _ = WriteOutgoingAsync(writeBuffer, compressionStatus > 0);
+                        _writeTask = RunIO(() => WriteResponseAsync(response, current.RequestId, compressionStatus > 0));
                     }
 
                     // Decrease the dispatch count
                     Debug.Assert(_dispatchCount > 0);
                     if (--_dispatchCount == 0)
                     {
-                        if (_state == State.Closing)
+                        if (_state == State.Closing && !Endpoint.IsDatagram)
                         {
-                            try
-                            {
-                                InitiateShutdown();
-                            }
-                            catch (Exception ex)
-                            {
-                                SetState(State.Closed, ex);
-                            }
+                            // Initiate shut down by sending a close connection message.
+                            _writeTask = RunIO(() => WriteFrameAsync(_closeConnectionFrame));
                         }
                         else if (_state == State.Finished)
                         {
@@ -1257,7 +1199,7 @@ namespace ZeroC.Ice
 
             static async ValueTask TaskRun(Func<ValueTask> func, TaskScheduler scheduler)
             {
-                // First await for the dispach async to be ran on the task scheduler.
+                // First await for the dispatch to be ran on the task scheduler.
                 ValueTask task = await Task.Factory.StartNew(func, default, TaskCreationOptions.None,
                     scheduler).ConfigureAwait(false);
 
@@ -1546,16 +1488,10 @@ namespace ZeroC.Ice
 
             System.Threading.Monitor.PulseAll(_mutex);
 
-            if (_state == State.Closing && _dispatchCount == 0)
+            if (_state == State.Closing && _dispatchCount == 0 && !Endpoint.IsDatagram)
             {
-                try
-                {
-                    InitiateShutdown();
-                }
-                catch (Exception ex)
-                {
-                    SetState(State.Closed, ex);
-                }
+                // Initiate shut down by sending a close connection message.
+                _writeTask = RunIO(() => WriteFrameAsync(_closeConnectionFrame));
             }
 
             // Wait for the pending IO operations to return to terminate the connection with the Finish
@@ -1607,12 +1543,46 @@ namespace ZeroC.Ice
             }
         }
 
-        private async ValueTask WriteAsync(List<ArraySegment<byte>> writeBuffer, bool compress)
+        private async ValueTask WriteFrameAsync(List<ArraySegment<byte>> message)
         {
             // Wait for the previous write to be done.
-            // TODO: Cancelable await
             await _writeTask.ConfigureAwait(false);
 
+            if (_communicator.TraceLevels.Protocol > 0)
+            {
+                ProtocolTrace.TraceSend(_communicator, message[0]);
+            }
+            await WriteAsync(message, compress: false);
+        }
+
+        private async ValueTask WriteRequestAsync(OutgoingRequestFrame request, int requestId, bool compress)
+        {
+            // Wait for the previous write to be done.
+            await _writeTask.ConfigureAwait(false);
+
+            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetRequestData(request, requestId);
+            if (_communicator.TraceLevels.Protocol >= 1)
+            {
+                ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], request);
+            }
+            await WriteAsync(writeBuffer, compress);
+        }
+
+        private async ValueTask WriteResponseAsync(OutgoingResponseFrame response, int requestId, bool compress)
+        {
+            // Wait for the previous write to be done.
+            await _writeTask.ConfigureAwait(false);
+
+            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetResponseData(response, requestId);
+            if (_communicator.TraceLevels.Protocol > 0)
+            {
+                ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], response);
+            }
+            await WriteAsync(writeBuffer, compress);
+        }
+
+        private async ValueTask WriteAsync(List<ArraySegment<byte>> writeBuffer, bool compress)
+        {
             // Compress the frame if needed and possible
             // TODO: Benoit: we should consider doing the compression at an earlier stage from the application
             // user thread instead of the WriteAsync task continuation?
@@ -1658,18 +1628,6 @@ namespace ZeroC.Ice
                     }
                 }
             }
-        }
-
-        private async ValueTask WriteOutgoingAsync(List<ArraySegment<byte>> writeBuffer, bool compress)
-        {
-            // Called with the mutex locked
-            ValueTask writeTask = RunIO(() => WriteAsync(writeBuffer, compress));
-            if (writeTask.IsCompleted)
-            {
-                return;
-            }
-            _writeTask = writeTask;
-            await _writeTask.ConfigureAwait(false);
         }
 
         private enum State

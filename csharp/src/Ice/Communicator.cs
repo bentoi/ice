@@ -150,6 +150,8 @@ namespace ZeroC.Ice
         internal INetworkProxy? NetworkProxy { get; }
         internal bool PreferIPv6 { get; }
         internal int IPVersion { get; }
+        // The communicator's cancellation token is notified of cancellation when the communicator is destroyed.
+        internal CancellationToken CancellationToken => _cancellationTokenSource.Token;
         internal int[] RetryIntervals { get; }
         internal ACMConfig ServerACM { get; }
         internal TraceLevels TraceLevels { get; private set; }
@@ -198,6 +200,7 @@ namespace ZeroC.Ice
         private readonly ConcurrentDictionary<string, IRemoteExceptionFactory?> _remoteExceptionFactoryCache =
             new ConcurrentDictionary<string, IRemoteExceptionFactory?>();
         private readonly string[] _remoteExceptionFactoryNamespaces;
+        private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private readonly Dictionary<EndpointType, BufSizeWarnInfo> _setBufSizeWarn =
             new Dictionary<EndpointType, BufSizeWarnInfo>();
         private int _state;
@@ -890,6 +893,11 @@ namespace ZeroC.Ice
             }
 
             //
+            // Cancel any operation waiting using the communicator cancellation token.
+            //
+            _cancellationTokenSource.Cancel();
+
+            //
             // Shutdown and destroy all the incoming and outgoing Ice
             // connections and wait for the connections to be finished.
             //
@@ -996,6 +1004,7 @@ namespace ZeroC.Ice
                 }
             }
             _currentContext.Dispose();
+            _cancellationTokenSource.Dispose();
         }
 
         public void Dispose() => Destroy();

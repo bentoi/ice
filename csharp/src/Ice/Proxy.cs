@@ -369,11 +369,11 @@ namespace ZeroC.Ice
         }
 
         private static async ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
-                                                                         OutgoingRequestFrame request,
-                                                                         bool oneway,
-                                                                         bool synchronous,
-                                                                         IProgress<bool>? progress = null,
-                                                                         CancellationToken cancel = default)
+                                                                          OutgoingRequestFrame request,
+                                                                          bool oneway,
+                                                                          bool synchronous,
+                                                                          IProgress<bool>? progress = null,
+                                                                          CancellationToken cancel = default)
         {
             Reference reference = proxy.IceReference;
 
@@ -406,12 +406,15 @@ namespace ZeroC.Ice
                     bool sent = false;
                     try
                     {
+                        // Get the request handler, this will eventually establish a connection if needed.
                         handler = await reference.GetRequestHandlerAsync().WaitUntilDeadlineAsync(deadline,
                             cancel).ConfigureAwait(false);
 
+                        // Send the request and if it's a twoway request get the task to wait for the response
                         Task<IncomingResponseFrame>? responseTask = await handler!.SendRequestAsync(request, oneway,
                             synchronous, observer).WaitUntilDeadlineAsync(deadline, cancel).ConfigureAwait(false);
 
+                        // Notify the progress callback
                         sent = true;
                         if (progress != null)
                         {
@@ -420,6 +423,7 @@ namespace ZeroC.Ice
 
                         Debug.Assert((oneway && responseTask == null) || (!oneway && responseTask != null));
 
+                        // If there's a response task, wait for the response
                         if (responseTask != null)
                         {
                             IncomingResponseFrame response =
@@ -461,44 +465,20 @@ namespace ZeroC.Ice
                     }
                     catch (Exception ex)
                     {
-                        reference.ClearRequestHandler(handler); // Clear the request handler
+                        reference.ClearRequestHandler(handler);
 
-                        // We only retry after failing with a DispatchException or a local exception.
-                        //
-                        // A ConnectionClosedByPeerException indicates graceful server shutdown, and is therefore always repeatable
-                        // without violating "at-most-once". That's because by sending a close connection message, the server
-                        // guarantees that all outstanding requests can safely be repeated.
-                        //
-                        // An ObjectNotExistException can always be retried as well without violating "at-most-once" (see the
-                        // implementation of the checkRetryAfterException method of the ProxyFactory class for the reasons why it
-                        // can be useful).
-                        //
-                        // If the request was not sent or the operation is idempotent it can also always be retried if the retry
-                        // count isn't reached.
-                        //
                         // TODO: revisit retry logic
-                        if (ex is ObjectNotExistException || ex is ConnectionClosedByPeerException || !sent ||
-                            request.IsIdempotent)
+                        // We only retry after failing with a DispatchException or a local exception.
+                        int delay = reference.CheckRetryAfterException(ex, sent, request.IsIdempotent, ref retryCount);
+                        if (delay > 0)
                         {
-                            try
-                            {
-                                int interval = reference.CheckRetryAfterException(ex, ref retryCount);
-                                if (interval > 0)
-                                {
-                                    // TODO: Cancel if the communicator is destroyed
-                                    await Task.Delay(interval).WaitUntilDeadlineAsync(deadline,
-                                        cancel).ConfigureAwait(false);
-                                }
-                            }
-                            catch (CommunicatorDestroyedException)
-                            {
-                                throw; // The communicator is already destroyed, so we cannot retry.
-                            }
+                            // The delay task can be cancelled either by the user code using the provided cancellation
+                            // token or if the communicator is destroyed.
+                            CancellationToken token = CancellationTokenSource.CreateLinkedTokenSource(cancel,
+                                proxy.Communicator.CancellationToken).Token;
+                            await Task.Delay(delay).WaitUntilDeadlineAsync(deadline, token).ConfigureAwait(false);
                         }
-                        else
-                        {
-                            throw; // Retry could break at-most-once semantics, don't retry.
-                        }
+
                         observer?.Retried();
                     }
                 }
@@ -513,28 +493,6 @@ namespace ZeroC.Ice
                 // Use IDisposable for observers, this will allow using "using".
                 observer?.Detach();
             }
-
-            // static async ValueTask AwaitWithTimeout(Task task, long timeoutTime)
-            // {
-            //     if (timeout < 0 || task.IsCompleted)
-            //     {
-            //         await task.ConfigureAwait(false);
-            //     }
-            //     else
-            //     {
-            //         var cancelTimeout = new CancellationTokenSource();
-            //         if (await Task.WhenAny(Task.Delay(timeout, cancelTimeout.Token), task).ConfigureAwait(false) ==
-            //             task)
-            //         {
-            //             cancelTimeout.Cancel();
-            //             await task.ConfigureAwait(false); // Unwrap the exception if it failed
-            //         }
-            //         else
-            //         {
-            //             throw new ConnectTimeoutException();
-            //         }
-            //     }
-            // }
         }
     }
 }

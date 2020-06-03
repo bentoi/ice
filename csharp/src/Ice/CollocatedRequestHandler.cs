@@ -24,7 +24,7 @@ namespace ZeroC.Ice
 
         public Connection? GetConnection() => null;
 
-        public async ValueTask<Task<IncomingResponseFrame>?> SendRequestAsync(OutgoingRequestFrame outgoingRequestFrame,
+        public ValueTask<Task<IncomingResponseFrame>?> SendRequestAsync(OutgoingRequestFrame outgoingRequestFrame,
             bool oneway, bool synchronous, IInvocationObserver? observer)
         {
             //
@@ -50,39 +50,40 @@ namespace ZeroC.Ice
 
                 if (_adapter.Communicator.TraceLevels.Protocol >= 1)
                 {
-                    ProtocolTrace.TraceCollocatedFrame(_adapter.Communicator,
-                        (byte)Ice1Definitions.FrameType.Request, requestId, outgoingRequestFrame);
+                    ProtocolTrace.TraceCollocatedFrame(_adapter.Communicator, (byte)Ice1Definitions.FrameType.Request,
+                        requestId, outgoingRequestFrame);
                 }
             }
 
-            Task<IncomingResponseFrame> task;
+            Task<IncomingResponseFrame?> task;
             if (_adapter.TaskScheduler != null || !synchronous || oneway || _reference.InvocationTimeout > 0)
             {
                 // Don't invoke from the user thread if async or invocation timeout is set. We also don't dispatch
                 // oneway from the user thread to match the non-collocated behavior where the oneway synchronous
                 // request returns as soon as it's sent over the transport.
-                task = await Task.Factory.StartNew(async () => await InvokeAllAsync(outgoingRequestFrame, requestId),
-                    default, TaskCreationOptions.None, _adapter.TaskScheduler ?? TaskScheduler.Default);
+                task = Task.Factory.StartNew(() => InvokeAllAsync(outgoingRequestFrame, requestId), default,
+                    TaskCreationOptions.None, _adapter.TaskScheduler ?? TaskScheduler.Default).Unwrap();
 
                 if (oneway)
                 {
-                    return null;
+                    childObserver?.Detach();
+                    return default;
                 }
             }
             else // Optimization: directly call invokeAll
             {
-                task = InvokeAllAsync(outgoingRequestFrame, requestId).AsTask();
+                task = InvokeAllAsync(outgoingRequestFrame, requestId);
             }
-            return WaitForResponseAsync(task, childObserver);
+            return new ValueTask<Task<IncomingResponseFrame>?>(WaitForResponseAsync(task, childObserver));
 
-            static async Task<IncomingResponseFrame> WaitForResponseAsync(Task<IncomingResponseFrame> task,
+            static async Task<IncomingResponseFrame> WaitForResponseAsync(Task<IncomingResponseFrame?> task,
                 IChildInvocationObserver? observer)
             {
                 try
                 {
-                    IncomingResponseFrame incomingResponseFrame = await task.ConfigureAwait(false);
-                    observer?.Reply(incomingResponseFrame.Size);
-                    return incomingResponseFrame;
+                    IncomingResponseFrame? incomingResponseFrame = await task.ConfigureAwait(false);
+                    observer?.Reply(incomingResponseFrame!.Size);
+                    return incomingResponseFrame!;
                 }
                 catch (Exception ex)
                 {
@@ -96,7 +97,7 @@ namespace ZeroC.Ice
             }
         }
 
-        private async ValueTask<IncomingResponseFrame> InvokeAllAsync(OutgoingRequestFrame outgoingRequest,
+        private async Task<IncomingResponseFrame?> InvokeAllAsync(OutgoingRequestFrame outgoingRequest,
             int requestId)
         {
             // The object adapter DirectCount was incremented by the caller and we are responsible to decrement it
@@ -169,7 +170,7 @@ namespace ZeroC.Ice
                     return null;
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // TODO
                 throw;

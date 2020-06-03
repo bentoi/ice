@@ -771,11 +771,16 @@ namespace ZeroC.Ice
         {
         }
 
-        internal int CheckRetryAfterException(System.Exception ex, ref int cnt)
+        internal int CheckRetryAfterException(System.Exception ex, bool sent, bool idempotent, ref int cnt)
         {
-            if (InvocationMode == InvocationMode.BatchOneway || InvocationMode == InvocationMode.BatchDatagram)
+            // TODO: revisit retry logic
+
+            //
+            // If the request was sent and is not idempotent, the operation might be retried only if the exception
+            // is an ObjectNotExistException or ConnectionClosedByPeerException. Otherwise, it can't be retried.
+            //
+            if (sent && !idempotent && !(ex is ObjectNotExistException) && !(ex is ConnectionClosedByPeerException))
             {
-                Debug.Assert(false); // batch no longer implemented anyway
                 throw ex;
             }
 
@@ -891,17 +896,17 @@ namespace ZeroC.Ice
             return interval;
         }
 
-        internal void ClearRequestHandler(IRequestHandler? previous)
+        internal void ClearRequestHandler(IRequestHandler? handler)
         {
-            if (!IsFixed && IsConnectionCached && previous != null)
+            if (!IsFixed && IsConnectionCached && handler != null)
             {
                 Debug.Assert(_requestHandlerMutex != null);
                 lock (_requestHandlerMutex)
                 {
                     //
-                    // Clear the request handler only if "previous" is the same as the current request handler.
+                    // Clear the request handler only if the given handler is the same as the current request handler.
                     //
-                    if (_requestHandler == previous)
+                    if (_requestHandler == handler)
                     {
                         _requestHandler = null;
                     }
