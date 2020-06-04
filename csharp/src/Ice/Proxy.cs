@@ -291,11 +291,10 @@ namespace ZeroC.Ice
         /// </summary>
         /// <returns>The Connection for this proxy or null if collocation optimization is used.</returns>
         public static async ValueTask<Connection?> GetConnectionAsync(this IObjectPrx prx,
-                                                                      CancellationToken cancel = new CancellationToken())
+                                                                      CancellationToken cancel = default)
         {
-            ValueTask<IRequestHandler> task =
-                prx.IceReference.GetRequestHandlerAsync().WaitWithTimeoutAsync(prx.IceReference.InvocationTimeout, cancel);
-            IRequestHandler handler = await task.ConfigureAwait(false);
+            IRequestHandler handler = await CancelableTask.WhenAny(prx.IceReference.GetRequestHandlerAsync(),
+                cancel).ConfigureAwait(false);
             return (handler as ConnectionRequestHandler)?.GetConnection();
         }
 
@@ -392,14 +391,23 @@ namespace ZeroC.Ice
             IReadOnlyDictionary<string, string>? context = request.Context ?? reference.CurrentContext();
             IInvocationObserver? observer = ObserverHelper.GetInvocationObserver(proxy, request.Operation, context);
             int retryCount = 0;
+            CancellationTokenSource? invocationTimeout = null;
+            if (reference.InvocationTimeout > 0)
+            {
+                invocationTimeout = new CancellationTokenSource();
+                invocationTimeout.CancelAfter(reference.InvocationTimeout);
+                if (cancel.CanBeCanceled)
+                {
+                    cancel = CancellationTokenSource.CreateLinkedTokenSource(cancel, invocationTimeout.Token).Token;
+                }
+                else
+                {
+                    cancel = invocationTimeout.Token;
+                }
+            }
+
             try
             {
-                long deadline = 0;
-                if (reference.InvocationTimeout > 0)
-                {
-                    deadline = Time.CurrentMonotonicTimeMillis() + reference.InvocationTimeout;
-                }
-
                 while (true)
                 {
                     IRequestHandler? handler = null;
@@ -407,15 +415,17 @@ namespace ZeroC.Ice
                     try
                     {
                         // Get the request handler, this will eventually establish a connection if needed.
-                        handler = await reference.GetRequestHandlerAsync().WaitUntilDeadlineAsync(deadline,
+                        handler = await CancelableTask.WhenAny(reference.GetRequestHandlerAsync(),
                             cancel).ConfigureAwait(false);
 
                         // Send the request and if it's a twoway request get the task to wait for the response
-                        Task<IncomingResponseFrame>? responseTask = await handler!.SendRequestAsync(request, oneway,
-                            synchronous, observer).WaitUntilDeadlineAsync(deadline, cancel).ConfigureAwait(false);
+                        Task<IncomingResponseFrame>? responseTask = await CancelableTask.WhenAny(
+                                handler!.SendRequestAsync(request, oneway, synchronous, observer),
+                                cancel).ConfigureAwait(false);
+
+                        sent = true; // Mark the request as sent, it's important for the retry logic
 
                         // Notify the progress callback
-                        sent = true;
                         if (progress != null)
                         {
                             _ = Task.Run(() => progress.Report(false));
@@ -427,7 +437,7 @@ namespace ZeroC.Ice
                         if (responseTask != null)
                         {
                             IncomingResponseFrame response =
-                                await responseTask.WaitUntilDeadlineAsync(deadline, cancel).ConfigureAwait(false);
+                                await CancelableTask.WhenAny(responseTask, cancel).ConfigureAwait(false);
                             switch (response.ReplyStatus)
                             {
                                 case ReplyStatus.OK:
@@ -463,6 +473,10 @@ namespace ZeroC.Ice
                     {
                         reference.ClearRequestHandler(handler);
                     }
+                    catch (OperationCanceledException)
+                    {
+                        throw; // Don't retry cancelled operations
+                    }
                     catch (Exception ex)
                     {
                         reference.ClearRequestHandler(handler);
@@ -476,7 +490,7 @@ namespace ZeroC.Ice
                             // token or if the communicator is destroyed.
                             CancellationToken token = CancellationTokenSource.CreateLinkedTokenSource(cancel,
                                 proxy.Communicator.CancellationToken).Token;
-                            await Task.Delay(delay).WaitUntilDeadlineAsync(deadline, token).ConfigureAwait(false);
+                            await CancelableTask.WhenAny(Task.Delay(delay), token).ConfigureAwait(false);
                         }
 
                         observer?.Retried();
@@ -485,8 +499,20 @@ namespace ZeroC.Ice
             }
             catch (Exception ex)
             {
+                // Check the reason of the cancellation
+                if (ex is OperationCanceledException)
+                {
+                    if (invocationTimeout?.IsCancellationRequested ?? false)
+                    {
+                        ex = new TimeoutException();
+                    }
+                    else if (proxy.Communicator.CancellationToken.IsCancellationRequested)
+                    {
+                        ex = new CommunicatorDestroyedException();
+                    }
+                }
                 observer?.Failed(ex.GetType().FullName ?? "System.Exception");
-                throw;
+                throw ex;
             }
             finally
             {

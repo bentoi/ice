@@ -848,14 +848,6 @@ namespace ZeroC.Ice
                 throw ex;
             }
 
-            //
-            // Don't retry on timeout and operation canceled exceptions.
-            //
-            if (ex is TimeoutException || ex is OperationCanceledException)
-            {
-                throw ex;
-            }
-
             ++cnt;
             Debug.Assert(cnt > 0);
 

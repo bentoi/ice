@@ -249,7 +249,7 @@ namespace ZeroC.Ice
                 }
                 _writeTask = writeTask = RunIO(() => WriteFrameAsync(_validateConnectionFrame));
             }
-            await writeTask.WaitAsync(cancel).ConfigureAwait(false);
+            await CancelableTask.WhenAny(writeTask, cancel).ConfigureAwait(false);
             progress?.Report(true);
         }
 
@@ -604,9 +604,16 @@ namespace ZeroC.Ice
                 // use for both connect/accept timeouts. We're leaning toward adding Ice.ConnectTimeout for
                 // connection establishemnt and using the ACM timeout for accepting connections.
                 int timeout = _communicator.OverrideConnectTimeout ?? Endpoint.Timeout;
+                CancellationToken timeoutToken;
+                if (timeout > 0)
+                {
+                     var source = new CancellationTokenSource();
+                     source.CancelAfter(timeout);
+                     timeoutToken = source.Token;
+                }
 
                 // Initialize the transport
-                await _transceiver.InitializeAsync().WaitWithTimeoutAsync(timeout).ConfigureAwait(false);
+                await CancelableTask.WhenAny(_transceiver.InitializeAsync(), timeoutToken).ConfigureAwait(false);
 
                 ArraySegment<byte> readBuffer = default;
                 if (!Endpoint.IsDatagram) // Datagram connections are always implicitly validated.
@@ -617,7 +624,7 @@ namespace ZeroC.Ice
                         while (offset < _validateConnectionFrame.GetByteCount())
                         {
                             ValueTask<int> writeTask = _transceiver.WriteAsync(_validateConnectionFrame, offset);
-                            await writeTask.WaitWithTimeoutAsync(timeout).ConfigureAwait(false);
+                            await CancelableTask.WhenAny(writeTask, timeoutToken).ConfigureAwait(false);
                             offset += writeTask.Result;
                         }
                         Debug.Assert(offset == _validateConnectionFrame.GetByteCount());
@@ -629,7 +636,7 @@ namespace ZeroC.Ice
                         while (offset < Ice1Definitions.HeaderSize)
                         {
                             ValueTask<int> readTask = _transceiver.ReadAsync(readBuffer, offset);
-                            await readTask.WaitWithTimeoutAsync(timeout).ConfigureAwait(false);
+                            await CancelableTask.WhenAny(readTask, timeoutToken).ConfigureAwait(false);
                             offset += readTask.Result;
                         }
 
@@ -710,13 +717,13 @@ namespace ZeroC.Ice
                 // synchronously new frames from this thread.
                 _ = Task.Run(() => RunIO(ReadAsync));
             }
-            catch (TimeoutException ex)
+            catch (OperationCanceledException)
             {
                 lock (_mutex)
                 {
-                    SetState(State.Closed, ex);
+                    SetState(State.Closed, new ConnectTimeoutException());
+                    throw _exception!;
                 }
-                throw new ConnectTimeoutException();
             }
             catch (Exception ex)
             {
@@ -1256,10 +1263,18 @@ namespace ZeroC.Ice
                 }
             }
 
+            await FinishIO(closing, decreasePendingIO: true);
+        }
+
+        private async ValueTask FinishIO(bool closing, bool decreasePendingIO)
+        {
             bool finish = false;
             lock (_mutex)
             {
-                --_pendingIO;
+                if (decreasePendingIO)
+                {
+                    --_pendingIO;
+                }
                 if (_state == State.Closing && _dispatchCount == 0 && _writeTask.IsCompleted)
                 {
                     SetState(State.ClosingPending);
@@ -1583,49 +1598,60 @@ namespace ZeroC.Ice
 
         private async ValueTask WriteAsync(List<ArraySegment<byte>> writeBuffer, bool compress)
         {
-            // Compress the frame if needed and possible
-            // TODO: Benoit: we should consider doing the compression at an earlier stage from the application
-            // user thread instead of the WriteAsync task continuation?
-            int size = writeBuffer.GetByteCount();
-            if (BZip2.IsLoaded && compress)
+            try
             {
-                List<ArraySegment<byte>>? compressed = null;
-                if (size >= 100)
+                // Compress the frame if needed and possible
+                // TODO: Benoit: we should consider doing the compression at an earlier stage from the application
+                // user thread instead of the WriteAsync task continuation?
+                int size = writeBuffer.GetByteCount();
+                if (BZip2.IsLoaded && compress)
                 {
-                    compressed = BZip2.Compress(writeBuffer, size, Ice1Definitions.HeaderSize, _compressionLevel);
+                    List<ArraySegment<byte>>? compressed = null;
+                    if (size >= 100)
+                    {
+                        compressed = BZip2.Compress(writeBuffer, size, Ice1Definitions.HeaderSize, _compressionLevel);
+                    }
+
+                    if (compressed != null)
+                    {
+                        writeBuffer = compressed!;
+                        size = writeBuffer.GetByteCount();
+                    }
+                    else // Message not compressed, request compressed response, if any.
+                    {
+                        ArraySegment<byte> header = writeBuffer[0];
+                        header[9] = 1; // Write the compression status
+                    }
                 }
 
-                if (compressed != null)
+                // Write the frame
+                int offset = 0;
+                while (offset < size)
                 {
-                    writeBuffer = compressed!;
-                    size = writeBuffer.GetByteCount();
-                }
-                else // Message not compressed, request compressed response, if any.
-                {
-                    ArraySegment<byte> header = writeBuffer[0];
-                    header[9] = 1; // Write the compression status
+                    int bytesSent = await _transceiver.WriteAsync(writeBuffer, offset).ConfigureAwait(false);
+                    offset += bytesSent;
+                    lock (_mutex)
+                    {
+                        Debug.Assert(_state < State.Finished); // Finish is only called once WriteAsync returns
+                        if (_state > State.Closing)
+                        {
+                            return;
+                        }
+
+                        TraceSentAndUpdateObserver(bytesSent);
+                        if (_acmLastActivity > -1)
+                        {
+                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
+                        }
+                    }
                 }
             }
-
-            // Write the frame
-            int offset = 0;
-            while (offset < size)
+            catch (Exception ex)
             {
-                int bytesSent = await _transceiver.WriteAsync(writeBuffer, offset).ConfigureAwait(false);
-                offset += bytesSent;
                 lock (_mutex)
                 {
-                    Debug.Assert(_state < State.Finished); // Finish is only called once WriteAsync returns
-                    if (_state > State.Closing)
-                    {
-                        return;
-                    }
-
-                    TraceSentAndUpdateObserver(bytesSent);
-                    if (_acmLastActivity > -1)
-                    {
-                        _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                    }
+                    SetState(State.Closed, ex);
+                    throw;
                 }
             }
         }
