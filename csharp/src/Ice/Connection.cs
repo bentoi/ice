@@ -117,10 +117,12 @@ namespace ZeroC.Ice
         private long _acmLastActivity;
         private ObjectAdapter? _adapter;
         private Action<Connection>? _closeCallback;
+        private Task? _closeTask = null;
         private readonly Communicator _communicator;
         private readonly int _compressionLevel;
         private readonly IConnector? _connector;
         private int _dispatchCount;
+        private TaskCompletionSource<bool>? _dispatchTask;
         private System.Exception? _exception;
         private Action<Connection>? _heartbeatCallback;
         private ConnectionInfo? _info;
@@ -129,7 +131,7 @@ namespace ZeroC.Ice
         private readonly object _mutex = new object();
         private int _nextRequestId;
         private IConnectionObserver? _observer;
-        private int _pendingIO;
+        private Task _readTask = Task.CompletedTask;
         private readonly Dictionary<int, TaskCompletionSource<IncomingResponseFrame>> _requests =
             new Dictionary<int, TaskCompletionSource<IncomingResponseFrame>>();
         private State _state; // The current state.
@@ -137,7 +139,7 @@ namespace ZeroC.Ice
         private bool _validated = false;
         private readonly bool _warn;
         private readonly bool _warnUdp;
-        private ValueTask _writeTask = new ValueTask();
+        private Task _writeTask = Task.CompletedTask;
 
         // Map internal connection states to Ice.Instrumentation.ConnectionState state values.
         private static readonly ConnectionState[] _connectionStateMap = new ConnectionState[]
@@ -145,7 +147,6 @@ namespace ZeroC.Ice
             ConnectionState.ConnectionStateValidating,   // State.NotInitialized
             ConnectionState.ConnectionStateActive,       // State.Active
             ConnectionState.ConnectionStateClosing,      // State.Closing
-            ConnectionState.ConnectionStateClosing,      // State.ClosingPending
             ConnectionState.ConnectionStateClosed,       // State.Closed
             ConnectionState.ConnectionStateClosed,       // State.Finished
         };
@@ -159,30 +160,30 @@ namespace ZeroC.Ice
         /// <param name="mode">Determines how the connection will be closed.</param>
         public void Close(ConnectionClose mode)
         {
-            lock (_mutex)
+            if (mode == ConnectionClose.Forcefully)
             {
-                if (mode == ConnectionClose.Forcefully)
-                {
-                    SetState(State.Closed, new ConnectionClosedLocallyException("connection closed forcefully"));
-                }
-                else if (mode == ConnectionClose.Gracefully)
-                {
-                    SetState(State.Closing, new ConnectionClosedLocallyException("connection closed gracefully"));
-                }
-                else
-                {
-                    Debug.Assert(mode == ConnectionClose.GracefullyWithWait);
+                _ = CloseAsync(new ConnectionClosedLocallyException("connection closed forcefully"));
+            }
+            else if (mode == ConnectionClose.Gracefully)
+            {
+                _ = GracefulCloseAsync(new ConnectionClosedLocallyException("connection closed gracefully"));
+            }
+            else
+            {
+                Debug.Assert(mode == ConnectionClose.GracefullyWithWait);
 
-                    //
-                    // Wait until all outstanding requests have been completed.
-                    //
-                    while (_requests.Count != 0)
+                //
+                // Wait until all outstanding requests have been completed.
+                //
+                lock (_mutex)
+                {
+                    while (_requests.Count > 0)
                     {
                         System.Threading.Monitor.Wait(_mutex);
                     }
-
-                    SetState(State.Closing, new ConnectionClosedLocallyException("connection closed gracefully"));
                 }
+
+                _ = GracefulCloseAsync(new ConnectionClosedLocallyException("connection closed gracefully"));
             }
         }
 
@@ -240,14 +241,14 @@ namespace ZeroC.Ice
         /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
         public async ValueTask HeartbeatAsync(IProgress<bool>? progress = null, CancellationToken cancel = default)
         {
-            ValueTask writeTask;
+            Task writeTask;
             lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
                     throw _exception!;
                 }
-                _writeTask = writeTask = RunIO(() => WriteFrameAsync(_validateConnectionFrame));
+                writeTask = WriteAsync(() => SendProtocolFrameAsync(_validateConnectionFrame));
             }
             await CancelableTask.WhenAny(writeTask, cancel).ConfigureAwait(false);
             progress?.Report(true);
@@ -409,7 +410,6 @@ namespace ZeroC.Ice
             _nextRequestId = 1;
             _messageSizeMax = adapter != null ? adapter.MessageSizeMax : communicator.MessageSizeMax;
             _dispatchCount = 0;
-            _pendingIO = 0;
             _state = State.NotInitialized;
 
             _compressionLevel = communicator.GetPropertyAsInt("Ice.Compression.Level") ?? 1;
@@ -434,12 +434,37 @@ namespace ZeroC.Ice
             }
         }
 
-        internal void Destroy(Exception ex)
+        internal async Task GracefulCloseAsync(Exception exception)
         {
-            lock (_mutex)
+            // Don't gracefully close connections for datagram endpoints
+            if (!Endpoint.IsDatagram)
             {
-                SetState(State.Closing, ex);
+                try
+                {
+                    Task closingTask;
+                    lock (_mutex)
+                    {
+                        Debug.Assert(_state > State.NotInitialized);
+                        if (_state == State.Active)
+                        {
+                            SetState(State.Closing, exception);
+                            if (_dispatchCount > 0)
+                            {
+                                _dispatchTask = new TaskCompletionSource<bool>();
+                            }
+                            _closeTask = PerformClosingAsync();
+                        }
+                        closingTask = _closeTask!;
+                    }
+                    await closingTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Ignore
+                }
             }
+
+            await CloseAsync(_exception!);
         }
 
         internal void Monitor(long now, ACMConfig acm)
@@ -467,7 +492,7 @@ namespace ZeroC.Ice
                         Debug.Assert(_state == State.Active);
                         if (!Endpoint.IsDatagram)
                         {
-                            _writeTask = RunIO(() => WriteFrameAsync(_validateConnectionFrame));
+                            WriteAsync(() => SendProtocolFrameAsync(_validateConnectionFrame));
                         }
                     }
                 }
@@ -490,14 +515,14 @@ namespace ZeroC.Ice
                         // Close the connection if we didn't receive a heartbeat or if read/write didn't update the
                         // ACM activity in the last period.
                         //
-                        SetState(State.Closed, new ConnectionTimeoutException());
+                        _ = GracefulCloseAsync(new ConnectionTimeoutException());
                     }
                     else if (acm.Close != ACMClose.CloseOnInvocation && _dispatchCount == 0 && _requests.Count == 0)
                     {
                         //
                         // The connection is idle, close it.
                         //
-                        SetState(State.Closing, new ConnectionIdleException());
+                        _ = GracefulCloseAsync(new ConnectionIdleException());
                     }
                 }
             }
@@ -507,7 +532,7 @@ namespace ZeroC.Ice
             bool oneway, bool compress, IInvocationObserver? observer)
         {
             IChildInvocationObserver? childObserver = null;
-            ValueTask writeTask;
+            Task writeTask;
             Task<IncomingResponseFrame>? responseTask = null;
             lock (_mutex)
             {
@@ -551,7 +576,7 @@ namespace ZeroC.Ice
                     childObserver?.Attach();
                 }
 
-                _writeTask = writeTask = RunIO(() => WriteRequestAsync(request, requestId, compress));
+                writeTask = WriteAsync(() => SendRequestAsync(request, requestId, compress));
             }
 
             try
@@ -715,22 +740,16 @@ namespace ZeroC.Ice
 
                 // Start the asynchronous operation from the thread pool to prevent eventually reading
                 // synchronously new frames from this thread.
-                _ = Task.Run(() => RunIO(ReadAsync));
+                _ = Task.Run(ReadAsync);
             }
             catch (OperationCanceledException)
             {
-                lock (_mutex)
-                {
-                    SetState(State.Closed, new ConnectTimeoutException());
-                    throw _exception!;
-                }
+                _ = CloseAsync(new ConnectTimeoutException());
+                throw _exception!;
             }
             catch (Exception ex)
             {
-                lock (_mutex)
-                {
-                    SetState(State.Closed, ex);
-                }
+                _ = CloseAsync(ex);
                 throw;
             }
         }
@@ -753,47 +772,21 @@ namespace ZeroC.Ice
             }
         }
 
-        internal void WaitUntilFinished()
+        private async Task CloseAsync(Exception? exception)
         {
             lock (_mutex)
             {
-                //
-                // We wait indefinitely until the connection is finished and all
-                // outstanding requests are completed. Otherwise we couldn't
-                // guarantee that there are no outstanding calls when deactivate()
-                // is called on the servant locators.
-                //
-                while (_state < State.Finished || _dispatchCount > 0)
+                if (_state < State.Closed)
                 {
-                    System.Threading.Monitor.Wait(_mutex);
+                    SetState(State.Closed, exception ?? _exception!);
+                    if (_dispatchCount > 0)
+                    {
+                        _dispatchTask ??= new TaskCompletionSource<bool>();
+                    }
+                    _closeTask = PerformCloseAsync();
                 }
             }
-        }
-
-        private void Finish()
-        {
-            foreach (TaskCompletionSource<IncomingResponseFrame> response in _requests.Values)
-            {
-                response.SetException(_exception!);
-            }
-            _requests.Clear();
-
-            try
-            {
-                _closeCallback?.Invoke(this);
-            }
-            catch (Exception ex)
-            {
-                _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
-            }
-            _closeCallback = null;
-            _heartbeatCallback = null;
-
-            lock (_mutex)
-            {
-                // This must be done last as this will cause waitUntilFinished() to return.
-                SetState(State.Finished);
-            }
+            await _closeTask!.ConfigureAwait(false);
         }
 
         private ConnectionInfo InitConnectionInfo()
@@ -878,23 +871,15 @@ namespace ZeroC.Ice
                     // Send the response if there's a response
                     if (_state < State.Closed && response != null)
                     {
-                        _writeTask = RunIO(() => WriteResponseAsync(response, current.RequestId, compressionStatus > 0));
+                        WriteAsync(() => SendResponseAsync(response, current.RequestId, compressionStatus > 0));
                     }
 
                     // Decrease the dispatch count
                     Debug.Assert(_dispatchCount > 0);
-                    if (--_dispatchCount == 0)
+                    if (--_dispatchCount == 0 && _dispatchTask != null)
                     {
-                        if (_state == State.Closing && !Endpoint.IsDatagram)
-                        {
-                            // Initiate shut down by sending a close connection message.
-                            _writeTask = RunIO(() => WriteFrameAsync(_closeConnectionFrame));
-                        }
-                        else if (_state == State.Finished)
-                        {
-                            Reap();
-                        }
-                        System.Threading.Monitor.PulseAll(_mutex);
+                        Debug.Assert(_state > State.Active);
+                        _dispatchTask.SetResult(true);
                     }
                 }
 
@@ -902,7 +887,380 @@ namespace ZeroC.Ice
             }
         }
 
-        private async ValueTask<(Func<ValueTask>?, ObjectAdapter?)> ReadIncomingAsync()
+        private async ValueTask<bool> DispatchFrameAsync(Func<ValueTask> incoming, ObjectAdapter? adapter)
+        {
+            if (adapter != null && adapter.SerializeDispatch)
+            {
+                // Run the given incoming frame
+                if (adapter.TaskScheduler != null)
+                {
+                    await TaskRun(incoming, adapter.TaskScheduler).ConfigureAwait(false);
+                }
+                else
+                {
+                    await incoming().ConfigureAwait(false);
+                }
+                return true;
+            }
+            else
+            {
+                // Start a new Read IO task and run the incoming dispatch. We start the new ReadAsync from
+                // a separate task because ReadAsync could complete synchronously and we don't want the
+                // dispatch from this read to run before we actually ran the dispatch from this block. An
+                // alternative could be to start a task to run the incoming dispatch and continue reading
+                // with this loop. It would have a negative impact on latency however since execution of
+                // the incoming dispatch would potentially require a thread context switch.
+                if (adapter?.TaskScheduler != null)
+                {
+                    await TaskRun(() =>
+                    {
+                        Task.Run(ReadAsync);
+                        return incoming();
+                    }, adapter.TaskScheduler).ConfigureAwait(false);
+                }
+                else
+                {
+                    _ = Task.Run(ReadAsync);
+                    await incoming().ConfigureAwait(false);
+                }
+                return false;
+            }
+
+            static async ValueTask TaskRun(Func<ValueTask> func, TaskScheduler scheduler)
+            {
+                // First await for the dispatch to be ran on the task scheduler.
+                ValueTask task = await Task.Factory.StartNew(func, default, TaskCreationOptions.None,
+                    scheduler).ConfigureAwait(false);
+
+                // Now wait for the async dispatch to complete.
+                await task.ConfigureAwait(false);
+            }
+        }
+
+        private (Func<ValueTask>?, ObjectAdapter?) ParseFrame(ArraySegment<byte> readBuffer)
+        {
+            Func<ValueTask>? incoming = null;
+            ObjectAdapter? adapter = null;
+            lock (_mutex)
+            {
+                if (_state >= State.Closed)
+                {
+                    throw _exception!;
+                }
+
+                // The magic and version fields have already been checked.
+                var messageType = (Ice1Definitions.FrameType)readBuffer[8];
+                byte compressionStatus = readBuffer[9];
+                if (compressionStatus == 2)
+                {
+                    if (BZip2.IsLoaded)
+                    {
+                        readBuffer = BZip2.Decompress(readBuffer, Ice1Definitions.HeaderSize, _messageSizeMax);
+                    }
+                    else
+                    {
+                        throw new LoadException("compression not supported, bzip2 library not found");
+                    }
+                }
+
+                switch (messageType)
+                {
+                    case Ice1Definitions.FrameType.CloseConnection:
+                    {
+                        ProtocolTrace.TraceReceived(_communicator, readBuffer);
+                        if (Endpoint.IsDatagram)
+                        {
+                            if (_warn)
+                            {
+                                _communicator.Logger.Warning(
+                                    $"ignoring close connection message for datagram connection:\n{this}");
+                            }
+                        }
+                        else
+                        {
+                            throw new ConnectionClosedByPeerException();
+                        }
+                        break;
+                    }
+
+                    case Ice1Definitions.FrameType.Request:
+                    {
+                        if (_state >= State.Closing)
+                        {
+                            ProtocolTrace.Trace(
+                                "received request during closing\n(ignored by server, client will retry)",
+                                _communicator,
+                                readBuffer);
+                        }
+                        else
+                        {
+                            readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
+                            int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
+                            var request = new IncomingRequestFrame(_communicator, readBuffer.Slice(4));
+                            ProtocolTrace.TraceFrame(_communicator, readBuffer, request);
+                            if (_adapter == null)
+                            {
+                                throw new ObjectNotExistException(request.Identity, request.Facet,
+                                    request.Operation);
+                            }
+                            else
+                            {
+                                adapter = _adapter;
+                                var current = new Current(_adapter, request, requestId, this);
+                                incoming = () => InvokeAsync(current, request, compressionStatus);
+                                ++_dispatchCount;
+                            }
+                        }
+                        break;
+                    }
+
+                    case Ice1Definitions.FrameType.RequestBatch:
+                    {
+                        if (_state >= State.Closing)
+                        {
+                            ProtocolTrace.Trace(
+                                "received batch request during closing\n(ignored by server, client will retry)",
+                                _communicator,
+                                readBuffer);
+                        }
+                        else
+                        {
+                            ProtocolTrace.TraceReceived(_communicator, readBuffer);
+                            int invokeNum = InputStream.ReadInt(readBuffer.AsSpan(Ice1Definitions.HeaderSize, 4));
+                            if (invokeNum < 0)
+                            {
+                                throw new InvalidDataException(
+                                    $"received ice1 RequestBatchMessage with {invokeNum} batch requests");
+                            }
+                            Debug.Assert(false); // TODO: deal with batch requests
+                        }
+                        break;
+                    }
+
+                    case Ice1Definitions.FrameType.Reply:
+                    {
+                        ArraySegment<byte> header = readBuffer.Slice(0, Ice1Definitions.HeaderSize + 4);
+                        readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
+                        int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
+                        var responseFrame = new IncomingResponseFrame(_communicator, readBuffer.Slice(4));
+                        ProtocolTrace.TraceFrame(_communicator, header, responseFrame);
+                        if (_requests.TryGetValue(requestId, out TaskCompletionSource<IncomingResponseFrame>? response))
+                        {
+                            _requests.Remove(requestId);
+                            response.SetResult(responseFrame);
+                            if (_requests.Count == 0)
+                            {
+                                System.Threading.Monitor.PulseAll(_mutex); // Notify threads blocked in Close()
+                            }
+                        }
+                        break;
+                    }
+
+                    case Ice1Definitions.FrameType.ValidateConnection:
+                    {
+                        ProtocolTrace.TraceReceived(_communicator, readBuffer);
+                        if (_heartbeatCallback != null)
+                        {
+                            Action<Connection> callback = _heartbeatCallback;
+                            incoming = () =>
+                            {
+                                try
+                                {
+                                    callback(this);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
+                                }
+                                return default;
+                            };
+                        }
+                        break;
+                    }
+
+                    default:
+                    {
+                        ProtocolTrace.Trace(
+                            "received unknown message\n(invalid, closing connection)",
+                            _communicator,
+                            readBuffer);
+                        throw new InvalidDataException(
+                            $"received ice1 frame with unknown message type `{messageType}'");
+                    }
+                }
+            }
+            return (incoming, adapter);
+        }
+
+        private Task ReadAsync()
+        {
+            // Must be called with the mutex locked.
+            ValueTask readTask = PerformAsync(this);
+            if (readTask.IsCompleted)
+            {
+                _readTask = Task.CompletedTask;
+            }
+            else
+            {
+                _readTask = readTask.AsTask();
+            }
+            return _readTask;
+
+            static async ValueTask PerformAsync(Connection self)
+            {
+                try
+                {
+                    await self.ReadAndDispatchFrameAsync().ConfigureAwait(false);
+                }
+                catch (ConnectionClosedByPeerException ex)
+                {
+                    _ = self.GracefulCloseAsync(ex);
+                }
+                catch (Exception ex)
+                {
+                    _ = self.CloseAsync(ex);
+                }
+            }
+        }
+
+        private async Task PerformClosingAsync()
+        {
+            if (!(_exception is ConnectionClosedByPeerException))
+            {
+                // Wait for the all the dispatch to be completed to ensure the responses are sent.
+                if (_dispatchTask != null)
+                {
+                    await _dispatchTask.Task.ConfigureAwait(false);
+                }
+
+                // Write and wait for the close connection frame to be written
+                await WriteAsync(() => SendProtocolFrameAsync(_closeConnectionFrame)).ConfigureAwait(false);
+            }
+
+            // Notify the transport of the graceful connection closure.
+            try
+            {
+                await _transceiver.ClosingAsync(_exception!).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _communicator.Logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
+            }
+        }
+
+        private async Task PerformCloseAsync()
+        {
+            // Close the transceiver, this should cause pending IO async calls to return.
+            try
+            {
+                _transceiver.ThreadSafeClose();
+            }
+            catch (Exception ex)
+            {
+                _communicator.Logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
+            }
+
+            if (_state > State.NotInitialized && _communicator.TraceLevels.Network >= 1)
+            {
+                var s = new StringBuilder();
+                s.Append("closed ");
+                s.Append(Endpoint.Name);
+                s.Append(" connection\n");
+                s.Append(ToString());
+
+                //
+                // Trace the cause of unexpected connection closures
+                //
+                if (!(_exception is ConnectionClosedException ||
+                      _exception is ConnectionIdleException ||
+                      _exception is CommunicatorDestroyedException ||
+                      _exception is ObjectAdapterDeactivatedException))
+                {
+                    s.Append("\n");
+                    s.Append(_exception);
+                }
+
+                _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
+            }
+
+            // Wait for pending reads and writes to complete
+            try
+            {
+                await _writeTask.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+            try
+            {
+                await _readTask.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+
+            // Destroy the transport
+            try
+            {
+                _transceiver.Destroy();
+            }
+            catch (Exception ex)
+            {
+                _communicator.Logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
+            }
+
+            // Notify pending requests of the failure
+            foreach (TaskCompletionSource<IncomingResponseFrame> response in _requests.Values)
+            {
+                response.SetException(_exception!);
+            }
+            _requests.Clear();
+
+            // Invoke the close callback
+            try
+            {
+                _closeCallback?.Invoke(this);
+            }
+            catch (Exception ex)
+            {
+                _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
+            }
+
+            lock (_mutex)
+            {
+                SetState(State.Finished);
+            }
+
+            // Wait for all the dispatch to complete before reaping the connection and notifying the observer
+            if (_dispatchTask != null)
+            {
+                await _dispatchTask.Task.ConfigureAwait(false);
+            }
+
+            if (_monitor != null)
+            {
+                _monitor.Reap(this);
+            }
+            if (_observer != null)
+            {
+                _observer.Detach();
+            }
+        }
+
+        private async ValueTask ReadAndDispatchFrameAsync()
+        {
+            while (true)
+            {
+                ArraySegment<byte> readBuffer = await ReceiveFrameAsync().ConfigureAwait(false);
+                (Func<ValueTask>? incoming, ObjectAdapter? adapter) = ParseFrame(readBuffer);
+                if (incoming != null && !await DispatchFrameAsync(incoming, adapter).ConfigureAwait(false))
+                {
+                    return;
+                }
+            }
+        }
+
+        private async ValueTask<ArraySegment<byte>> ReceiveFrameAsync()
         {
             // Read header
             ArraySegment<byte> readBuffer;
@@ -1001,338 +1359,118 @@ namespace ZeroC.Ice
                 }
                 return default;
             }
+            return readBuffer;
+        }
 
-            Func<ValueTask>? incoming = null;
-            ObjectAdapter? adapter = null;
+        private async ValueTask SendProtocolFrameAsync(List<ArraySegment<byte>> frame)
+        {
             lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
                     throw _exception!;
                 }
-
-                // The magic and version fields have already been checked.
-                var messageType = (Ice1Definitions.FrameType)readBuffer[8];
-                byte compressionStatus = readBuffer[9];
-                if (compressionStatus == 2)
+                if (_communicator.TraceLevels.Protocol > 0)
                 {
-                    if (BZip2.IsLoaded)
-                    {
-                        readBuffer = BZip2.Decompress(readBuffer, Ice1Definitions.HeaderSize, _messageSizeMax);
-                    }
-                    else
-                    {
-                        throw new LoadException("compression not supported, bzip2 library not found");
-                    }
-                }
-
-                switch (messageType)
-                {
-                    case Ice1Definitions.FrameType.CloseConnection:
-                    {
-                        ProtocolTrace.TraceReceived(_communicator, readBuffer);
-                        if (Endpoint.IsDatagram)
-                        {
-                            if (_warn)
-                            {
-                                _communicator.Logger.Warning(
-                                    $"ignoring close connection message for datagram connection:\n{this}");
-                            }
-                        }
-                        else
-                        {
-                            SetState(State.ClosingPending, new ConnectionClosedByPeerException());
-                            throw _exception!;
-                        }
-                        break;
-                    }
-
-                    case Ice1Definitions.FrameType.Request:
-                    {
-                        if (_state >= State.Closing)
-                        {
-                            ProtocolTrace.Trace(
-                                "received request during closing\n(ignored by server, client will retry)",
-                                _communicator,
-                                readBuffer);
-                        }
-                        else
-                        {
-                            readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
-                            int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
-                            var request = new IncomingRequestFrame(_communicator, readBuffer.Slice(4));
-                            ProtocolTrace.TraceFrame(_communicator, readBuffer, request);
-                            if (_adapter == null)
-                            {
-                                throw new ObjectNotExistException(request.Identity, request.Facet,
-                                    request.Operation);
-                            }
-                            else
-                            {
-                                adapter = _adapter;
-                                var current = new Current(_adapter, request, requestId, this);
-                                incoming = () => InvokeAsync(current, request, compressionStatus);
-                                ++_dispatchCount;
-                            }
-                        }
-                        break;
-                    }
-
-                    case Ice1Definitions.FrameType.RequestBatch:
-                    {
-                        if (_state >= State.Closing)
-                        {
-                            ProtocolTrace.Trace(
-                                "received batch request during closing\n(ignored by server, client will retry)",
-                                _communicator,
-                                readBuffer);
-                        }
-                        else
-                        {
-                            ProtocolTrace.TraceReceived(_communicator, readBuffer);
-                            int invokeNum = InputStream.ReadInt(readBuffer.AsSpan(Ice1Definitions.HeaderSize, 4));
-                            if (invokeNum < 0)
-                            {
-                                throw new InvalidDataException(
-                                    $"received ice1 RequestBatchMessage with {invokeNum} batch requests");
-                            }
-                            Debug.Assert(false); // TODO: deal with batch requests
-                        }
-                        break;
-                    }
-
-                    case Ice1Definitions.FrameType.Reply:
-                    {
-                        ArraySegment<byte> header = readBuffer.Slice(0, Ice1Definitions.HeaderSize + 4);
-                        readBuffer = readBuffer.Slice(Ice1Definitions.HeaderSize);
-                        int requestId = InputStream.ReadInt(readBuffer.AsSpan(0, 4));
-                        var responseFrame = new IncomingResponseFrame(_communicator, readBuffer.Slice(4));
-                        ProtocolTrace.TraceFrame(_communicator, header, responseFrame);
-                        if (_requests.TryGetValue(requestId, out TaskCompletionSource<IncomingResponseFrame>? response))
-                        {
-                            _requests.Remove(requestId);
-                            response.SetResult(responseFrame);
-                            if (_requests.Count == 0)
-                            {
-                                System.Threading.Monitor.PulseAll(_mutex); // Notify threads blocked in close()
-                            }
-                        }
-                        break;
-                    }
-
-                    case Ice1Definitions.FrameType.ValidateConnection:
-                    {
-                        ProtocolTrace.TraceReceived(_communicator, readBuffer);
-                        if (_heartbeatCallback != null)
-                        {
-                            Action<Connection> callback = _heartbeatCallback;
-                            incoming = () =>
-                            {
-                                try
-                                {
-                                    callback(this);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
-                                }
-                                return default;
-                            };
-                        }
-                        break;
-                    }
-
-                    default:
-                    {
-                        ProtocolTrace.Trace(
-                            "received unknown message\n(invalid, closing connection)",
-                            _communicator,
-                            readBuffer);
-                        throw new InvalidDataException(
-                            $"received ice1 frame with unknown message type `{messageType}'");
-                    }
+                    ProtocolTrace.TraceSend(_communicator, frame[0]);
                 }
             }
-
-            return (incoming, adapter);
+            await SendFrameAsync(frame, compress: false);
         }
 
-        private async ValueTask ReadAsync()
+        private async ValueTask SendRequestAsync(OutgoingRequestFrame request, int requestId, bool compress)
         {
-            // Read asynchronously incoming frames and dispatch the incoming if needed. ReadIncomingAsync can throw
-            // when the connection is closed.
-            while (true)
-            {
-                (Func<ValueTask>? incoming, ObjectAdapter? adapter) = await ReadIncomingAsync().ConfigureAwait(false);
-                if (incoming != null)
-                {
-                    if (adapter != null && adapter.SerializeDispatch)
-                    {
-                        // Run the incoming dispatch and continue reading from this task after the dispatch completes.
-                        if (adapter.TaskScheduler != null)
-                        {
-                            await TaskRun(incoming, adapter.TaskScheduler).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            await incoming().ConfigureAwait(false);
-                        }
-                    }
-                    else
-                    {
-                        // Start a new Read IO task and run the incoming dispatch. We start the new ReadAsync from
-                        // a separate task because ReadAsync could complete synchronously and we don't want the
-                        // dispatch from this read to run before we actually ran the dispatch from this block. An
-                        // alternative could be to start a task to run the incoming dispatch and continue reading
-                        // with this loop. It would have a negative impact on latency however since execution of
-                        // the incoming dispatch would potentially require a thread context switch.
-                        if (adapter?.TaskScheduler != null)
-                        {
-                            await TaskRun(() =>
-                            {
-                                _ = Task.Run(() => RunIO(ReadAsync));
-                                return incoming();
-                            }, adapter.TaskScheduler).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            _ = Task.Run(() => RunIO(ReadAsync));
-                            await incoming().ConfigureAwait(false);
-                        }
-                        return;
-                    }
-                }
-            }
-
-            static async ValueTask TaskRun(Func<ValueTask> func, TaskScheduler scheduler)
-            {
-                // First await for the dispatch to be ran on the task scheduler.
-                ValueTask task = await Task.Factory.StartNew(func, default, TaskCreationOptions.None,
-                    scheduler).ConfigureAwait(false);
-
-                // Now wait for the async dispatch to complete.
-                await task.ConfigureAwait(false);
-            }
-        }
-
-        private void Reap()
-        {
-            if (_monitor != null)
-            {
-                _monitor.Reap(this);
-            }
-            if (_observer != null)
-            {
-                _observer.Detach();
-            }
-        }
-
-        private async ValueTask RunIO(Func<ValueTask> ioFunc)
-        {
+            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetRequestData(request, requestId);
             lock (_mutex)
             {
-                if (_state >= State.Closed)
+                if (_state > State.Closing)
                 {
-                    return;
+                    throw _exception!;
+                }
+                if (_communicator.TraceLevels.Protocol >= 1)
+                {
+                    ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], request);
+                }
+            }
+            await SendFrameAsync(writeBuffer, compress);
+        }
+
+        private async ValueTask SendResponseAsync(OutgoingResponseFrame response, int requestId, bool compress)
+        {
+            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetResponseData(response, requestId);
+            lock (_mutex)
+            {
+                if (_state > State.Closing)
+                {
+                    throw _exception!;
+                }
+                if (_communicator.TraceLevels.Protocol > 0)
+                {
+                    ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], response);
+                }
+            }
+            await SendFrameAsync(writeBuffer, compress);
+        }
+
+        private async ValueTask SendFrameAsync(List<ArraySegment<byte>> writeBuffer, bool compress)
+        {
+            // Compress the frame if needed and possible
+            // TODO: Benoit: we should consider doing the compression at an earlier stage from the application
+            // user thread instead?
+            int size = writeBuffer.GetByteCount();
+            if (BZip2.IsLoaded && compress)
+            {
+                List<ArraySegment<byte>>? compressed = null;
+                if (size >= 100)
+                {
+                    compressed = BZip2.Compress(writeBuffer, size, Ice1Definitions.HeaderSize, _compressionLevel);
                 }
 
-                // We keep track of the number of pending IO tasks to ensure orderly connection
-                // closure. If a connection is forcefully closed while a Write task is running,
-                // we want to make sure the Write returns before notifying the outgoing requests
-                // of the failure. Notifying the requests before the write returns could break
-                // at most once semantics if for example the Write completed but the request got
-                // notified of the connection closure before.
-                ++_pendingIO;
+                if (compressed != null)
+                {
+                    writeBuffer = compressed!;
+                    size = writeBuffer.GetByteCount();
+                }
+                else // Message not compressed, request compressed response, if any.
+                {
+                    ArraySegment<byte> header = writeBuffer[0];
+                    header[9] = 1; // Write the compression status
+                }
             }
 
-            bool closing = false;
-            try
+            // Write the frame
+            int offset = 0;
+            while (offset < size)
             {
-                // Start the long running IO operation.
-                await ioFunc().ConfigureAwait(false);
-            }
-            catch (ConnectionClosedByPeerException)
-            {
-                closing = true;
-            }
-            catch (Exception ex)
-            {
+                int bytesSent = await _transceiver.WriteAsync(writeBuffer, offset).ConfigureAwait(false);
+                offset += bytesSent;
                 lock (_mutex)
                 {
-                    SetState(State.Closed, ex);
-                }
-            }
-
-            await FinishIO(closing, decreasePendingIO: true);
-        }
-
-        private async ValueTask FinishIO(bool closing, bool decreasePendingIO)
-        {
-            bool finish = false;
-            lock (_mutex)
-            {
-                if (decreasePendingIO)
-                {
-                    --_pendingIO;
-                }
-                if (_state == State.Closing && _dispatchCount == 0 && _writeTask.IsCompleted)
-                {
-                    SetState(State.ClosingPending);
-                    closing = true;
-                }
-                else if (_state == State.Closed && _pendingIO == 0)
-                {
-                    // No more pending IO and in the closed state, it's time to terminate the connection
-                    // and notify the pending requests of the connection closure.
-                    finish = true;
-                }
-            }
-
-            if (closing)
-            {
-                // Notify the transport of the graceful connection closure. The transport returns whether or not
-                // the closing is completed. It might not be completed in case there's still a Read task pending.
-                // If it's the case, the connection will be closed once the pending Read task throws an exception.
-                bool completed;
-                try
-                {
-                    completed = await _transceiver.ClosingAsync(_exception!).ConfigureAwait(false);
-                }
-                catch (Exception)
-                {
-                    // TODO: Debug.Assert(false) instead with the transport refactoring?
-                    completed = true;
-                }
-                if (completed)
-                {
-                    lock (_mutex)
+                    if (_state > State.Closing)
                     {
-                        SetState(State.Closed);
+                        return;
+                    }
+
+                    TraceSentAndUpdateObserver(bytesSent);
+                    if (_acmLastActivity > -1)
+                    {
+                        _acmLastActivity = Time.CurrentMonotonicTimeMillis();
                     }
                 }
             }
-
-            if (finish)
-            {
-                Finish();
-            }
         }
 
-        private void SetState(State state, System.Exception ex)
+        private void SetState(State state, Exception? exception = null)
         {
-            // If setState() is called with an exception, then only closed and closing State.s are permissible.
-            Debug.Assert(state >= State.Closing);
+            // If SetState() is called with an exception, then only closed and closing states are permissible.
+            Debug.Assert(exception == null || state >= State.Closing);
 
-            if (_state == state) // Don't switch twice.
-            {
-                return;
-            }
-
-            if (_exception == null)
+            if (_exception == null && exception != null)
             {
                 // If we are in closed state, an exception must be set.
                 Debug.Assert(_state != State.Closed);
-                _exception = ex;
+
+                _exception = exception;
 
                 // We don't warn if we are not validated.
                 if (_warn && _validated)
@@ -1349,110 +1487,38 @@ namespace ZeroC.Ice
                 }
             }
 
-            // We must set the new state before we notify requests of any exceptions. Otherwise new requests
-            // may retry on a connection that is not yet marked as closed or closing.
-            SetState(state);
-        }
-
-        private void SetState(State state)
-        {
-            // We don't want to send close connection messages if the endpoint only supports oneway transmission
-            // from client to server.
-            if (Endpoint.IsDatagram && state == State.Closing)
+            Debug.Assert(_state != state); // Don't switch twice.
+            switch (state)
             {
-                state = State.Closed;
-            }
-
-            // Skip graceful shutdown if we are destroyed before active.
-            if (_state < State.Active && state == State.Closing)
-            {
-                state = State.Closed;
-            }
-
-            if (_state == state) // Don't switch twice.
-            {
-                return;
-            }
-
-            try
-            {
-                switch (state)
+                case State.NotInitialized:
                 {
-                    case State.NotInitialized:
-                    {
-                        Debug.Assert(false);
-                        break;
-                    }
-
-                    case State.Active:
-                    {
-                        Debug.Assert(_state == State.NotInitialized);
-                        break;
-                    }
-
-                    case State.Closing:
-                    case State.ClosingPending:
-                    {
-                        // Can't change back from closing pending.
-                        if (_state >= State.ClosingPending)
-                        {
-                            return;
-                        }
-                        break;
-                    }
-
-                    case State.Closed:
-                    {
-                        if (_state >= State.Closed)
-                        {
-                            return;
-                        }
-
-                        // Close the transceiver, this should cause pending IO async calls to return.
-                        _transceiver.ThreadSafeClose();
-
-                        if (_state > State.NotInitialized && _communicator.TraceLevels.Network >= 1)
-                        {
-                            var s = new StringBuilder();
-                            s.Append("closed ");
-                            s.Append(Endpoint.Name);
-                            s.Append(" connection\n");
-                            s.Append(ToString());
-
-                            //
-                            // Trace the cause of unexpected connection closures
-                            //
-                            if (!(_exception is ConnectionClosedException ||
-                                  _exception is ConnectionIdleException ||
-                                  _exception is CommunicatorDestroyedException ||
-                                  _exception is ObjectAdapterDeactivatedException))
-                            {
-                                s.Append("\n");
-                                s.Append(_exception);
-                            }
-
-                            _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
-                        }
-                        break;
-                    }
-
-                    case State.Finished:
-                    {
-                        Debug.Assert(_state == State.Closed);
-
-                        _transceiver.Destroy();
-
-                        if (_dispatchCount == 0)
-                        {
-                            Reap();
-                        }
-                        break;
-                    }
+                    Debug.Assert(false);
+                    break;
                 }
-            }
-            catch (System.Exception ex)
-            {
-                _communicator.Logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
+
+                case State.Active:
+                {
+                    Debug.Assert(_state == State.NotInitialized);
+                    break;
+                }
+
+                case State.Closing:
+                {
+                    Debug.Assert(_state == State.Active);
+                    break;
+                }
+
+                case State.Closed:
+                {
+                    Debug.Assert(_state < State.Closed);
+                    break;
+                }
+
+                case State.Finished:
+                {
+                    Debug.Assert(_state == State.Closed);
+                    break;
+                }
             }
 
             // We register with the connection monitor if our new state is State.Active. ACM monitors the connection
@@ -1502,32 +1568,6 @@ namespace ZeroC.Ice
             _state = state;
 
             System.Threading.Monitor.PulseAll(_mutex);
-
-            if (_state == State.Closing && _dispatchCount == 0 && !Endpoint.IsDatagram)
-            {
-                // Initiate shut down by sending a close connection message.
-                _writeTask = RunIO(() => WriteFrameAsync(_closeConnectionFrame));
-            }
-
-            // Wait for the pending IO operations to return to terminate the connection with the Finish
-            // method and set its state to Finished. It's important in particular for messages being
-            // written. We want to make sure WriteAsync returns and correctly reports the send status
-            // of the message being sent (if it has been sent it will be removed from the outgoing
-            // message queue otherwise it's left in the message queue and the exception closure will be
-            // reported by Finish).
-            if (_state == State.Closed && _pendingIO == 0)
-            {
-                if (_writeTask.IsCompleted && _requests.Count == 0 && _closeCallback == null)
-                {
-                    // Optimization: if there's no user callbacks to call, finish the connection now.
-                    SetState(State.Finished);
-                }
-                else
-                {
-                    // Otherwise, schedule a task to call Finish()
-                    Task.Run(Finish);
-                }
-            }
         }
 
         private void TraceReceivedAndUpdateObserver(int length)
@@ -1558,99 +1598,33 @@ namespace ZeroC.Ice
             }
         }
 
-        private async ValueTask WriteFrameAsync(List<ArraySegment<byte>> message)
+        private Task WriteAsync(Func<ValueTask> write)
         {
-            // Wait for the previous write to be done.
-            await _writeTask.ConfigureAwait(false);
-
-            if (_communicator.TraceLevels.Protocol > 0)
+            // Must be called with the mutex locked.
+            ValueTask writeTask = QueueAsync(this, _writeTask, write);
+            if (writeTask.IsCompleted)
             {
-                ProtocolTrace.TraceSend(_communicator, message[0]);
+                _writeTask = Task.CompletedTask;
             }
-            await WriteAsync(message, compress: false);
-        }
-
-        private async ValueTask WriteRequestAsync(OutgoingRequestFrame request, int requestId, bool compress)
-        {
-            // Wait for the previous write to be done.
-            await _writeTask.ConfigureAwait(false);
-
-            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetRequestData(request, requestId);
-            if (_communicator.TraceLevels.Protocol >= 1)
+            else
             {
-                ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], request);
+                _writeTask = writeTask.AsTask();
             }
-            await WriteAsync(writeBuffer, compress);
-        }
+            return _writeTask;
 
-        private async ValueTask WriteResponseAsync(OutgoingResponseFrame response, int requestId, bool compress)
-        {
-            // Wait for the previous write to be done.
-            await _writeTask.ConfigureAwait(false);
-
-            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetResponseData(response, requestId);
-            if (_communicator.TraceLevels.Protocol > 0)
+            static async ValueTask QueueAsync(Connection self, Task previous, Func<ValueTask> write)
             {
-                ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], response);
-            }
-            await WriteAsync(writeBuffer, compress);
-        }
+                // Wait for the previous write to complete
+                await previous.ConfigureAwait(false);
 
-        private async ValueTask WriteAsync(List<ArraySegment<byte>> writeBuffer, bool compress)
-        {
-            try
-            {
-                // Compress the frame if needed and possible
-                // TODO: Benoit: we should consider doing the compression at an earlier stage from the application
-                // user thread instead of the WriteAsync task continuation?
-                int size = writeBuffer.GetByteCount();
-                if (BZip2.IsLoaded && compress)
+                // Perform the write
+                try
                 {
-                    List<ArraySegment<byte>>? compressed = null;
-                    if (size >= 100)
-                    {
-                        compressed = BZip2.Compress(writeBuffer, size, Ice1Definitions.HeaderSize, _compressionLevel);
-                    }
-
-                    if (compressed != null)
-                    {
-                        writeBuffer = compressed!;
-                        size = writeBuffer.GetByteCount();
-                    }
-                    else // Message not compressed, request compressed response, if any.
-                    {
-                        ArraySegment<byte> header = writeBuffer[0];
-                        header[9] = 1; // Write the compression status
-                    }
+                    await write().ConfigureAwait(false);
                 }
-
-                // Write the frame
-                int offset = 0;
-                while (offset < size)
+                catch (Exception ex)
                 {
-                    int bytesSent = await _transceiver.WriteAsync(writeBuffer, offset).ConfigureAwait(false);
-                    offset += bytesSent;
-                    lock (_mutex)
-                    {
-                        Debug.Assert(_state < State.Finished); // Finish is only called once WriteAsync returns
-                        if (_state > State.Closing)
-                        {
-                            return;
-                        }
-
-                        TraceSentAndUpdateObserver(bytesSent);
-                        if (_acmLastActivity > -1)
-                        {
-                            _acmLastActivity = Time.CurrentMonotonicTimeMillis();
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                lock (_mutex)
-                {
-                    SetState(State.Closed, ex);
+                    _ = self.CloseAsync(ex);
                     throw;
                 }
             }
@@ -1661,7 +1635,6 @@ namespace ZeroC.Ice
             NotInitialized,
             Active,
             Closing,
-            ClosingPending,
             Closed,
             Finished
         };

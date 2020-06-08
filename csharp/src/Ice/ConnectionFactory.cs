@@ -58,7 +58,7 @@ namespace ZeroC.Ice
                 {
                     foreach (Connection c in connections)
                     {
-                        c.Destroy(new CommunicatorDestroyedException());
+                        _ = c.GracefulCloseAsync(new CommunicatorDestroyedException());
                     }
                 }
 
@@ -81,6 +81,7 @@ namespace ZeroC.Ice
             }
         }
 
+        // TODO: Remove once Destroy is async
         public void WaitUntilFinished()
         {
             Dictionary<IConnector, ICollection<Connection>> connections;
@@ -111,7 +112,7 @@ namespace ZeroC.Ice
             {
                 foreach (Connection c in cl)
                 {
-                    c.WaitUntilFinished();
+                    c.GracefulCloseAsync(new CommunicatorDestroyedException()).Wait();
                 }
             }
 
@@ -1050,7 +1051,7 @@ namespace ZeroC.Ice
 
                 foreach (Connection connection in _connections)
                 {
-                    connection.Destroy(new ObjectAdapterDeactivatedException(_adapter.Name));
+                    _ = connection.GracefulCloseAsync(new ObjectAdapterDeactivatedException(_adapter.Name));
                 }
 
                 _destroyed = true;
@@ -1104,6 +1105,7 @@ namespace ZeroC.Ice
             }
         }
 
+        // TODO: Remove once Destroy is async
         public void WaitUntilFinished()
         {
             lock (this)
@@ -1119,7 +1121,7 @@ namespace ZeroC.Ice
             // _connections is immutable in this state
             foreach (Connection connection in _connections)
             {
-                connection.WaitUntilFinished();
+                connection.GracefulCloseAsync(new ObjectAdapterDeactivatedException(_adapter.Name)).Wait();
             }
 
             // Ensure all the connections are finished and reaped.
