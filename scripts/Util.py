@@ -3435,6 +3435,10 @@ class CSharpMapping(Mapping):
             "IceSSL.VerifyPeer": "0" if current.config.transport == "wss" else "2",
             "IceSSL.CertFile": "server.p12" if isinstance(process, Server) else "client.p12",
         })
+
+        # TODO remove this once IceSSL is integrated into core in all mappings
+        props.pop("Ice.Plugin.IceSSL", None)
+
         if current.config.xamarin:
             props["Ice.InitPlugins"] = 0
             props["IceSSL.CAs"] = "cacert.der"
@@ -3459,7 +3463,7 @@ class CSharpMapping(Mapping):
             plugindir += os.sep
 
         return {
-            "IceSSL" : plugindir + "Ice.dll:ZeroC.IceSSL.PluginFactory",
+            "IceSSL" : plugindir + "Ice.dll:ZeroC.Ice.SslPluginFactory",
             "IceDiscovery" : plugindir + "IceDiscovery.dll:ZeroC.IceDiscovery.PluginFactory",
             "IceLocatorDiscovery" : plugindir + "IceLocatorDiscovery.dll:ZeroC.IceLocatorDiscovery.PluginFactory"
         }[plugin]

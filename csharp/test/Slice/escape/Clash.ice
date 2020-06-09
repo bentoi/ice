@@ -2,9 +2,9 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-[[underscore]]
+[[suppress-warning:reserved-identifier]]
 
-module Clash
+module ZeroC::Slice::Test::Escape::Clash
 {
 
 interface Intf

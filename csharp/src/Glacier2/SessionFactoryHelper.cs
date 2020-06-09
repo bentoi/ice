@@ -24,19 +24,15 @@ namespace ZeroC.Glacier2
         /// <param name="properties">Optional properties used for communicator initialization.</param>
         /// <param name="logger">Optional logger used for communicator initialization.</param>
         /// <param name="observer">Optional communicator observer used for communicator initialization.</param>
-        /// <param name="typeIdNamespaces">Optional list of TypeId namespaces used for communicator initialization. The
-        /// default is Ice.TypeId.</param>
         public SessionFactoryHelper(ISessionCallback callback,
                              Dictionary<string, string> properties,
                              ILogger? logger = null,
-                             ICommunicatorObserver? observer = null,
-                             string[]? typeIdNamespaces = null)
+                             ICommunicatorObserver? observer = null)
         {
             _callback = callback;
             _properties = properties;
             _logger = logger;
             _observer = observer;
-            _typeIdNamespaces = typeIdNamespaces;
 
             SetDefaultProperties();
         }
@@ -196,8 +192,7 @@ namespace ZeroC.Glacier2
                     _useCallbacks,
                     CreateProperties(),
                     _logger,
-                    _observer,
-                    _typeIdNamespaces);
+                    _observer);
                 session.Connect(_context);
                 return session;
             }
@@ -219,8 +214,7 @@ namespace ZeroC.Glacier2
                     _useCallbacks,
                     CreateProperties(),
                     _logger,
-                    _observer,
-                    _typeIdNamespaces);
+                    _observer);
                 session.Connect(username, password, _context);
                 return session;
             }
@@ -242,15 +236,6 @@ namespace ZeroC.Glacier2
             {
                 properties["Ice.Default.Router"] = CreateProxyStr(_identity.Value);
             }
-
-            // If using a secure connection setup the IceSSL plug-in, if IceSSL
-            // plug-in has already been setup we don't want to override the
-            // configuration so it can be loaded from a custom location.
-            if ((_transport.Equals("ssl") || _transport.Equals("wss")) && !properties.ContainsKey("Ice.Plugin.IceSSL"))
-            {
-                properties["Ice.Plugin.IceSSL"] = "IceSSL:IceSSL.PluginFactory";
-            }
-
             return properties;
         }
 
@@ -279,7 +264,6 @@ namespace ZeroC.Glacier2
         private readonly Dictionary<string, string> _properties;
         private readonly ILogger? _logger;
         private readonly ICommunicatorObserver? _observer;
-        private readonly string[]? _typeIdNamespaces;
 
         private string _routerHost = "localhost";
         private Identity? _identity = null;

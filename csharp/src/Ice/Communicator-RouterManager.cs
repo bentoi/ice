@@ -21,7 +21,7 @@ namespace ZeroC.Ice
 
         public void Destroy()
         {
-            lock (this)
+            lock (_mutex)
             {
                 _clientEndpoints = System.Array.Empty<Endpoint>();
                 _adapter = null;
@@ -36,7 +36,7 @@ namespace ZeroC.Ice
                 return true;
             }
 
-            return (obj is RouterInfo rhs) && Router.Equals(rhs.Router);
+            return obj is RouterInfo rhs && Router.Equals(rhs.Router);
         }
 
         public override int GetHashCode() => Router.GetHashCode();
@@ -46,7 +46,7 @@ namespace ZeroC.Ice
 
         public async ValueTask<IReadOnlyList<Endpoint>> GetClientEndpointsAsync()
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_clientEndpoints != null) // Lazy initialization.
                 {
@@ -73,7 +73,7 @@ namespace ZeroC.Ice
         public async ValueTask AddProxyAsync(IObjectPrx proxy)
         {
             Debug.Assert(proxy != null);
-            lock (this)
+            lock (_mutex)
             {
                 if (!_hasRoutingTable)
                 {
@@ -95,14 +95,14 @@ namespace ZeroC.Ice
         {
             get
             {
-                lock (this)
+                lock (_mutex)
                 {
                     return _adapter;
                 }
             }
             set
             {
-                lock (this)
+                lock (_mutex)
                 {
                     _adapter = value;
                 }
@@ -111,7 +111,7 @@ namespace ZeroC.Ice
 
         public void ClearCache(Reference reference)
         {
-            lock (this)
+            lock (_mutex)
             {
                 _identities.Remove(reference.Identity);
             }
@@ -119,7 +119,7 @@ namespace ZeroC.Ice
 
         private IReadOnlyList<Endpoint> SetClientEndpoints(IObjectPrx clientProxy, bool hasRoutingTable)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_clientEndpoints == null)
                 {
@@ -155,7 +155,7 @@ namespace ZeroC.Ice
 
         private void AddAndEvictProxies(IObjectPrx proxy, IObjectPrx[] evictedProxies)
         {
-            lock (this)
+            lock (_mutex)
             {
                 //
                 // Check if the proxy hasn't already been evicted by a
@@ -194,11 +194,12 @@ namespace ZeroC.Ice
             }
         }
 
-        private IReadOnlyList<Endpoint>? _clientEndpoints;
         private ObjectAdapter? _adapter;
-        private readonly HashSet<Identity> _identities = new HashSet<Identity>();
+        private IReadOnlyList<Endpoint>? _clientEndpoints;
         private readonly List<Identity> _evictedIdentities = new List<Identity>();
         private bool _hasRoutingTable;
+        private readonly HashSet<Identity> _identities = new HashSet<Identity>();
+        private readonly object _mutex = new object();
     }
 
     public sealed partial class Communicator

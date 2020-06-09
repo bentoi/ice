@@ -10,6 +10,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 
@@ -184,7 +185,6 @@ namespace ZeroC.Ice
         private Identity? _adminIdentity;
         private readonly ConcurrentDictionary<string, IClassFactory?> _classFactoryCache =
             new ConcurrentDictionary<string, IClassFactory?>();
-        private readonly string[] _classFactoryNamespaces;
         private readonly ConcurrentDictionary<int, IClassFactory?> _compactIdCache =
             new ConcurrentDictionary<int, IClassFactory?>();
         private readonly ThreadLocal<Dictionary<string, string>> _currentContext
@@ -192,6 +192,7 @@ namespace ZeroC.Ice
         private volatile IReadOnlyDictionary<string, string> _defaultContext = Reference.EmptyContext;
         private volatile ILocatorPrx? _defaultLocator;
         private volatile IRouterPrx? _defaultRouter;
+        private readonly object _mutex = new object();
 
         private bool _isShutdown = false;
         private static bool _oneOffDone = false;
@@ -199,10 +200,11 @@ namespace ZeroC.Ice
         private static bool _printProcessIdDone = false;
         private readonly ConcurrentDictionary<string, IRemoteExceptionFactory?> _remoteExceptionFactoryCache =
             new ConcurrentDictionary<string, IRemoteExceptionFactory?>();
-        private readonly string[] _remoteExceptionFactoryNamespaces;
         private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private readonly Dictionary<EndpointType, BufSizeWarnInfo> _setBufSizeWarn =
             new Dictionary<EndpointType, BufSizeWarnInfo>();
+
+        private SslEngine _sslEngine;
         private int _state;
         private readonly Timer _timer;
 
@@ -215,13 +217,19 @@ namespace ZeroC.Ice
         public Communicator(Dictionary<string, string>? properties,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            string[]? typeIdNamespaces = null)
+                            X509Certificate2Collection? certificates = null,
+                            X509Certificate2Collection? caCertificates = null,
+                            ICertificateVerifier? certificateVerifier = null,
+                            IPasswordCallback? passwordCallback = null)
             : this(ref _emptyArgs,
                    null,
                    properties,
                    logger,
                    observer,
-                   typeIdNamespaces)
+                   certificates,
+                   caCertificates,
+                   certificateVerifier,
+                   passwordCallback)
         {
         }
 
@@ -229,13 +237,19 @@ namespace ZeroC.Ice
                             Dictionary<string, string>? properties,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            string[]? typeIdNamespaces = null)
+                            X509Certificate2Collection? certificates = null,
+                            X509Certificate2Collection? caCertificates = null,
+                            ICertificateVerifier? certificateVerifier = null,
+                            IPasswordCallback? passwordCallback = null)
             : this(ref args,
                    null,
                    properties,
                    logger,
                    observer,
-                   typeIdNamespaces)
+                   certificates,
+                   caCertificates,
+                   certificateVerifier,
+                   passwordCallback)
         {
         }
 
@@ -243,13 +257,19 @@ namespace ZeroC.Ice
                             Dictionary<string, string>? properties = null,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            string[]? typeIdNamespaces = null)
+                            X509Certificate2Collection? certificates = null,
+                            X509Certificate2Collection? caCertificates = null,
+                            ICertificateVerifier? certificateVerifier = null,
+                            IPasswordCallback? passwordCallback = null)
             : this(ref _emptyArgs,
                    appSettings,
                    properties,
                    logger,
                    observer,
-                   typeIdNamespaces)
+                   certificates,
+                   caCertificates,
+                   certificateVerifier,
+                   passwordCallback)
         {
         }
 
@@ -258,20 +278,14 @@ namespace ZeroC.Ice
                             Dictionary<string, string>? properties = null,
                             ILogger? logger = null,
                             Instrumentation.ICommunicatorObserver? observer = null,
-                            string[]? typeIdNamespaces = null)
+                            X509Certificate2Collection? certificates = null,
+                            X509Certificate2Collection? caCertificates = null,
+                            ICertificateVerifier? certificateVerifier = null,
+                            IPasswordCallback? passwordCallback = null)
         {
             _state = StateActive;
-            Logger = logger ?? Util.GetProcessLogger();
+            Logger = logger ?? Runtime.Logger;
             Observer = observer;
-
-            _classFactoryNamespaces = new string[] { "Ice.ClassFactory" };
-            _remoteExceptionFactoryNamespaces = new string[] { "Ice.RemoteExceptionFactory" };
-            if (typeIdNamespaces != null)
-            {
-                _classFactoryNamespaces = _classFactoryNamespaces.Concat(typeIdNamespaces).ToArray();
-                _remoteExceptionFactoryNamespaces =
-                    _remoteExceptionFactoryNamespaces.Concat(typeIdNamespaces).ToArray();
-            }
 
             if (properties == null)
             {
@@ -279,8 +293,7 @@ namespace ZeroC.Ice
             }
             else
             {
-                // clone properties as we don't want to modify the properties given to
-                // this constructor
+                // clone properties as we don't want to modify the properties given to this constructor
                 properties = new Dictionary<string, string>(properties);
             }
 
@@ -295,8 +308,7 @@ namespace ZeroC.Ice
                     }
                     else
                     {
-                        // TODO: this join is not sufficient to create a string
-                        // compatible with GetPropertyAsList
+                        // TODO: this join is not sufficient to create a string compatible with GetPropertyAsList
                         properties[key] = string.Join(",", values);
                     }
                 }
@@ -357,7 +369,7 @@ namespace ZeroC.Ice
                     {
                         Logger = new FileLogger(programName, logfile);
                     }
-                    else if (Util.GetProcessLogger() is Logger)
+                    else if (Runtime.Logger is Logger)
                     {
                         //
                         // Ice.ConsoleListener is enabled by default.
@@ -576,14 +588,14 @@ namespace ZeroC.Ice
 
                 NetworkProxy = CreateNetworkProxy(IPVersion);
 
-                AddEndpointFactory(new TcpEndpointFactory(
-                    new TransportInstance(this, EndpointType.TCP, "tcp", false)));
-                AddEndpointFactory(new UdpEndpointFactory(
-                    new TransportInstance(this, EndpointType.UDP, "udp", false)));
-                AddEndpointFactory(new WSEndpointFactory(
-                    new TransportInstance(this, EndpointType.WS, "ws", false), EndpointType.TCP));
-                AddEndpointFactory(new WSEndpointFactory(
-                    new TransportInstance(this, EndpointType.WSS, "wss", true), EndpointType.SSL));
+                _sslEngine = new SslEngine(this, certificates, caCertificates, certificateVerifier, passwordCallback);
+
+                IceAddEndpointFactory(new TcpEndpointFactory(this));
+                IceAddEndpointFactory(new UdpEndpointFactory(this));
+                IceAddEndpointFactory(new WSEndpointFactory(this));
+
+                IceAddEndpointFactory(new SslEndpointFactory(this, _sslEngine));
+                IceAddEndpointFactory(new WSSEndpointFactory(this, _sslEngine));
 
                 _outgoingConnectionFactory = new OutgoingConnectionFactory(this);
 
@@ -596,13 +608,6 @@ namespace ZeroC.Ice
                 // Load plug-ins.
                 //
                 LoadPlugins(ref args);
-
-                // Initialize the endpoint factories once all the plugins are loaded. This gives the opportunity for the
-                // endpoint factories to find underlying factories.
-                foreach (IEndpointFactory factory in _typeToEndpointFactory.Values)
-                {
-                    factory.Initialize();
-                }
 
                 //
                 // Create Admin facets, if enabled.
@@ -675,20 +680,11 @@ namespace ZeroC.Ice
                     }
                 }
 
-                //
-                // Set observer updater
-                //
-                if (Observer != null)
-                {
-                    Observer.SetObserverUpdater(new ObserverUpdater(this));
-                }
+                Observer?.SetObserverUpdater(new ObserverUpdater(this));
 
-                //
-                // Create threads.
-                //
                 try
                 {
-                    _timer = new Timer(this, Util.StringToThreadPriority(GetProperty("Ice.ThreadPriority")));
+                    _timer = new Timer(this);
                 }
                 catch (Exception ex)
                 {
@@ -719,7 +715,7 @@ namespace ZeroC.Ice
                 //
                 // Show process id if requested (but only once).
                 //
-                lock (this)
+                lock (_mutex)
                 {
                     if (!_printProcessIdDone && (GetPropertyAsBool("Ice.PrintProcessId") ?? false))
                     {
@@ -758,7 +754,7 @@ namespace ZeroC.Ice
 
         public void AddAdminFacet(string facet, IObject servant)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state == StateDestroyed)
                 {
@@ -804,7 +800,7 @@ namespace ZeroC.Ice
         /// </returns>
         public IObjectPrx CreateAdmin(ObjectAdapter? adminAdapter, Identity adminIdentity)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state == StateDestroyed)
                 {
@@ -853,7 +849,7 @@ namespace ZeroC.Ice
                     // (can't call again getAdmin() after fixing the problem)
                     // since all the facets (servants) in the adapter are lost
                     _adminAdapter.Destroy();
-                    lock (this)
+                    lock (_mutex)
                     {
                         _adminAdapter = null;
                     }
@@ -873,7 +869,7 @@ namespace ZeroC.Ice
         /// </summary>
         public void Destroy()
         {
-            lock (this)
+            lock (_mutex)
             {
                 //
                 // If destroy is in progress, wait for it to be done. This
@@ -882,7 +878,7 @@ namespace ZeroC.Ice
                 //
                 while (_state == StateDestroyInProgress)
                 {
-                    Monitor.Wait(this);
+                    Monitor.Wait(_mutex);
                 }
 
                 if (_state == StateDestroyed)
@@ -944,10 +940,6 @@ namespace ZeroC.Ice
                 _locatorTableMap.Clear();
             }
 
-            foreach (IEndpointFactory factory in _typeToEndpointFactory.Values)
-            {
-                factory.Destroy();
-            }
             _typeToEndpointFactory.Clear();
             _transportToEndpointFactory.Clear();
 
@@ -970,7 +962,7 @@ namespace ZeroC.Ice
             // Destroy last so that a Logger plugin can receive all log/traces before its destruction.
             //
             List<(string Name, IPlugin Plugin)> plugins;
-            lock (this)
+            lock (_mutex)
             {
                 plugins = new List<(string Name, IPlugin Plugin)>(_plugins);
             }
@@ -983,18 +975,17 @@ namespace ZeroC.Ice
                 }
                 catch (Exception ex)
                 {
-                    Util.GetProcessLogger().Warning(
-                        $"unexpected exception raised by plug-in `{name}' destruction:\n{ex}");
+                    Runtime.Logger.Warning($"unexpected exception raised by plug-in `{name}' destruction:\n{ex}");
                 }
             }
 
-            lock (this)
+            lock (_mutex)
             {
                 _adminAdapter = null;
                 _adminFacets.Clear();
 
                 _state = StateDestroyed;
-                Monitor.PulseAll(this);
+                Monitor.PulseAll(_mutex);
             }
 
             {
@@ -1018,7 +1009,7 @@ namespace ZeroC.Ice
         /// null if no facet is registered with the given name.</returns>
         public IObject? FindAdminFacet(string facet)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state == StateDestroyed)
                 {
@@ -1042,7 +1033,7 @@ namespace ZeroC.Ice
         /// </returns>
         public Dictionary<string, IObject> FindAllAdminFacets()
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state == StateDestroyed)
                 {
@@ -1070,7 +1061,7 @@ namespace ZeroC.Ice
             ObjectAdapter adminAdapter;
             Identity adminIdentity;
 
-            lock (this)
+            lock (_mutex)
             {
                 if (_state == StateDestroyed)
                 {
@@ -1119,7 +1110,7 @@ namespace ZeroC.Ice
                 // (can't call again getAdmin() after fixing the problem)
                 // since all the facets (servants) in the adapter are lost
                 adminAdapter.Destroy();
-                lock (this)
+                lock (_mutex)
                 {
                     _adminAdapter = null;
                 }
@@ -1130,13 +1121,11 @@ namespace ZeroC.Ice
             return adminAdapter.CreateProxy(adminIdentity, IObjectPrx.Factory);
         }
 
-        /// <summary>
-        /// Check whether the communicator has been shut down.
-        /// </summary>
+        /// <summary>Check whether the communicator has been shut down.</summary>
         /// <returns>True if the communicator has been shut down; false otherwise.</returns>
         public bool IsShutdown()
         {
-            lock (this)
+            lock (_mutex) // TODO do we need this lock, isn't _isShutdown assignment atomic?
             {
                 return _isShutdown;
             }
@@ -1147,7 +1136,7 @@ namespace ZeroC.Ice
         /// <returns>The admin facet servant that was just removed, or null if the facet was not found.</returns>
         public IObject? RemoveAdminFacet(string facet)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_adminFacets.TryGetValue(facet, out IObject? result))
                 {
@@ -1168,7 +1157,7 @@ namespace ZeroC.Ice
 
         public Timer Timer()
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state == StateDestroyed)
                 {
@@ -1179,19 +1168,18 @@ namespace ZeroC.Ice
         }
 
         // Registers an endpoint factory.
-        // TODO: make public and add Ice prefix when removing ITransportPluginFacade.
-        internal void AddEndpointFactory(IEndpointFactory factory)
+        public void IceAddEndpointFactory(IEndpointFactory factory)
         {
-            _typeToEndpointFactory.Add(factory.Type(), factory);
-            _transportToEndpointFactory.Add(factory.Transport(), factory);
+            _typeToEndpointFactory.Add(factory.Type, factory);
+            _transportToEndpointFactory.Add(factory.Name, factory);
         }
 
-        // Finds an endpoint factory previously registered using AddEndpointFactory.
-        internal IEndpointFactory? FindEndpointFactory(string transport) =>
+        // Finds an endpoint factory previously registered using IceAddEndpointFactory.
+        public IEndpointFactory? IceFindEndpointFactory(string transport) =>
             _transportToEndpointFactory.TryGetValue(transport, out IEndpointFactory? factory) ? factory : null;
 
-         // Finds an endpoint factory previously registered using AddEndpointFactory.
-        internal IEndpointFactory? FindEndpointFactory(EndpointType type) =>
+        // Finds an endpoint factory previously registered using IceAddEndpointFactory.
+        public IEndpointFactory? IceFindEndpointFactory(EndpointType type) =>
             _typeToEndpointFactory.TryGetValue(type, out IEndpointFactory? factory) ? factory : null;
 
         internal BufSizeWarnInfo GetBufSizeWarn(EndpointType type)
@@ -1218,7 +1206,7 @@ namespace ZeroC.Ice
 
         internal OutgoingConnectionFactory OutgoingConnectionFactory()
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_state == StateDestroyed)
                 {
@@ -1233,13 +1221,10 @@ namespace ZeroC.Ice
             _classFactoryCache.GetOrAdd(typeId, typeId =>
             {
                 string className = TypeIdToClassName(typeId);
-                foreach (string ns in _classFactoryNamespaces)
+                Type? factoryClass = AssemblyUtil.FindType($"ZeroC.Ice.ClassFactory.{className}");
+                if (factoryClass != null)
                 {
-                    Type? factoryClass = AssemblyUtil.FindType($"{ns}.{className}");
-                    if (factoryClass != null)
-                    {
-                        return (IClassFactory?)Activator.CreateInstance(factoryClass, false);
-                    }
+                    return (IClassFactory?)Activator.CreateInstance(factoryClass, false);
                 }
                 return null;
             });
@@ -1247,14 +1232,11 @@ namespace ZeroC.Ice
         internal IClassFactory? FindClassFactory(int compactId) =>
            _compactIdCache.GetOrAdd(compactId, compactId =>
            {
-               foreach (string ns in _classFactoryNamespaces)
-               {
-                   Type? factoryClass = AssemblyUtil.FindType($"{ns}.CompactId_{compactId}");
-                   if (factoryClass != null)
-                   {
-                       return (IClassFactory?)Activator.CreateInstance(factoryClass, false);
-                   }
-               }
+                Type? factoryClass = AssemblyUtil.FindType($"ZeroC.Ice.ClassFactory.CompactId_{compactId}");
+                if (factoryClass != null)
+                {
+                    return (IClassFactory?)Activator.CreateInstance(factoryClass, false);
+                }
                return null;
            });
 
@@ -1262,13 +1244,10 @@ namespace ZeroC.Ice
             _remoteExceptionFactoryCache.GetOrAdd(typeId, typeId =>
             {
                 string className = TypeIdToClassName(typeId);
-                foreach (string ns in _remoteExceptionFactoryNamespaces)
+                Type? factoryClass = AssemblyUtil.FindType($"ZeroC.Ice.RemoteExceptionFactory.{className}");
+                if (factoryClass != null)
                 {
-                    Type? factoryClass = AssemblyUtil.FindType($"{ns}.{className}");
-                    if (factoryClass != null)
-                    {
-                        return (IRemoteExceptionFactory?)Activator.CreateInstance(factoryClass, false);
-                    }
+                    return (IRemoteExceptionFactory?)Activator.CreateInstance(factoryClass, false);
                 }
                 return null;
             });
@@ -1336,7 +1315,7 @@ namespace ZeroC.Ice
                 _outgoingConnectionFactory.UpdateConnectionObservers();
 
                 ObjectAdapter[] adapters;
-                lock (this)
+                lock (_mutex)
                 {
                     adapters = _adapters.ToArray();
                 }
@@ -1374,7 +1353,7 @@ namespace ZeroC.Ice
 
         private void AddAllAdminFacets()
         {
-            lock (this)
+            lock (_mutex)
             {
                 Debug.Assert(_adminAdapter != null);
                 foreach (KeyValuePair<string, IObject> entry in _adminFacets)

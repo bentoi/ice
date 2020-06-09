@@ -314,6 +314,10 @@ Slice::DefinitionContext::initSuppressedWarnings()
                 {
                     _suppressedWarnings.insert(InvalidMetaData);
                 }
+                else if(s == "reserved-identifier")
+                {
+                    _suppressedWarnings.insert(ReservedIdentifier);
+                }
                 else
                 {
                     warning(InvalidMetaData, "", "", string("invalid category `") + s +
@@ -469,8 +473,8 @@ Slice::Builtin::minWireSize() const
         case KindFloat: return 4;
         case KindDouble: return 8;
         case KindString: return 1; // at least one byte for an empty string.
-        case KindObject: return 2; // at least an empty identity for a nil proxy, that is, 2 bytes.
-        case KindValue: return 1; // at least one byte (to marshal an index instead of an instance).
+        case KindObject: return 3; // at least a 1-character identity name (2 bytes) + empty identity category (1 byte).
+        case KindValue: return 1; // at least one byte to marshal an index instead of an instance.
     }
     throw logic_error("");
 }
@@ -1275,9 +1279,9 @@ Slice::Container::createClassDef(const string& name, int id, const ClassDefPtr& 
         return 0;
     }
 
-    bool isIllegal = !checkIdentifier(name);
-    isIllegal |= !checkForGlobalDef(name, "class");
-    if(isIllegal)
+    // We want to run both checks, even if the first one returns false. '||' has the potential to short-circuit
+    // and skip the second check, so we use '|' here instead, which will never short-circuit.
+    if(!checkIdentifier(name) | !checkForGlobalDef(name, "class"))
     {
         return 0;
     }
@@ -1339,9 +1343,9 @@ Slice::Container::createClassDecl(const string& name)
         return 0;
     }
 
-    bool isIllegal = !checkIdentifier(name);
-    isIllegal |= !checkForGlobalDef(name, "class");
-    if(isIllegal)
+    // We want to run both checks, even if the first one returns false. '||' has the potential to short-circuit
+    // and skip the second check, so we use '|' here instead, which will never short-circuit.
+    if(!checkIdentifier(name) | !checkForGlobalDef(name, "class"))
     {
         return 0;
     }
@@ -1429,9 +1433,9 @@ Slice::Container::createInterfaceDef(const string& name, const InterfaceList& ba
         return 0;
     }
 
-    bool isIllegal = !checkIdentifier(name);
-    isIllegal |= !checkForGlobalDef(name, "interface");
-    if (isIllegal)
+    // We want to run both checks, even if the first one returns false. '||' has the potential to short-circuit
+    // and skip the second check, so we use '|' here instead, which will never short-circuit.
+    if (!checkIdentifier(name) | !checkForGlobalDef(name, "interface"))
     {
         return 0;
     }
@@ -1495,9 +1499,9 @@ Slice::Container::createInterfaceDecl(const string& name)
         return 0;
     }
 
-    bool isIllegal = !checkIdentifier(name);
-    isIllegal |= !checkForGlobalDef(name, "interface");
-    if (isIllegal)
+    // We want to run both checks, even if the first one returns false. '||' has the potential to short-circuit
+    // and skip the second check, so we use '|' here instead, which will never short-circuit.
+    if (!checkIdentifier(name) | !checkForGlobalDef(name, "interface"))
     {
         return 0;
     }
@@ -1561,11 +1565,11 @@ Slice::Container::createException(const string& name, const ExceptionPtr& base, 
         return 0;
     }
 
-    checkIdentifier(name); // Don't return here -- we create the exception anyway
+    checkIdentifier(name); // Don't return here -- we create the exception anyway.
 
     if(nt == Real)
     {
-        checkForGlobalDef(name, "exception"); // Don't return here -- we create the exception anyway
+        checkForGlobalDef(name, "exception"); // Don't return here -- we create the exception anyway.
     }
 
     ExceptionPtr p = new Exception(this, name, base);
@@ -3367,7 +3371,7 @@ Slice::ClassDecl::usesClasses() const
 size_t
 Slice::ClassDecl::minWireSize() const
 {
-    return 1; // At least four bytes for an instance, if the instance is marshaled as an index.
+    return 1; // Can be a single byte when the instance is marshaled as an index.
 }
 
 string
@@ -3807,7 +3811,7 @@ Slice::InterfaceDecl::usesClasses() const
 size_t
 Slice::InterfaceDecl::minWireSize() const
 {
-    return 2; // a null proxy is encoded on 2 bytes
+    return 3; // See Object
 }
 
 string
@@ -4303,8 +4307,18 @@ Slice::Optional::usesClasses() const
 size_t
 Slice::Optional::minWireSize() const
 {
-    // TODO: should be 2 for proxies with the 1.1 encoding
-    return 1;
+    if (_underlying->isClassType())
+    {
+        return 1;
+    }
+    else if (_underlying->isInterfaceType())
+    {
+        return 2;
+    }
+    else
+    {
+        return 0;
+    }
 }
 
 string
@@ -5472,6 +5486,57 @@ Slice::Operation::interface() const
     return InterfaceDefPtr::dynamicCast(_container);
 }
 
+size_t
+Slice::Operation::inBitSequenceLength() const
+{
+    size_t length = 0;
+    for (const auto& p : inParameters())
+    {
+        if (!p->tagged())
+        {
+            if (auto optional = OptionalPtr::dynamicCast(p->type()))
+            {
+                if (!optional->underlying()->isClassType() && !optional->underlying()->isInterfaceType())
+                {
+                    length++;
+                }
+            }
+        }
+    }
+    return length;
+}
+
+size_t
+Slice::Operation::returnBitSequenceLength() const
+{
+    size_t length = 0;
+    for (const auto& p : outParameters())
+    {
+        if (!p->tagged())
+        {
+            if (auto optional = OptionalPtr::dynamicCast(p->type()))
+            {
+                if (!optional->underlying()->isClassType() && !optional->underlying()->isInterfaceType())
+                {
+                    length++;
+                }
+            }
+        }
+    }
+
+    if (_returnType && !_returnIsTagged)
+    {
+        if (auto optional = OptionalPtr::dynamicCast(_returnType))
+        {
+            if (!optional->underlying()->isClassType() && !optional->underlying()->isInterfaceType())
+            {
+                length++;
+            }
+        }
+    }
+    return length;
+}
+
 TypePtr
 Slice::Operation::returnType() const
 {
@@ -6032,28 +6097,15 @@ Slice::DataMember::DataMember(const ContainerPtr& container, const string& name,
 // ----------------------------------------------------------------------
 
 UnitPtr
-Slice::Unit::createUnit(bool ignRedefs, bool all, bool allowIcePrefix, bool allowUnderscore,
-                        const StringList& defaultFileMetadata)
+Slice::Unit::createUnit(bool ignRedefs, bool all, const StringList& defaultFileMetadata)
 {
-    return new Unit(ignRedefs, all, allowIcePrefix, allowUnderscore, defaultFileMetadata);
+    return new Unit(ignRedefs, all, defaultFileMetadata);
 }
 
 bool
 Slice::Unit::ignRedefs() const
 {
     return _ignRedefs;
-}
-
-bool
-Slice::Unit::allowIcePrefix() const
-{
-    return _allowIcePrefix;
-}
-
-bool
-Slice::Unit::allowUnderscore() const
-{
-    return _allowUnderscore;
 }
 
 bool
@@ -6622,14 +6674,11 @@ Slice::Unit::getTopLevelModules(const string& file) const
     }
 }
 
-Slice::Unit::Unit(bool ignRedefs, bool all, bool allowIcePrefix, bool allowUnderscore,
-                  const StringList& defaultFileMetadata) :
+Slice::Unit::Unit(bool ignRedefs, bool all, const StringList& defaultFileMetadata) :
     SyntaxTreeBase(0),
     Container(0),
     _ignRedefs(ignRedefs),
     _all(all),
-    _allowIcePrefix(allowIcePrefix),
-    _allowUnderscore(allowUnderscore),
     _defaultFileMetaData(defaultFileMetadata),
     _errors(0),
     _currentIncludeLevel(0)

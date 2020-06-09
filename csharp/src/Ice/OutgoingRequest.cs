@@ -110,12 +110,12 @@ namespace ZeroC.Ice
         private readonly string _operationName;
         private readonly bool _idempotent;
         private readonly FormatType? _format;
-        private readonly OutputStreamStructWriter<TParamList> _writer;
+        private readonly OutputStreamValueWriter<TParamList> _writer;
 
         public OutgoingRequestWithStructParam(string operationName,
                                               bool idempotent,
                                               FormatType? format,
-                                              OutputStreamStructWriter<TParamList> writer,
+                                              OutputStreamValueWriter<TParamList> writer,
                                               InputStreamReader<TReturnValue> reader)
             : base(reader)
         {
@@ -242,14 +242,14 @@ namespace ZeroC.Ice
         private readonly string _operationName;
         private readonly bool _idempotent;
         private readonly FormatType? _format;
-        private readonly OutputStreamStructWriter<TParamList> _writer;
+        private readonly OutputStreamValueWriter<TParamList> _writer;
 
         public OutgoingRequestWithStructParam(
             string operationName,
             bool idempotent,
             bool oneway,
             FormatType? format,
-            OutputStreamStructWriter<TParamList> writer)
+            OutputStreamValueWriter<TParamList> writer)
         : base(oneway)
         {
             _operationName = operationName;

@@ -2,11 +2,8 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-//
-// NOTE: We don't use C# timers, the API is quite a bit different from
-// the C++ & Java timers and it's not clear what is the cost of
-// scheduling and cancelling timers.
-//
+// NOTE: We don't use C# timers, the API is quite a bit different from the C++ & Java timers and it's not clear
+// what is the cost of scheduling and canceling timers.
 
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -23,9 +20,20 @@ namespace ZeroC.Ice
 
     public sealed class Timer
     {
+        private Communicator? _communicator;
+        private readonly object _mutex = new object();
+        // We use a volatile to avoid synchronization when reading _observer. Reference assignment is atomic in C#
+        // so it doesn't need to be synchronized.
+        private volatile IThreadObserver? _observer;
+        private readonly IDictionary<ITimerTask, Token> _tasks = new Dictionary<ITimerTask, Token>();
+        private readonly Thread _thread;
+        private readonly IDictionary<Token, object?> _tokens = new SortedDictionary<Token, object?>();
+        private int _tokenId = 0;
+        private long _wakeUpTime = long.MaxValue;
+
         public void Destroy()
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_communicator == null)
                 {
@@ -33,7 +41,7 @@ namespace ZeroC.Ice
                 }
 
                 _communicator = null;
-                Monitor.Pulse(this);
+                Monitor.Pulse(_mutex);
 
                 _tokens.Clear();
                 _tasks.Clear();
@@ -44,7 +52,7 @@ namespace ZeroC.Ice
 
         public void Schedule(ITimerTask task, long delay)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_communicator == null)
                 {
@@ -65,14 +73,14 @@ namespace ZeroC.Ice
 
                 if (token.ScheduledTime < _wakeUpTime)
                 {
-                    Monitor.Pulse(this);
+                    Monitor.Pulse(_mutex);
                 }
             }
         }
 
         public void ScheduleRepeated(ITimerTask task, long period)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_communicator == null)
                 {
@@ -93,14 +101,14 @@ namespace ZeroC.Ice
 
                 if (token.ScheduledTime < _wakeUpTime)
                 {
-                    Monitor.Pulse(this);
+                    Monitor.Pulse(_mutex);
                 }
             }
         }
 
         public bool Cancel(ITimerTask task)
         {
-            lock (this)
+            lock (_mutex)
             {
                 if (_communicator == null)
                 {
@@ -117,10 +125,8 @@ namespace ZeroC.Ice
             }
         }
 
-        //
-        // Only for use by Instance.
-        //
-        internal Timer(Communicator communicator, ThreadPriority priority = ThreadPriority.Normal)
+        // Only for use by Communicator.
+        internal Timer(Communicator communicator)
         {
             _communicator = communicator;
             string? threadName = _communicator.GetProperty("Ice.ProgramName");
@@ -132,13 +138,12 @@ namespace ZeroC.Ice
             _thread = new Thread(new ThreadStart(Run));
             _thread.IsBackground = true;
             _thread.Name = $"{threadName}Ice.Timer";
-            _thread.Priority = priority;
             _thread.Start();
         }
 
         internal void UpdateObserver(ICommunicatorObserver obsv)
         {
-            lock (this)
+            lock (_mutex)
             {
                 Debug.Assert(obsv != null);
                 _observer = obsv.GetThreadObserver("Communicator",
@@ -157,7 +162,7 @@ namespace ZeroC.Ice
             Token? token = null;
             while (true)
             {
-                lock (this)
+                lock (_mutex)
                 {
                     if (_communicator != null)
                     {
@@ -184,7 +189,7 @@ namespace ZeroC.Ice
                     if (_tokens.Count == 0)
                     {
                         _wakeUpTime = long.MaxValue;
-                        Monitor.Wait(this);
+                        Monitor.Wait(_mutex);
                     }
 
                     if (_communicator == null)
@@ -216,7 +221,7 @@ namespace ZeroC.Ice
                         }
 
                         _wakeUpTime = first.ScheduledTime;
-                        Monitor.Wait(this, (int)(first.ScheduledTime - now));
+                        Monitor.Wait(_mutex, (int)(first.ScheduledTime - now));
                     }
 
                     if (_communicator == null)
@@ -232,16 +237,16 @@ namespace ZeroC.Ice
                         IThreadObserver? threadObserver = _observer;
                         if (threadObserver != null)
                         {
-                            threadObserver.StateChanged(ZeroC.Ice.Instrumentation.ThreadState.ThreadStateIdle,
-                                                        ZeroC.Ice.Instrumentation.ThreadState.ThreadStateInUseForOther);
+                            threadObserver.StateChanged(Instrumentation.ThreadState.ThreadStateIdle,
+                                                        Instrumentation.ThreadState.ThreadStateInUseForOther);
                             try
                             {
                                 token.Task.RunTimerTask();
                             }
                             finally
                             {
-                                threadObserver.StateChanged(ZeroC.Ice.Instrumentation.ThreadState.ThreadStateInUseForOther,
-                                                            ZeroC.Ice.Instrumentation.ThreadState.ThreadStateIdle);
+                                threadObserver.StateChanged(Instrumentation.ThreadState.ThreadStateInUseForOther,
+                                                            Instrumentation.ThreadState.ThreadStateIdle);
                             }
                         }
                         else
@@ -251,7 +256,7 @@ namespace ZeroC.Ice
                     }
                     catch (System.Exception ex)
                     {
-                        lock (this)
+                        lock (_mutex)
                         {
                             if (_communicator != null)
                             {
@@ -278,9 +283,7 @@ namespace ZeroC.Ice
             public int CompareTo(object? o)
             {
                 Debug.Assert(o != null);
-                //
                 // Token are sorted by scheduled time and token id.
-                //
                 var r = (Token)o;
                 if (ScheduledTime < r.ScheduledTime)
                 {
@@ -309,7 +312,7 @@ namespace ZeroC.Ice
                 {
                     return true;
                 }
-                return !(o is Token t) ? false : CompareTo(t) == 0;
+                return o is Token t && CompareTo(t) == 0;
             }
 
             public override int GetHashCode() => System.HashCode.Combine(Id, ScheduledTime);
@@ -319,19 +322,5 @@ namespace ZeroC.Ice
             public long Delay;
             public ITimerTask Task;
         }
-
-        private readonly IDictionary<Token, object?> _tokens = new SortedDictionary<Token, object?>();
-        private readonly IDictionary<ITimerTask, Token> _tasks = new Dictionary<ITimerTask, Token>();
-        private Communicator? _communicator;
-        private long _wakeUpTime = long.MaxValue;
-        private int _tokenId = 0;
-        private readonly Thread _thread;
-
-        //
-        // We use a volatile to avoid synchronization when reading
-        // _observer. Reference assignement is atomic in Java so it
-        // also doesn't need to be synchronized.
-        //
-        private volatile IThreadObserver? _observer;
     }
 }

@@ -3,21 +3,17 @@
 //
 
 using System.Collections.Generic;
-using System.Diagnostics;
 using Test;
 
-namespace ZeroC.Ice.info
+namespace ZeroC.Ice.Test.Info
 {
-    public class TestIntf : Test.ITestIntf
+    public class TestIntf : ITestIntf
     {
         private static IPEndpoint? getIPEndpoint(Endpoint endpoint)
         {
-            for (Endpoint? e = endpoint; e != null; e = e.Underlying)
+            if (endpoint is IPEndpoint)
             {
-                if (e is IPEndpoint)
-                {
-                    return (IPEndpoint)e;
-                }
+                return (IPEndpoint)endpoint;
             }
             return null;
         }

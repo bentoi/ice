@@ -6,18 +6,15 @@ using System.Collections.Generic;
 using System.Linq;
 using Test;
 
-namespace ZeroC.Ice.info
+namespace ZeroC.Ice.Test.Info
 {
     public class AllTests
     {
         private static TcpEndpoint? getTCPEndpoint(Endpoint? endpoint)
         {
-            for (; endpoint != null; endpoint = endpoint.Underlying)
+            if (endpoint is TcpEndpoint)
             {
-                if (endpoint is TcpEndpoint)
-                {
-                    return (TcpEndpoint)endpoint;
-                }
+                return (TcpEndpoint)endpoint;
             }
             return null;
         }
@@ -34,7 +31,7 @@ namespace ZeroC.Ice.info
             return null;
         }
 
-        public static void allTests(global::Test.TestHelper helper)
+        public static void allTests(TestHelper helper)
         {
             Communicator? communicator = helper.Communicator();
             TestHelper.Assert(communicator != null);
@@ -64,7 +61,7 @@ namespace ZeroC.Ice.info
                         tcpEndpoint.Type == EndpointType.WS && !tcpEndpoint.IsSecure ||
                         tcpEndpoint.Type == EndpointType.WSS && tcpEndpoint.IsSecure);
                 TestHelper.Assert(tcpEndpoint.Type == EndpointType.TCP && endpoint is TcpEndpoint ||
-                        tcpEndpoint.Type == EndpointType.SSL && endpoint is IceSSL.Endpoint ||
+                        tcpEndpoint.Type == EndpointType.SSL && endpoint is SslEndpoint ||
                         tcpEndpoint.Type == EndpointType.WS && endpoint is WSEndpoint ||
                         tcpEndpoint.Type == EndpointType.WSS && endpoint is WSEndpoint);
 
@@ -152,9 +149,9 @@ namespace ZeroC.Ice.info
 
             int endpointPort = helper.GetTestPort(0);
 
-            var testIntf = Test.ITestIntfPrx.Parse("test:" +
-                                            helper.GetTestEndpoint(0) + ":" +
-                                            helper.GetTestEndpoint(0, "udp"), communicator);
+            var testIntf = ITestIntfPrx.Parse("test:" +
+                                              helper.GetTestEndpoint(0) + ":" +
+                                              helper.GetTestEndpoint(0, "udp"), communicator);
 
             string defaultHost = communicator.GetProperty("Ice.Default.Host") ?? "";
 

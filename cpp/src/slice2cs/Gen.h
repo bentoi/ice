@@ -58,7 +58,9 @@ protected:
     enum ParamDir { InParam, OutParam };
     void writeParamDocComment(const OperationPtr&, const CommentInfo&, ParamDir);
 
-    void openNamespace(const ModulePtr&);
+    // Generates the corresponding namespace. When prefix is empty and the internal namespace stack is empty, lookup
+    // the prefix using cs:namespace metadata.
+    void openNamespace(const ModulePtr& module, std::string prefix = "");
     void closeNamespace();
 
     ::IceUtilInternal::Output& _out;
@@ -144,7 +146,7 @@ private:
     {
     public:
 
-        DispatcherVisitor(::IceUtilInternal::Output&);
+        DispatcherVisitor(::IceUtilInternal::Output&, bool);
 
         virtual bool visitModuleStart(const ModulePtr&);
         virtual void visitModuleEnd(const ModulePtr&);
@@ -156,6 +158,10 @@ private:
 
         void writeReturnValueStruct(const OperationPtr&);
         void writeMethodDeclaration(const OperationPtr&);
+
+    private:
+
+        const bool _generateAllAsync;
     };
 
     class ImplVisitor : public CsVisitor

@@ -11,11 +11,9 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 
-using ZeroC.Ice;
-
-namespace ZeroC.IceSSL
+namespace ZeroC.Ice
 {
-    internal sealed class Transceiver : ITransceiver
+    internal sealed class SslTransceiver : ITransceiver
     {
         public Socket? Fd() => _delegate.Fd();
 
@@ -59,11 +57,11 @@ namespace ZeroC.IceSSL
                 {
                     if (Network.ConnectionLost(ex))
                     {
-                        throw new Ice.ConnectionLostException(ex);
+                        throw new ConnectionLostException(ex);
                     }
                     else
                     {
-                        throw new Ice.TransportException(ex);
+                        throw new TransportException(ex);
                     }
                 }
                 return SocketOperation.Connect;
@@ -73,16 +71,16 @@ namespace ZeroC.IceSSL
             _authenticated = true;
 
             _cipher = _sslStream.CipherAlgorithm.ToString();
-            _instance.VerifyPeer((ConnectionInfo)GetInfo(), ToString());
+            _engine.VerifyPeer((SslConnectionInfo)GetInfo(), ToString());
 
-            if (_instance.SecurityTraceLevel() >= 1)
+            if (_engine.SecurityTraceLevel >= 1)
             {
-                _instance.TraceStream(_sslStream, ToString());
+                _engine.TraceStream(_sslStream, ToString());
             }
             return SocketOperation.None;
         }
 
-        public int Closing(bool initiator, System.Exception? ex) => _delegate.Closing(initiator, ex);
+        public int Closing(bool initiator, Exception? ex) => _delegate.Closing(initiator, ex);
 
         public void Close()
         {
@@ -95,7 +93,7 @@ namespace ZeroC.IceSSL
             _delegate.Close();
         }
 
-        public Ice.Endpoint Bind()
+        public Endpoint Bind()
         {
             Debug.Assert(false);
             return null;
@@ -111,7 +109,7 @@ namespace ZeroC.IceSSL
         public int Read(ref ArraySegment<byte> buffer, ref int offset) =>
             offset < buffer.Count ? SocketOperation.Read : SocketOperation.None;
 
-        public bool StartRead(ref ArraySegment<byte> buffer, ref int offset, Ice.AsyncCallback callback, object state)
+        public bool StartRead(ref ArraySegment<byte> buffer, ref int offset, AsyncCallback callback, object state)
         {
             if (!_isConnected)
             {
@@ -138,9 +136,9 @@ namespace ZeroC.IceSSL
                 }
                 if (Network.Timeout(ex))
                 {
-                    throw new Ice.ConnectionTimeoutException();
+                    throw new ConnectionTimeoutException();
                 }
-                throw new Ice.TransportException(ex);
+                throw new TransportException(ex);
             }
             catch (ObjectDisposedException ex)
             {
@@ -182,9 +180,9 @@ namespace ZeroC.IceSSL
                 }
                 if (Network.Timeout(ex))
                 {
-                    throw new Ice.ConnectionTimeoutException();
+                    throw new ConnectionTimeoutException();
                 }
-                throw new Ice.TransportException(ex);
+                throw new TransportException(ex);
             }
             catch (ObjectDisposedException ex)
             {
@@ -193,7 +191,7 @@ namespace ZeroC.IceSSL
         }
 
         public bool
-        StartWrite(IList<ArraySegment<byte>> buffer, int offset, Ice.AsyncCallback cb, object state, out bool completed)
+        StartWrite(IList<ArraySegment<byte>> buffer, int offset, AsyncCallback cb, object state, out bool completed)
         {
             if (!_isConnected)
             {
@@ -233,13 +231,13 @@ namespace ZeroC.IceSSL
                 }
                 if (Network.Timeout(ex))
                 {
-                    throw new Ice.ConnectionTimeoutException();
+                    throw new ConnectionTimeoutException();
                 }
-                throw new Ice.TransportException(ex);
+                throw new TransportException(ex);
             }
             catch (ObjectDisposedException ex)
             {
-                throw new Ice.ConnectionLostException(ex);
+                throw new ConnectionLostException(ex);
             }
         }
 
@@ -281,9 +279,9 @@ namespace ZeroC.IceSSL
                 }
                 if (Network.Timeout(ex))
                 {
-                    throw new Ice.ConnectionTimeoutException();
+                    throw new ConnectionTimeoutException();
                 }
-                throw new Ice.TransportException(ex);
+                throw new TransportException(ex);
             }
             catch (ObjectDisposedException ex)
             {
@@ -291,11 +289,11 @@ namespace ZeroC.IceSSL
             }
         }
 
-        public string Transport() => _delegate.Transport();
+        public string Transport => _delegate.Transport;
 
-        public Ice.ConnectionInfo GetInfo()
+        public ConnectionInfo GetInfo()
         {
-            var info = new ConnectionInfo();
+            var info = new SslConnectionInfo();
             info.Underlying = _delegate.GetInfo();
             info.Incoming = _incoming;
             info.AdapterName = _adapterName;
@@ -316,9 +314,11 @@ namespace ZeroC.IceSSL
         //
         // Only for use by ConnectorI, AcceptorI.
         //
-        internal Transceiver(Instance instance, ITransceiver del, string hostOrAdapterName, bool incoming)
+        internal SslTransceiver(Communicator communicator, SslEngine engine, ITransceiver del,
+            string hostOrAdapterName, bool incoming)
         {
-            _instance = instance;
+            _communicator = communicator;
+            _engine = engine;
             _delegate = del;
             _incoming = incoming;
             if (_incoming)
@@ -332,10 +332,10 @@ namespace ZeroC.IceSSL
 
             _sslStream = null;
 
-            _verifyPeer = _instance.Communicator.GetPropertyAsInt("IceSSL.VerifyPeer") ?? 2;
+            _verifyPeer = _communicator.GetPropertyAsInt("IceSSL.VerifyPeer") ?? 2;
         }
 
-        private bool StartAuthenticate(Ice.AsyncCallback callback, object state)
+        private bool StartAuthenticate(AsyncCallback callback, object state)
         {
             Debug.Assert(_sslStream != null);
             try
@@ -347,9 +347,9 @@ namespace ZeroC.IceSSL
                     // Client authentication.
                     //
                     _writeResult = _sslStream.BeginAuthenticateAsClient(_host,
-                                                                        _instance.Certs(),
-                                                                        _instance.Protocols(),
-                                                                        _instance.CheckCRL() > 0,
+                                                                        _engine.Certs,
+                                                                        _engine.SslProtocols,
+                                                                        _engine.CheckCRL > 0,
                                                                         WriteCompleted,
                                                                         state);
                 }
@@ -360,7 +360,7 @@ namespace ZeroC.IceSSL
                     //
                     // Get the certificate collection and select the first one.
                     //
-                    X509Certificate2Collection? certs = _instance.Certs();
+                    X509Certificate2Collection? certs = _engine.Certs;
                     X509Certificate2? cert = null;
                     if (certs != null && certs.Count > 0)
                     {
@@ -369,8 +369,8 @@ namespace ZeroC.IceSSL
 
                     _writeResult = _sslStream.BeginAuthenticateAsServer(cert,
                                                                         _verifyPeer > 0,
-                                                                        _instance.Protocols(),
-                                                                        _instance.CheckCRL() > 0,
+                                                                        _engine.SslProtocols,
+                                                                        _engine.CheckCRL > 0,
                                                                         WriteCompleted,
                                                                         state);
                 }
@@ -383,13 +383,13 @@ namespace ZeroC.IceSSL
                     // This situation occurs when connectToSelf is called; the "remote" end
                     // closes the socket immediately.
                     //
-                    throw new Ice.ConnectionLostException();
+                    throw new ConnectionLostException();
                 }
-                throw new Ice.TransportException(ex);
+                throw new TransportException(ex);
             }
             catch (AuthenticationException ex)
             {
-                throw new Ice.SecurityException(ex);
+                throw new TransportException(ex);
             }
 
             Debug.Assert(_writeResult != null);
@@ -420,13 +420,13 @@ namespace ZeroC.IceSSL
                     // This situation occurs when connectToSelf is called; the "remote" end
                     // closes the socket immediately.
                     //
-                    throw new Ice.ConnectionLostException();
+                    throw new ConnectionLostException();
                 }
-                throw new Ice.TransportException(ex);
+                throw new TransportException(ex);
             }
             catch (AuthenticationException ex)
             {
-                throw new SecurityException(ex);
+                throw new TransportException(ex);
             }
         }
 
@@ -464,15 +464,15 @@ namespace ZeroC.IceSSL
         private bool ValidationCallback(object sender, X509Certificate certificate, X509Chain chainEngine,
                                         SslPolicyErrors policyErrors)
         {
-            var chain = new X509Chain(_instance.Engine().UseMachineContext());
+            var chain = new X509Chain(_engine.UseMachineContext);
             try
             {
-                if (_instance.CheckCRL() == 0)
+                if (_engine.CheckCRL == 0)
                 {
                     chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
                 }
 
-                X509Certificate2Collection? caCerts = _instance.Engine().CaCerts();
+                X509Certificate2Collection? caCerts = _engine.CaCerts;
                 if (caCerts != null)
                 {
                     //
@@ -494,7 +494,7 @@ namespace ZeroC.IceSSL
                     {
                         errors |= (int)SslPolicyErrors.RemoteCertificateChainErrors;
                     }
-                    else if (_instance.Engine().CaCerts() != null)
+                    else if (_engine.CaCerts != null)
                     {
                         X509ChainElement e = chain.ChainElements[chain.ChainElements.Count - 1];
                         if (!chain.ChainPolicy.ExtraStore.Contains(e.Certificate))
@@ -536,9 +536,9 @@ namespace ZeroC.IceSSL
                     {
                         if (_verifyPeer > 1)
                         {
-                            if (_instance.SecurityTraceLevel() >= 1)
+                            if (_engine.SecurityTraceLevel >= 1)
                             {
-                                _instance.Logger.Trace(_instance.SecurityTraceCategory(),
+                                _communicator.Logger.Trace(_engine.SecurityTraceCategory,
                                     "SSL certificate validation failed - client certificate not provided");
                             }
                             return false;
@@ -551,16 +551,16 @@ namespace ZeroC.IceSSL
                 bool certificateNameMismatch = (errors & (int)SslPolicyErrors.RemoteCertificateNameMismatch) > 0;
                 if (certificateNameMismatch)
                 {
-                    if (_instance.Engine().GetCheckCertName() && !string.IsNullOrEmpty(_host))
+                    if (_engine.CheckCertName && !string.IsNullOrEmpty(_host))
                     {
-                        if (_instance.SecurityTraceLevel() >= 1)
+                        if (_engine.SecurityTraceLevel >= 1)
                         {
                             string msg = "SSL certificate validation failed - Hostname mismatch";
                             if (_verifyPeer == 0)
                             {
                                 msg += " (ignored)";
                             }
-                            _instance.Logger.Trace(_instance.SecurityTraceCategory(), msg);
+                            _communicator.Logger.Trace(_engine.SecurityTraceCategory, msg);
                         }
 
                         if (_verifyPeer > 0)
@@ -585,7 +585,7 @@ namespace ZeroC.IceSSL
                     int errorCount = 0;
                     foreach (X509ChainStatus status in chain.ChainStatus)
                     {
-                        if (status.Status == X509ChainStatusFlags.UntrustedRoot && _instance.Engine().CaCerts() != null)
+                        if (status.Status == X509ChainStatusFlags.UntrustedRoot && _engine.CaCerts != null)
                         {
                             //
                             // Untrusted root is OK when using our custom chain engine if
@@ -611,7 +611,7 @@ namespace ZeroC.IceSSL
                         }
                         else if (status.Status == X509ChainStatusFlags.Revoked)
                         {
-                            if (_instance.CheckCRL() > 0)
+                            if (_engine.CheckCRL > 0)
                             {
                                 message += "\ncertificate revoked";
                                 ++errorCount;
@@ -627,7 +627,7 @@ namespace ZeroC.IceSSL
                             // If a certificate's revocation status cannot be determined, the strictest
                             // policy is to reject the connection.
                             //
-                            if (_instance.CheckCRL() > 1)
+                            if (_engine.CheckCRL > 1)
                             {
                                 message += "\ncertificate revocation status unknown";
                                 ++errorCount;
@@ -664,23 +664,24 @@ namespace ZeroC.IceSSL
 
                 if (errors > 0)
                 {
-                    if (_instance.SecurityTraceLevel() >= 1)
+                    if (_engine.SecurityTraceLevel >= 1)
                     {
                         if (message.Length > 0)
                         {
-                            _instance.Logger.Trace(_instance.SecurityTraceCategory(),
+                            _communicator.Logger.Trace(_engine.SecurityTraceCategory,
                                 $"SSL certificate validation failed:{message}");
                         }
                         else
                         {
-                            _instance.Logger.Trace(_instance.SecurityTraceCategory(), "SSL certificate validation failed");
+                            _communicator.Logger.Trace(_engine.SecurityTraceCategory, "SSL certificate validation failed");
                         }
                     }
                     return false;
                 }
-                else if (message.Length > 0 && _instance.SecurityTraceLevel() >= 1)
+                else if (message.Length > 0 && _engine.SecurityTraceLevel >= 1)
                 {
-                    _instance.Logger.Trace(_instance.SecurityTraceCategory(), $"SSL certificate validation status:{message}");
+                    _communicator.Logger.Trace(_engine.SecurityTraceCategory,
+                        $"SSL certificate validation status:{message}");
                 }
                 return true;
             }
@@ -727,7 +728,8 @@ namespace ZeroC.IceSSL
 
         public int GetRecvPacketSize(int length) => _maxRecvPacketSize > 0 ? Math.Min(length, _maxRecvPacketSize) : length;
 
-        private readonly Instance _instance;
+        private readonly Communicator _communicator;
+        private readonly SslEngine _engine;
         private readonly ITransceiver _delegate;
         private readonly string? _host;
         private readonly string? _adapterName;
@@ -738,8 +740,8 @@ namespace ZeroC.IceSSL
         private bool _authenticated;
         private IAsyncResult? _writeResult;
         private IAsyncResult? _readResult;
-        private Ice.AsyncCallback? _readCallback;
-        private Ice.AsyncCallback? _writeCallback;
+        private AsyncCallback? _readCallback;
+        private AsyncCallback? _writeCallback;
         private int _maxSendPacketSize;
         private int _maxRecvPacketSize;
         private string? _cipher;
