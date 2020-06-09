@@ -131,7 +131,7 @@ namespace ZeroC.Ice
         private readonly object _mutex = new object();
         private int _nextRequestId;
         private IConnectionObserver? _observer;
-        private Task _readTask = Task.CompletedTask;
+        private Task _receiveTask = Task.CompletedTask;
         private readonly Dictionary<int, TaskCompletionSource<IncomingResponseFrame>> _requests =
             new Dictionary<int, TaskCompletionSource<IncomingResponseFrame>>();
         private State _state; // The current state.
@@ -139,7 +139,7 @@ namespace ZeroC.Ice
         private bool _validated = false;
         private readonly bool _warn;
         private readonly bool _warnUdp;
-        private Task _writeTask = Task.CompletedTask;
+        private Task _sendTask = Task.CompletedTask;
 
         // Map internal connection states to Ice.Instrumentation.ConnectionState state values.
         private static readonly ConnectionState[] _connectionStateMap = new ConnectionState[]
@@ -440,7 +440,7 @@ namespace ZeroC.Ice
             {
                 try
                 {
-                    Task closingTask;
+                    Task? closingTask = null;
                     lock (_mutex)
                     {
                         Debug.Assert(_state > State.NotInitialized);
@@ -451,11 +451,17 @@ namespace ZeroC.Ice
                             {
                                 _dispatchTask = new TaskCompletionSource<bool>();
                             }
-                            _closeTask = PerformGracefulCloseAsync();
+                            closingTask = _closeTask = PerformGracefulCloseAsync();
                         }
-                        closingTask = _closeTask!;
+                        else if (_state == State.Closing)
+                        {
+                            closingTask = _closeTask;
+                        }
                     }
-                    await closingTask.ConfigureAwait(false);
+                    if (closingTask != null)
+                    {
+                        await closingTask.ConfigureAwait(false);
+                    }
                 }
                 catch
                 {
@@ -463,7 +469,7 @@ namespace ZeroC.Ice
                 }
             }
 
-            await CloseAsync(exception);
+            await CloseAsync(exception).ConfigureAwait(false);
         }
 
         internal void Monitor(long now, ACMConfig acm)
@@ -753,7 +759,9 @@ namespace ZeroC.Ice
         {
             lock (_mutex)
             {
-                if (_state < State.NotInitialized || _state > State.Closed)
+                // The observer is attached once the connection is active and detached when closed and the last
+                // dispatch completed.
+                if (_state < State.Active || (_state == State.Closed && _dispatchCount == 0))
                 {
                     return;
                 }
@@ -1091,6 +1099,15 @@ namespace ZeroC.Ice
             {
                 _communicator.Logger.Error("unexpected connection exception:\n" + ex + "\n" + _transceiver.ToString());
             }
+
+            // Wait for the connection closure from the peer
+            try
+            {
+                await _receiveTask.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
         }
 
         private async Task PerformCloseAsync()
@@ -1128,17 +1145,17 @@ namespace ZeroC.Ice
                 _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCat, s.ToString());
             }
 
-            // Wait for pending reads and writes to complete
+            // Wait for pending receives and sends to complete
             try
             {
-                await _writeTask.ConfigureAwait(false);
+                await _sendTask.ConfigureAwait(false);
             }
             catch
             {
             }
             try
             {
-                await _readTask.ConfigureAwait(false);
+                await _receiveTask.ConfigureAwait(false);
             }
             catch
             {
@@ -1177,14 +1194,8 @@ namespace ZeroC.Ice
                 await _dispatchTask.Task.ConfigureAwait(false);
             }
 
-            if (_monitor != null)
-            {
-                _monitor.Reap(this);
-            }
-            if (_observer != null)
-            {
-                _observer.Detach();
-            }
+            _monitor?.Reap(this);
+            _observer?.Detach();
         }
 
         private async ValueTask<ArraySegment<byte>> PerformReceiveFrameAsync()
@@ -1424,12 +1435,12 @@ namespace ZeroC.Ice
                 ValueTask<ArraySegment<byte>> readTask = PerformAsync(this);
                 if (readTask.IsCompleted)
                 {
-                    _readTask = Task.CompletedTask;
+                    _receiveTask = Task.CompletedTask;
                     return readTask.Result;
                 }
                 else
                 {
-                    _readTask = task = readTask.AsTask();
+                    _receiveTask = task = readTask.AsTask();
                 }
             }
             return await task.ConfigureAwait(false);
@@ -1457,10 +1468,10 @@ namespace ZeroC.Ice
         {
             lock (_mutex)
             {
-                Debug.Assert (_state < State.Closed);
-                ValueTask writeTask = QueueAsync(this, _writeTask, getFrameData);
-                _writeTask = writeTask.IsCompleted ? Task.CompletedTask : writeTask.AsTask();
-                return _writeTask;
+                Debug.Assert(_state < State.Closed);
+                ValueTask sendTask = QueueAsync(this, _sendTask, getFrameData);
+                _sendTask = sendTask.IsCompleted ? Task.CompletedTask : sendTask.AsTask();
+                return _sendTask;
             }
 
             static async ValueTask QueueAsync(Connection self, Task previous,
