@@ -148,7 +148,6 @@ namespace ZeroC.Ice
             ConnectionState.ConnectionStateActive,       // State.Active
             ConnectionState.ConnectionStateClosing,      // State.Closing
             ConnectionState.ConnectionStateClosed,       // State.Closed
-            ConnectionState.ConnectionStateClosed,       // State.Finished
         };
 
         private static readonly List<ArraySegment<byte>> _closeConnectionFrame =
@@ -248,7 +247,7 @@ namespace ZeroC.Ice
                 {
                     throw _exception!;
                 }
-                writeTask = WriteAsync(() => SendProtocolFrameAsync(_validateConnectionFrame));
+                writeTask = SendFrameAsync(() => GetProtocolFrameData(_validateConnectionFrame));
             }
             await CancelableTask.WhenAny(writeTask, cancel).ConfigureAwait(false);
             progress?.Report(true);
@@ -448,11 +447,6 @@ namespace ZeroC.Ice
                         if (_state == State.Active)
                         {
                             SetState(State.Closing, exception);
-                            if (_dispatchCount > 0)
-                            {
-                                _dispatchTask = new TaskCompletionSource<bool>();
-                            }
-                            _closeTask = PerformClosingAsync();
                         }
                         closingTask = _closeTask!;
                     }
@@ -464,7 +458,7 @@ namespace ZeroC.Ice
                 }
             }
 
-            await CloseAsync(_exception!);
+            await CloseAsync(exception);
         }
 
         internal void Monitor(long now, ACMConfig acm)
@@ -492,7 +486,7 @@ namespace ZeroC.Ice
                         Debug.Assert(_state == State.Active);
                         if (!Endpoint.IsDatagram)
                         {
-                            WriteAsync(() => SendProtocolFrameAsync(_validateConnectionFrame));
+                            SendFrameAsync(() => GetProtocolFrameData(_validateConnectionFrame));
                         }
                     }
                 }
@@ -508,21 +502,23 @@ namespace ZeroC.Ice
                 // ACM close is always enabled when in the closing state for connection close timeouts.
                 if ((_state >= State.Closing || acm.Close != ACMClose.CloseOff) && now >= (_acmLastActivity + timeout))
                 {
-                    if (acm.Close == ACMClose.CloseOnIdleForceful ||
+                    if (_state == State.Closing || acm.Close == ACMClose.CloseOnIdleForceful ||
                        (acm.Close != ACMClose.CloseOnIdle && (_requests.Count > 0)))
                     {
                         //
                         // Close the connection if we didn't receive a heartbeat or if read/write didn't update the
                         // ACM activity in the last period.
                         //
-                        _ = GracefulCloseAsync(new ConnectionTimeoutException());
+                        SetState(State.Closed, new ConnectionTimeoutException());
                     }
                     else if (acm.Close != ACMClose.CloseOnInvocation && _dispatchCount == 0 && _requests.Count == 0)
                     {
                         //
                         // The connection is idle, close it.
                         //
-                        _ = GracefulCloseAsync(new ConnectionIdleException());
+                        Debug.Assert(_state == State.Active);
+                        SetState(State.Closing, new ConnectionIdleException());
+                        Debug.Assert(_state == State.Closing);
                     }
                 }
             }
@@ -576,7 +572,7 @@ namespace ZeroC.Ice
                     childObserver?.Attach();
                 }
 
-                writeTask = WriteAsync(() => SendRequestAsync(request, requestId, compress));
+                writeTask = SendFrameAsync(() => GetRequestFrameData(request, requestId, compress));
             }
 
             try
@@ -737,10 +733,6 @@ namespace ZeroC.Ice
 
                     SetState(State.Active);
                 }
-
-                // Start the asynchronous operation from the thread pool to prevent eventually reading
-                // synchronously new frames from this thread.
-                _ = Task.Run(ReadAsync);
             }
             catch (OperationCanceledException)
             {
@@ -779,14 +771,40 @@ namespace ZeroC.Ice
                 if (_state < State.Closed)
                 {
                     SetState(State.Closed, exception ?? _exception!);
-                    if (_dispatchCount > 0)
-                    {
-                        _dispatchTask ??= new TaskCompletionSource<bool>();
-                    }
-                    _closeTask = PerformCloseAsync();
                 }
             }
             await _closeTask!.ConfigureAwait(false);
+        }
+
+        private (List<ArraySegment<byte>>, bool) GetProtocolFrameData(List<ArraySegment<byte>> frame)
+        {
+            if (_communicator.TraceLevels.Protocol > 0)
+            {
+                ProtocolTrace.TraceSend(_communicator, frame[0]);
+            }
+            return (frame, false);
+        }
+
+        private (List<ArraySegment<byte>>, bool) GetRequestFrameData(OutgoingRequestFrame request, int requestId,
+            bool compress)
+        {
+            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetRequestData(request, requestId);
+            if (_communicator.TraceLevels.Protocol >= 1)
+            {
+                ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], request);
+            }
+            return (writeBuffer, compress);
+        }
+
+        private (List<ArraySegment<byte>>, bool) GetResponseFrameData(OutgoingResponseFrame response, int requestId,
+            bool compress)
+        {
+            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetResponseData(response, requestId);
+            if (_communicator.TraceLevels.Protocol > 0)
+            {
+                ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], response);
+            }
+            return (writeBuffer, compress);
         }
 
         private ConnectionInfo InitConnectionInfo()
@@ -871,7 +889,7 @@ namespace ZeroC.Ice
                     // Send the response if there's a response
                     if (_state < State.Closed && response != null)
                     {
-                        WriteAsync(() => SendResponseAsync(response, current.RequestId, compressionStatus > 0));
+                        SendFrameAsync(() => GetResponseFrameData(response, current.RequestId, compressionStatus > 0));
                     }
 
                     // Decrease the dispatch count
@@ -884,56 +902,6 @@ namespace ZeroC.Ice
                 }
 
                 dispatchObserver?.Detach();
-            }
-        }
-
-        private async ValueTask<bool> DispatchFrameAsync(Func<ValueTask> incoming, ObjectAdapter? adapter)
-        {
-            if (adapter != null && adapter.SerializeDispatch)
-            {
-                // Run the given incoming frame
-                if (adapter.TaskScheduler != null)
-                {
-                    await TaskRun(incoming, adapter.TaskScheduler).ConfigureAwait(false);
-                }
-                else
-                {
-                    await incoming().ConfigureAwait(false);
-                }
-                return true;
-            }
-            else
-            {
-                // Start a new Read IO task and run the incoming dispatch. We start the new ReadAsync from
-                // a separate task because ReadAsync could complete synchronously and we don't want the
-                // dispatch from this read to run before we actually ran the dispatch from this block. An
-                // alternative could be to start a task to run the incoming dispatch and continue reading
-                // with this loop. It would have a negative impact on latency however since execution of
-                // the incoming dispatch would potentially require a thread context switch.
-                if (adapter?.TaskScheduler != null)
-                {
-                    await TaskRun(() =>
-                    {
-                        Task.Run(ReadAsync);
-                        return incoming();
-                    }, adapter.TaskScheduler).ConfigureAwait(false);
-                }
-                else
-                {
-                    _ = Task.Run(ReadAsync);
-                    await incoming().ConfigureAwait(false);
-                }
-                return false;
-            }
-
-            static async ValueTask TaskRun(Func<ValueTask> func, TaskScheduler scheduler)
-            {
-                // First await for the dispatch to be ran on the task scheduler.
-                ValueTask task = await Task.Factory.StartNew(func, default, TaskCreationOptions.None,
-                    scheduler).ConfigureAwait(false);
-
-                // Now wait for the async dispatch to complete.
-                await task.ConfigureAwait(false);
             }
         }
 
@@ -1092,38 +1060,7 @@ namespace ZeroC.Ice
             return (incoming, adapter);
         }
 
-        private Task ReadAsync()
-        {
-            // Must be called with the mutex locked.
-            ValueTask readTask = PerformAsync(this);
-            if (readTask.IsCompleted)
-            {
-                _readTask = Task.CompletedTask;
-            }
-            else
-            {
-                _readTask = readTask.AsTask();
-            }
-            return _readTask;
-
-            static async ValueTask PerformAsync(Connection self)
-            {
-                try
-                {
-                    await self.ReadAndDispatchFrameAsync().ConfigureAwait(false);
-                }
-                catch (ConnectionClosedByPeerException ex)
-                {
-                    _ = self.GracefulCloseAsync(ex);
-                }
-                catch (Exception ex)
-                {
-                    _ = self.CloseAsync(ex);
-                }
-            }
-        }
-
-        private async Task PerformClosingAsync()
+        private async Task PerformGracefulCloseAsync()
         {
             if (!(_exception is ConnectionClosedByPeerException))
             {
@@ -1134,7 +1071,7 @@ namespace ZeroC.Ice
                 }
 
                 // Write and wait for the close connection frame to be written
-                await WriteAsync(() => SendProtocolFrameAsync(_closeConnectionFrame)).ConfigureAwait(false);
+                await SendFrameAsync(() => GetProtocolFrameData(_closeConnectionFrame)).ConfigureAwait(false);
             }
 
             // Notify the transport of the graceful connection closure.
@@ -1226,11 +1163,6 @@ namespace ZeroC.Ice
                 _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
             }
 
-            lock (_mutex)
-            {
-                SetState(State.Finished);
-            }
-
             // Wait for all the dispatch to complete before reaping the connection and notifying the observer
             if (_dispatchTask != null)
             {
@@ -1247,20 +1179,7 @@ namespace ZeroC.Ice
             }
         }
 
-        private async ValueTask ReadAndDispatchFrameAsync()
-        {
-            while (true)
-            {
-                ArraySegment<byte> readBuffer = await ReceiveFrameAsync().ConfigureAwait(false);
-                (Func<ValueTask>? incoming, ObjectAdapter? adapter) = ParseFrame(readBuffer);
-                if (incoming != null && !await DispatchFrameAsync(incoming, adapter).ConfigureAwait(false))
-                {
-                    return;
-                }
-            }
-        }
-
-        private async ValueTask<ArraySegment<byte>> ReceiveFrameAsync()
+        private async ValueTask<ArraySegment<byte>> PerformReceiveFrameAsync()
         {
             // Read header
             ArraySegment<byte> readBuffer;
@@ -1362,58 +1281,19 @@ namespace ZeroC.Ice
             return readBuffer;
         }
 
-        private async ValueTask SendProtocolFrameAsync(List<ArraySegment<byte>> frame)
+        private async ValueTask PerformSendFrameAsync(Func<(List<ArraySegment<byte>>, bool)> getFrameData)
         {
+            List<ArraySegment<byte>> writeBuffer;
+            bool compress;
             lock (_mutex)
             {
                 if (_state >= State.Closed)
                 {
                     throw _exception!;
                 }
-                if (_communicator.TraceLevels.Protocol > 0)
-                {
-                    ProtocolTrace.TraceSend(_communicator, frame[0]);
-                }
+                (writeBuffer, compress) = getFrameData();
             }
-            await SendFrameAsync(frame, compress: false);
-        }
 
-        private async ValueTask SendRequestAsync(OutgoingRequestFrame request, int requestId, bool compress)
-        {
-            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetRequestData(request, requestId);
-            lock (_mutex)
-            {
-                if (_state > State.Closing)
-                {
-                    throw _exception!;
-                }
-                if (_communicator.TraceLevels.Protocol >= 1)
-                {
-                    ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], request);
-                }
-            }
-            await SendFrameAsync(writeBuffer, compress);
-        }
-
-        private async ValueTask SendResponseAsync(OutgoingResponseFrame response, int requestId, bool compress)
-        {
-            List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetResponseData(response, requestId);
-            lock (_mutex)
-            {
-                if (_state > State.Closing)
-                {
-                    throw _exception!;
-                }
-                if (_communicator.TraceLevels.Protocol > 0)
-                {
-                    ProtocolTrace.TraceFrame(_communicator, writeBuffer[0], response);
-                }
-            }
-            await SendFrameAsync(writeBuffer, compress);
-        }
-
-        private async ValueTask SendFrameAsync(List<ArraySegment<byte>> writeBuffer, bool compress)
-        {
             // Compress the frame if needed and possible
             // TODO: Benoit: we should consider doing the compression at an earlier stage from the application
             // user thread instead?
@@ -1460,10 +1340,144 @@ namespace ZeroC.Ice
             }
         }
 
+        private async ValueTask ReceiveAndDispatchFrameAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    ArraySegment<byte> readBuffer = await ReceiveFrameAsync().ConfigureAwait(false);
+                    (Func<ValueTask>? incoming, ObjectAdapter? adapter) = ParseFrame(readBuffer);
+                    if (incoming != null)
+                    {
+                        bool serialize = adapter?.SerializeDispatch ?? false;
+                        if (!serialize)
+                        {
+                            // Start a new receive task before running the incoming dispatch. We start the new receive
+                            // task from a separate task because ReadAsync could complete synchronously and we don't
+                            // want the dispatch from this read to run before we actually ran the dispatch from this
+                            // block. An alternative could be to start a task to run the incoming dispatch and continue
+                            // reading with this loop. It would have a negative impact on latency however since
+                            // execution of the incoming dispatch would potentially require a thread context switch.
+                            if (adapter?.TaskScheduler != null)
+                            {
+                                _ = TaskRun(ReceiveAndDispatchFrameAsync, adapter.TaskScheduler);
+                            }
+                            else
+                            {
+                                _ = Task.Run(ReceiveAndDispatchFrameAsync);
+                            }
+                        }
+
+                        // Run the received incoming frame
+                        if (adapter?.TaskScheduler != null)
+                        {
+                            await TaskRun(incoming, adapter.TaskScheduler).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await incoming().ConfigureAwait(false);
+                        }
+
+                        // Don't continue reading from this task if we're not using serialization, we started
+                        // another receive task above.
+                        if (!serialize)
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await CloseAsync(ex);
+            }
+
+            static async ValueTask TaskRun(Func<ValueTask> func, TaskScheduler scheduler)
+            {
+                // First await for the dispatch to be ran on the task scheduler.
+                ValueTask task = await Task.Factory.StartNew(func, default, TaskCreationOptions.None,
+                    scheduler).ConfigureAwait(false);
+
+                // Now wait for the async dispatch to complete.
+                await task.ConfigureAwait(false);
+            }
+        }
+
+        private async ValueTask<ArraySegment<byte>> ReceiveFrameAsync()
+        {
+            Task<ArraySegment<byte>> task;
+            lock (_mutex)
+            {
+                if (_state == State.Closed)
+                {
+                    throw _exception!;
+                }
+                ValueTask<ArraySegment<byte>> readTask = PerformAsync(this);
+                if (readTask.IsCompleted)
+                {
+                    _readTask = Task.CompletedTask;
+                    return readTask.Result;
+                }
+                else
+                {
+                    _readTask = task = readTask.AsTask();
+                }
+            }
+            return await task.ConfigureAwait(false);
+
+            static async ValueTask<ArraySegment<byte>> PerformAsync(Connection self)
+            {
+                try
+                {
+                    return await self.PerformReceiveFrameAsync().ConfigureAwait(false);
+                }
+                catch (ConnectionClosedByPeerException ex)
+                {
+                    _ = self.GracefulCloseAsync(ex);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _ = self.CloseAsync(ex);
+                    throw;
+                }
+            }
+        }
+
+        private Task SendFrameAsync(Func<(List<ArraySegment<byte>>, bool)> getFrameData)
+        {
+            lock (_mutex)
+            {
+                Debug.Assert (_state < State.Closed);
+                ValueTask writeTask = QueueAsync(this, _writeTask, getFrameData);
+                _writeTask = writeTask.IsCompleted ? Task.CompletedTask : writeTask.AsTask();
+                return _writeTask;
+            }
+
+            static async ValueTask QueueAsync(Connection self, Task previous,
+                Func<(List<ArraySegment<byte>>, bool)> getFrameData)
+            {
+                // Wait for the previous write to complete
+                await previous.ConfigureAwait(false);
+
+                // Perform the write
+                try
+                {
+                    await self.PerformSendFrameAsync(getFrameData).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _ = self.CloseAsync(ex);
+                    throw;
+                }
+            }
+        }
+
         private void SetState(State state, Exception? exception = null)
         {
             // If SetState() is called with an exception, then only closed and closing states are permissible.
-            Debug.Assert(exception == null || state >= State.Closing);
+            Debug.Assert((exception == null && state < State.Closing) || (exception != null && state >= State.Closing));
 
             if (_exception == null && exception != null)
             {
@@ -1499,24 +1513,31 @@ namespace ZeroC.Ice
                 case State.Active:
                 {
                     Debug.Assert(_state == State.NotInitialized);
+                    // Start the asynchronous operation from the thread pool to prevent eventually reading
+                    // synchronously new frames from this thread.
+                    _ = Task.Run(ReceiveAndDispatchFrameAsync);
                     break;
                 }
 
                 case State.Closing:
                 {
                     Debug.Assert(_state == State.Active);
+                    if (_dispatchCount > 0)
+                    {
+                        _dispatchTask = new TaskCompletionSource<bool>();
+                    }
+                    _closeTask = PerformGracefulCloseAsync();
                     break;
                 }
 
                 case State.Closed:
                 {
                     Debug.Assert(_state < State.Closed);
-                    break;
-                }
-
-                case State.Finished:
-                {
-                    Debug.Assert(_state == State.Closed);
+                    if (_dispatchCount > 0)
+                    {
+                        _dispatchTask ??= new TaskCompletionSource<bool>();
+                    }
+                    _closeTask = PerformCloseAsync();
                     break;
                 }
             }
@@ -1598,45 +1619,12 @@ namespace ZeroC.Ice
             }
         }
 
-        private Task WriteAsync(Func<ValueTask> write)
-        {
-            // Must be called with the mutex locked.
-            ValueTask writeTask = QueueAsync(this, _writeTask, write);
-            if (writeTask.IsCompleted)
-            {
-                _writeTask = Task.CompletedTask;
-            }
-            else
-            {
-                _writeTask = writeTask.AsTask();
-            }
-            return _writeTask;
-
-            static async ValueTask QueueAsync(Connection self, Task previous, Func<ValueTask> write)
-            {
-                // Wait for the previous write to complete
-                await previous.ConfigureAwait(false);
-
-                // Perform the write
-                try
-                {
-                    await write().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _ = self.CloseAsync(ex);
-                    throw;
-                }
-            }
-        }
-
         private enum State
         {
             NotInitialized,
             Active,
             Closing,
             Closed,
-            Finished
         };
     }
 }

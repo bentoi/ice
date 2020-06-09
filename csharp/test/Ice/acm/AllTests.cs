@@ -336,8 +336,7 @@ namespace ZeroC.Ice.acm
 
             public override void RunTestCase(Test.IRemoteObjectAdapterPrx adapter, Test.ITestIntfPrx proxy)
             {
-                // No close on invocation, the call should succeed this
-                // time.
+                // No close on invocation, the call should succeed this time.
                 proxy.sleep(3);
 
                 lock (this)
