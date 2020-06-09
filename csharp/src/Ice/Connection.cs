@@ -447,6 +447,11 @@ namespace ZeroC.Ice
                         if (_state == State.Active)
                         {
                             SetState(State.Closing, exception);
+                            if (_dispatchCount > 0)
+                            {
+                                _dispatchTask = new TaskCompletionSource<bool>();
+                            }
+                            _closeTask = PerformGracefulCloseAsync();
                         }
                         closingTask = _closeTask!;
                     }
@@ -509,16 +514,14 @@ namespace ZeroC.Ice
                         // Close the connection if we didn't receive a heartbeat or if read/write didn't update the
                         // ACM activity in the last period.
                         //
-                        SetState(State.Closed, new ConnectionTimeoutException());
+                        _ = CloseAsync(new ConnectionTimeoutException());
                     }
                     else if (acm.Close != ACMClose.CloseOnInvocation && _dispatchCount == 0 && _requests.Count == 0)
                     {
                         //
                         // The connection is idle, close it.
                         //
-                        Debug.Assert(_state == State.Active);
-                        SetState(State.Closing, new ConnectionIdleException());
-                        Debug.Assert(_state == State.Closing);
+                        _ = GracefulCloseAsync(new ConnectionIdleException());
                     }
                 }
             }
@@ -771,6 +774,11 @@ namespace ZeroC.Ice
                 if (_state < State.Closed)
                 {
                     SetState(State.Closed, exception ?? _exception!);
+                    if (_dispatchCount > 0)
+                    {
+                        _dispatchTask ??= new TaskCompletionSource<bool>();
+                    }
+                    _closeTask = PerformCloseAsync();
                 }
             }
             await _closeTask!.ConfigureAwait(false);
@@ -1522,22 +1530,12 @@ namespace ZeroC.Ice
                 case State.Closing:
                 {
                     Debug.Assert(_state == State.Active);
-                    if (_dispatchCount > 0)
-                    {
-                        _dispatchTask = new TaskCompletionSource<bool>();
-                    }
-                    _closeTask = PerformGracefulCloseAsync();
                     break;
                 }
 
                 case State.Closed:
                 {
                     Debug.Assert(_state < State.Closed);
-                    if (_dispatchCount > 0)
-                    {
-                        _dispatchTask ??= new TaskCompletionSource<bool>();
-                    }
-                    _closeTask = PerformCloseAsync();
                     break;
                 }
             }
