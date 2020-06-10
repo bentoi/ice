@@ -500,8 +500,6 @@ namespace ZeroC.Ice.Test.AMI
                     var context = new Dictionary<string, string>();
                     for (int i = 0; i < 50; ++i)
                     {
-                        serialized.GetConnection();
-                        serialized.IcePing();
                         for (int j = 0; j < tasks.Length; ++j)
                         {
                             context["value"] = j.ToString(); // This is for debugging
@@ -520,6 +518,11 @@ namespace ZeroC.Ice.Test.AMI
                 catch (ObjectNotExistException)
                 {
                     output.WriteLine("not supported");
+                }
+                catch (Exception ex)
+                {
+                    output.WriteLine($"unexpected exception {ex}");
+                    TestHelper.Assert(false);
                 }
             }).Wait();
 

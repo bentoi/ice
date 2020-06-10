@@ -34,7 +34,7 @@ namespace ZeroC.Ice
         internal InvocationMode InvocationMode { get; }
         internal int InvocationTimeout { get; }
         internal bool IsCollocationOptimized { get; }
-        internal bool IsConnectionCached => IsFixed || _requestHandlerMutex != null;
+        internal bool IsConnectionCached;
         internal bool IsFixed => _fixedConnection != null;
         internal bool IsIndirect => !IsFixed && Endpoints.Count == 0;
         internal bool IsWellKnown => !IsFixed && Endpoints.Count == 0 && AdapterId.Length == 0;
@@ -42,11 +42,15 @@ namespace ZeroC.Ice
         internal LocatorInfo? LocatorInfo { get; }
         internal bool PreferNonSecure { get; }
         internal Protocol Protocol { get; }
+        internal IRequestHandler? RequestHandler
+        {
+            get => _requestHandler;
+            set => _requestHandler = value;
+        }
         internal RouterInfo? RouterInfo { get; }
         private readonly Connection? _fixedConnection;
         private int _hashCode = 0;
-        private IRequestHandler? _requestHandler; // readonly when IsFixed is true
-        private readonly object? _requestHandlerMutex;
+        private volatile IRequestHandler? _requestHandler; // readonly when IsFixed is true
 
         public static bool operator ==(Reference? lhs, Reference? rhs)
         {
@@ -888,24 +892,6 @@ namespace ZeroC.Ice
             return interval;
         }
 
-        internal void ClearRequestHandler(IRequestHandler? handler)
-        {
-            if (!IsFixed && IsConnectionCached && handler != null)
-            {
-                Debug.Assert(_requestHandlerMutex != null);
-                lock (_requestHandlerMutex)
-                {
-                    //
-                    // Clear the request handler only if the given handler is the same as the current request handler.
-                    //
-                    if (_requestHandler == handler)
-                    {
-                        _requestHandler = null;
-                    }
-                }
-            }
-        }
-
         internal Reference Clone(string? adapterId = null,
                                  bool? cacheConnection = null,
                                  bool clearLocator = false,
@@ -1191,33 +1177,7 @@ namespace ZeroC.Ice
             return context;
         }
 
-        internal Connection? GetCachedConnection()
-        {
-            if (IsFixed)
-            {
-                return _requestHandler!.GetConnection();
-            }
-            else
-            {
-                if (IsConnectionCached)
-                {
-                    Debug.Assert(_requestHandlerMutex != null);
-                    IRequestHandler? handler;
-                    lock (_requestHandlerMutex)
-                    {
-                        handler = _requestHandler;
-                    }
-                    try
-                    {
-                        return handler?.GetConnection();
-                    }
-                    catch (System.Exception)
-                    {
-                    }
-                }
-                return null;
-            }
-        }
+        internal Connection? GetCachedConnection() => _requestHandler?.GetConnection();
 
         internal async ValueTask<IRequestHandler> GetConnectionRequestHandlerAsync()
         {
@@ -1405,45 +1365,15 @@ namespace ZeroC.Ice
 
         internal async ValueTask<IRequestHandler> GetRequestHandlerAsync()
         {
-            if (IsFixed)
+            IRequestHandler? handler = _requestHandler;
+            if (handler != null)
             {
-                return _requestHandler!;
+                return handler;
             }
             else
             {
-                if (IsConnectionCached)
-                {
-                    Debug.Assert(_requestHandlerMutex != null);
-                    lock (_requestHandlerMutex)
-                    {
-                        if (_requestHandler != null)
-                        {
-                            return _requestHandler;
-                        }
-                    }
-                }
-
-                IRequestHandler handler = await Communicator.GetRequestHandlerAsync(this);
-
-                if (IsConnectionCached)
-                {
-                    Debug.Assert(_requestHandlerMutex != null);
-                    lock (_requestHandlerMutex)
-                    {
-                        lock (_requestHandlerMutex)
-                        {
-                            if (_requestHandler == null)
-                            {
-                                _requestHandler = handler;
-                            }
-                            return _requestHandler;
-                        }
-                    }
-                }
-                else
-                {
-                    return handler;
-                }
+                Debug.Assert(!IsFixed);
+                return await Communicator.GetRequestHandlerAsync(this);
             }
         }
 
@@ -1671,16 +1601,12 @@ namespace ZeroC.Ice
             InvocationMode = invocationMode;
             InvocationTimeout = invocationTimeout;
             IsCollocationOptimized = collocationOptimized;
+            IsConnectionCached = cacheConnection;
             LocatorCacheTimeout = locatorCacheTimeout;
             LocatorInfo = locatorInfo;
             PreferNonSecure = preferNonSecure;
             Protocol = protocol;
             RouterInfo = routerInfo;
-
-            if (cacheConnection)
-            {
-                _requestHandlerMutex = new object();
-            }
         }
 
         // Constructor for fixed references.
@@ -1708,6 +1634,7 @@ namespace ZeroC.Ice
             InvocationMode = invocationMode;
             InvocationTimeout = invocationTimeout;
             IsCollocationOptimized = false;
+            IsConnectionCached = false;
             LocatorCacheTimeout = 0;
             LocatorInfo = null;
             PreferNonSecure = false;

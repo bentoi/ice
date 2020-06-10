@@ -471,7 +471,7 @@ namespace ZeroC.Ice
                     }
                     catch (RetryException)
                     {
-                        reference.ClearRequestHandler(handler);
+                        proxy.Communicator.ClearRequestHandler(reference, handler!);
                     }
                     catch (OperationCanceledException)
                     {
@@ -479,7 +479,10 @@ namespace ZeroC.Ice
                     }
                     catch (Exception ex)
                     {
-                        reference.ClearRequestHandler(handler);
+                        if (handler != null)
+                        {
+                            proxy.Communicator.ClearRequestHandler(reference, handler);
+                        }
 
                         // TODO: revisit retry logic
                         // We only retry after failing with a DispatchException or a local exception.

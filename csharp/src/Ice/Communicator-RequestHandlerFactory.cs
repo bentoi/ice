@@ -16,58 +16,18 @@ namespace ZeroC.Ice
         private readonly Dictionary<Reference, ConnectAwaitable> _pendingConnects =
             new Dictionary<Reference, ConnectAwaitable>();
 
-        private class ConnectAwaitable
+        internal void ClearRequestHandler(Reference reference, IRequestHandler handler)
         {
-            public ConcurrentQueue<Action> Queue { get; }
-            public bool IsCompleted => _handler != null || _exception != null;
-            private IRequestHandler? _handler;
-            private Exception? _exception = null;
-
-            public ConnectAwaiter GetAwaiter() => new ConnectAwaiter(this);
-
-            public IRequestHandler GetResult()
+            if (reference.IsConnectionCached)
             {
-                if (_exception != null)
+                lock (_pendingConnects)
                 {
-                    throw _exception;
-                }
-                return _handler!;
-            }
-
-            public void SetResult(IRequestHandler handler)
-            {
-                _handler = handler;
-                Completed();
-            }
-
-            public void SetException(Exception exception)
-            {
-                _exception = exception;
-                Completed();
-            }
-
-            public ConnectAwaitable() => Queue = new ConcurrentQueue<Action>();
-
-            private void Completed()
-            {
-                while (Queue.TryDequeue(out Action? action))
-                {
-                    action();
+                    if (reference.RequestHandler == handler)
+                    {
+                        reference.RequestHandler = null;
+                    }
                 }
             }
-        }
-
-        private struct ConnectAwaiter : System.Runtime.CompilerServices.INotifyCompletion
-        {
-            private readonly ConnectAwaitable _awaitable;
-
-            public bool IsCompleted => _awaitable.IsCompleted;
-
-            public IRequestHandler GetResult() => _awaitable.GetResult();
-
-            public ConnectAwaiter(ConnectAwaitable awaitable) => _awaitable = awaitable;
-
-            public void OnCompleted(Action continuation) => _awaitable.Queue.Enqueue(continuation);
         }
 
         internal async ValueTask<IRequestHandler> GetRequestHandlerAsync(Reference reference)
@@ -83,55 +43,174 @@ namespace ZeroC.Ice
 
             if (reference.IsConnectionCached)
             {
-                // Add the task for the connection establishment on this reference to the pending connects dictionary.
-                // If an entry already exists, we chain a new task to the existing task and udate the dictionary entry
-                // with this chained task. This chaining ensures that requests waiting for the connection request
-                // handler will be sent in the same order as they were invoked.
                 ConnectAwaitable? connectAwaitable = null;
                 lock (_pendingConnects)
                 {
+                    if (reference.RequestHandler != null)
+                    {
+                        return reference.RequestHandler;
+                    }
+
                     if (!_pendingConnects.TryGetValue(reference, out connectAwaitable))
                     {
-                        // No connect pending, try to obtain a new connection. If the outgoing connection factory
-                        // has a matching connection already established this will complete synchronously so it's
-                        // important to check for the status of the ValueTask here.
-                        connectAwaitable = new ConnectAwaitable();
-                        _ = ConnectAsync(reference, connectAwaitable);
+                        ValueTask<IRequestHandler> task = reference.GetConnectionRequestHandlerAsync();
+                        if (task.IsCompleted)
+                        {
+                            return task.Result;
+                        }
+                        connectAwaitable = new ConnectAwaitable(this, reference, task.AsTask());
                         _pendingConnects[reference] = connectAwaitable;
                     }
                 }
-
-                try
-                {
-                    return await connectAwaitable;
-                }
-                finally
-                {
-                    lock (_pendingConnects)
-                    {
-                        if (_pendingConnects[reference] == connectAwaitable)
-                        {
-                            _pendingConnects.Remove(reference);
-                        }
-                    }
-                }
+                return await connectAwaitable;
             }
             else
             {
                 return await reference.GetConnectionRequestHandlerAsync().ConfigureAwait(false);
             }
+        }
 
-            static async ValueTask ConnectAsync(Reference reference, ConnectAwaitable awaitable)
+        private void RemovePendingConnect(Reference reference, IRequestHandler? handler)
+        {
+            lock (_pendingConnects)
             {
+                Debug.Assert(reference.IsConnectionCached);
+                _pendingConnects.Remove(reference);
+                reference.RequestHandler = handler;
+            }
+        }
+
+        private class ConnectAwaitable
+        {
+            public bool IsCompleted
+            {
+                get
+                {
+                    lock (_mutex)
+                    {
+                        return !_pending;
+                    }
+                }
+            }
+
+            private readonly Communicator _communicator;
+            private Exception? _exception;
+            private IRequestHandler? _handler;
+            private readonly object _mutex = new object();
+            private bool _pending;
+            private Queue<Action>? _queue;
+            private readonly Reference _reference;
+
+            public ConnectAwaitable(Communicator communicator, Reference reference, Task<IRequestHandler> task)
+            {
+                _communicator = communicator;
+                _reference = reference;
+                _pending = true;
+                _ = WaitForConnectAndFlushPendingAsync(task);
+            }
+
+            public void Enqueue(Action action)
+            {
+                lock (_mutex)
+                {
+                    // Queue the continuation if the connect is pending
+                    if (_pending)
+                    {
+                        _queue ??= new Queue<Action>();
+                        _queue.Enqueue(action);
+                        return;
+                    }
+                }
+
+                // Connect is no longer pending, run the continuation now
+                Debug.Assert(_handler != null || _exception != null);
+                action();
+            }
+
+            public ConnectAwaiter GetAwaiter() => new ConnectAwaiter(this);
+
+            public IRequestHandler GetResult()
+            {
+                Debug.Assert(_exception != null || _handler != null);
+                if (_exception != null)
+                {
+                    throw _exception;
+                }
+                return _handler!;
+            }
+
+            private void Completed()
+            {
+                Queue<Action> queue;
+                lock (_mutex)
+                {
+                    // If there's no continuations queued, just mark this awaitable as completed. This will cause
+                    // await on this awaitable to complete synchronously.
+                    if (_queue == null)
+                    {
+                        _pending = false;
+                        _communicator.RemovePendingConnect(_reference, _handler);
+                        return;
+                    }
+
+                    // Get the queued continuations and clear the queue. If new continuations are added a new queue
+                    // will be created and we'll try to obtain again the connection request handler from the factory.
+                    queue = _queue;
+                    _queue = null;
+                }
+
+                // Run the continuations
+                foreach (Action action in queue)
+                {
+                    action();
+                }
+
+                lock (_mutex)
+                {
+                    if (_queue == null)
+                    {
+                        // No more requests queued, it's time to abandon this awaitable and unregister it.
+                        _pending = false;
+                        _communicator.RemovePendingConnect(_reference, _handler);
+                        return;
+                    }
+
+                    // If new requests got queued while we were flushing the queue, we reset the awaitable and
+                    // try to obtain a new connection request handler.
+                    _handler = null;
+                    _exception = null;
+                    _pending = true;
+                }
+                _ = WaitForConnectAndFlushPendingAsync(_reference.GetConnectionRequestHandlerAsync().AsTask());
+            }
+
+            private async Task WaitForConnectAndFlushPendingAsync(Task<IRequestHandler> task)
+            {
+                // Wait for the connection request handler to be returned
                 try
                 {
-                    awaitable.SetResult(await reference.GetConnectionRequestHandlerAsync().ConfigureAwait(false));
+                    _handler = await task.ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
-                    awaitable.SetException(ex);
+                    _exception = ex;
                 }
+                // Flush the queued continuations
+                Completed();
             }
+        }
+
+        private struct ConnectAwaiter : System.Runtime.CompilerServices.INotifyCompletion
+        {
+            public bool IsCompleted => _awaitable.IsCompleted;
+
+            private readonly ConnectAwaitable _awaitable;
+
+            public ConnectAwaiter(ConnectAwaitable awaitable) => _awaitable = awaitable;
+
+            public IRequestHandler GetResult() => _awaitable.GetResult();
+
+            public void OnCompleted(Action continuation) => _awaitable.Enqueue(continuation);
         }
     }
 }
