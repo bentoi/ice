@@ -1373,7 +1373,23 @@ namespace ZeroC.Ice
             else
             {
                 Debug.Assert(!IsFixed);
-                return await Communicator.GetRequestHandlerAsync(this);
+
+                if (IsConnectionCached)
+                {
+                    return await Communicator.GetCachedRequestHandlerAsync(this);
+                }
+                else
+                {
+                    if (IsCollocationOptimized)
+                    {
+                        ObjectAdapter? adapter = Communicator.FindObjectAdapter(this);
+                        if (adapter != null)
+                        {
+                            return new CollocatedRequestHandler(this, adapter);
+                        }
+                    }
+                    return await GetConnectionRequestHandlerAsync().ConfigureAwait(false);
+                }
             }
         }
 

@@ -471,7 +471,10 @@ namespace ZeroC.Ice
                     }
                     catch (RetryException)
                     {
-                        proxy.Communicator.ClearRequestHandler(reference, handler!);
+                        if (reference.IsConnectionCached)
+                        {
+                            proxy.Communicator.ClearCachedRequestHandler(reference, handler!);
+                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -479,9 +482,9 @@ namespace ZeroC.Ice
                     }
                     catch (Exception ex)
                     {
-                        if (handler != null)
+                        if (reference.IsConnectionCached && handler != null)
                         {
-                            proxy.Communicator.ClearRequestHandler(reference, handler);
+                            proxy.Communicator.ClearCachedRequestHandler(reference, handler);
                         }
 
                         // TODO: revisit retry logic
