@@ -445,7 +445,6 @@ namespace ZeroC.Ice
                     Task? closingTask = null;
                     lock (_mutex)
                     {
-                        Debug.Assert(_state > State.NotInitialized);
                         if (_state == State.Active)
                         {
                             SetState(State.Closing, exception);
@@ -1367,6 +1366,13 @@ namespace ZeroC.Ice
                 while (true)
                 {
                     ArraySegment<byte> readBuffer = await ReceiveFrameAsync().ConfigureAwait(false);
+                    if (readBuffer.Count == 0)
+                    {
+                        // If received without reading, start another receive. This can occur with datagram transports
+                        // if the datagram was truncated.
+                        continue;
+                    }
+
                     (Func<ValueTask>? incoming, ObjectAdapter? adapter) = ParseFrame(readBuffer);
                     if (incoming != null)
                     {

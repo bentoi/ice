@@ -107,7 +107,7 @@ namespace ZeroC.Ice.Test.UDP
                 // Only run this test if compression is disabled, the test expect fixed message size
                 // to be sent over the wire.
                 //
-                byte[] seq = new byte[1024]; ;
+                byte[] seq = new byte[1024];
                 try
                 {
                     while (true)
