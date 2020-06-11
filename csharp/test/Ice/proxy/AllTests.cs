@@ -402,10 +402,9 @@ namespace ZeroC.Ice.Test.Proxy
             var b2 = IObjectPrx.Parse(b1.ToString()!, communicator);
             TestHelper.Assert(b1.Equals(b2));
 
-            Connection? connection = b1.GetConnection();
-            if (connection != null) // not colloc-optimized target
+            if (b1.GetConnection() != null) // not colloc-optimized target
             {
-                b2 = connection.CreateProxy(Identity.Parse("fixed"), IObjectPrx.Factory);
+                b2 = b1.GetConnection()!.CreateProxy(Identity.Parse("fixed"), IObjectPrx.Factory);
                 TestHelper.Assert(b2.ToString() == b2.ToString());
             }
             output.WriteLine("ok");
