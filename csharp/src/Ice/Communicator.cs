@@ -871,11 +871,8 @@ namespace ZeroC.Ice
         {
             lock (_mutex)
             {
-                //
-                // If destroy is in progress, wait for it to be done. This
-                // is necessary in case destroy() is called concurrently
-                // by multiple threads.
-                //
+                // If destroy is in progress, wait for it to be done. This is necessary in case destroy() is called
+                // concurrently by multiple threads.
                 while (_state == StateDestroyInProgress)
                 {
                     Monitor.Wait(_mutex);
@@ -888,21 +885,15 @@ namespace ZeroC.Ice
                 _state = StateDestroyInProgress;
             }
 
-            //
-            // Cancel any operation waiting using the communicator cancellation token.
-            //
+            // Cancel operations that are waiting and using the communicator's cancellation token
             _cancellationTokenSource.Cancel();
 
-            //
-            // Shutdown and destroy all the incoming and outgoing Ice
-            // connections and wait for the connections to be finished.
-            //
+            // Shutdown and destroy all the incoming and outgoing Ice connections and wait for the connections
+            // to be finished.
             Shutdown();
             _outgoingConnectionFactory?.Destroy();
 
-            //
             // First wait for shutdown to finish.
-            //
             WaitForShutdown();
 
             DestroyAllObjectAdapters();
@@ -916,9 +907,7 @@ namespace ZeroC.Ice
                 ((ILoggerAdminLogger)Logger).Destroy();
             }
 
-            //
             // Wait for all the threads to be finished.
-            //
             _timer?.Destroy();
 
             lock (_routerInfoTable)
@@ -958,9 +947,7 @@ namespace ZeroC.Ice
                 }
             }
 
-            //
             // Destroy last so that a Logger plugin can receive all log/traces before its destruction.
-            //
             List<(string Name, IPlugin Plugin)> plugins;
             lock (_mutex)
             {

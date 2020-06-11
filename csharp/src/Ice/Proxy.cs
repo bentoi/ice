@@ -427,6 +427,7 @@ namespace ZeroC.Ice
                         // Notify the progress callback
                         if (progress != null)
                         {
+                            // TODO: Remove the bool sentSynchronously since it's not longer useful?
                             _ = Task.Run(() => progress.Report(false));
                         }
 
@@ -470,6 +471,7 @@ namespace ZeroC.Ice
                     }
                     catch (RetryException)
                     {
+                        // Clear the proxy's cached request handler if connection caching is enabled
                         if (reference.IsConnectionCached)
                         {
                             proxy.Communicator.ClearCachedRequestHandler(reference, handler!);
@@ -481,6 +483,7 @@ namespace ZeroC.Ice
                     }
                     catch (Exception ex)
                     {
+                        // Clear the proxy's cached request handler if connection caching is enabled
                         if (reference.IsConnectionCached && handler != null)
                         {
                             proxy.Communicator.ClearCachedRequestHandler(reference, handler);

@@ -122,7 +122,7 @@ namespace ZeroC.Ice
         private readonly int _compressionLevel;
         private readonly IConnector? _connector;
         private int _dispatchCount;
-        private TaskCompletionSource<bool>? _dispatchTask;
+        private TaskCompletionSource<bool>? _pendingDispatchTask;
         private Exception? _exception;
         private Action<Connection>? _heartbeatCallback;
         private ConnectionInfo? _info;
@@ -450,7 +450,7 @@ namespace ZeroC.Ice
                             SetState(State.Closing, exception);
                             if (_dispatchCount > 0)
                             {
-                                _dispatchTask = new TaskCompletionSource<bool>();
+                                _pendingDispatchTask = new TaskCompletionSource<bool>();
                             }
                             closingTask = _closeTask = PerformGracefulCloseAsync();
                         }
@@ -785,7 +785,7 @@ namespace ZeroC.Ice
                     SetState(State.Closed, exception ?? _exception!);
                     if (_dispatchCount > 0)
                     {
-                        _dispatchTask ??= new TaskCompletionSource<bool>();
+                        _pendingDispatchTask ??= new TaskCompletionSource<bool>();
                     }
                     _closeTask = PerformCloseAsync();
                 }
@@ -795,6 +795,9 @@ namespace ZeroC.Ice
 
         private (List<ArraySegment<byte>>, bool) GetProtocolFrameData(List<ArraySegment<byte>> frame)
         {
+            // TODO: Review the protocol tracing? We print out the trace when the frame is about to be sent. It would
+            // be simpler to trace the frame before it's queued. This would avoid having these GetXxxData methods.
+            // This would also allow to compress the frame from the user thread.
             if (_communicator.TraceLevels.Protocol > 0)
             {
                 ProtocolTrace.TraceSend(_communicator, frame[0]);
@@ -805,6 +808,9 @@ namespace ZeroC.Ice
         private (List<ArraySegment<byte>>, bool) GetRequestFrameData(OutgoingRequestFrame request, int requestId,
             bool compress)
         {
+            // TODO: Review the protocol tracing? We print out the trace when the frame is about to be sent. It would
+            // be simpler to trace the frame before it's queued. This would avoid having these GetXxxData methods.
+            // This would also allow to compress the frame from the user thread.
             List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetRequestData(request, requestId);
             if (_communicator.TraceLevels.Protocol >= 1)
             {
@@ -816,6 +822,9 @@ namespace ZeroC.Ice
         private (List<ArraySegment<byte>>, bool) GetResponseFrameData(OutgoingResponseFrame response, int requestId,
             bool compress)
         {
+            // TODO: Review the protocol tracing? We print out the trace when the frame is about to be sent. It would
+            // be simpler to trace the frame before it's queued. This would avoid having these GetXxxData methods.
+            // This would also allow to compress the frame from the user thread.
             List<ArraySegment<byte>> writeBuffer = Ice1Definitions.GetResponseData(response, requestId);
             if (_communicator.TraceLevels.Protocol > 0)
             {
@@ -911,10 +920,10 @@ namespace ZeroC.Ice
 
                     // Decrease the dispatch count
                     Debug.Assert(_dispatchCount > 0);
-                    if (--_dispatchCount == 0 && _dispatchTask != null)
+                    if (--_dispatchCount == 0 && _pendingDispatchTask != null)
                     {
                         Debug.Assert(_state > State.Active);
-                        _dispatchTask.SetResult(true);
+                        _pendingDispatchTask.SetResult(true);
                     }
                 }
 
@@ -1081,9 +1090,9 @@ namespace ZeroC.Ice
             if (!(_exception is ConnectionClosedByPeerException))
             {
                 // Wait for the all the dispatch to be completed to ensure the responses are sent.
-                if (_dispatchTask != null)
+                if (_pendingDispatchTask != null)
                 {
-                    await _dispatchTask.Task.ConfigureAwait(false);
+                    await _pendingDispatchTask.Task.ConfigureAwait(false);
                 }
 
                 // Write and wait for the close connection frame to be written
@@ -1189,9 +1198,9 @@ namespace ZeroC.Ice
             }
 
             // Wait for all the dispatch to complete before reaping the connection and notifying the observer
-            if (_dispatchTask != null)
+            if (_pendingDispatchTask != null)
             {
-                await _dispatchTask.Task.ConfigureAwait(false);
+                await _pendingDispatchTask.Task.ConfigureAwait(false);
             }
 
             _monitor?.Reap(this);
