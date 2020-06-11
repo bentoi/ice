@@ -123,7 +123,7 @@ namespace ZeroC.Ice
         private readonly IConnector? _connector;
         private int _dispatchCount;
         private TaskCompletionSource<bool>? _dispatchTask;
-        private System.Exception? _exception;
+        private Exception? _exception;
         private Action<Connection>? _heartbeatCallback;
         private ConnectionInfo? _info;
         private readonly int _messageSizeMax;
@@ -134,12 +134,12 @@ namespace ZeroC.Ice
         private Task _receiveTask = Task.CompletedTask;
         private readonly Dictionary<int, TaskCompletionSource<IncomingResponseFrame>> _requests =
             new Dictionary<int, TaskCompletionSource<IncomingResponseFrame>>();
+        private Task _sendTask = Task.CompletedTask;
         private State _state; // The current state.
         private readonly ITransceiver _transceiver;
         private bool _validated = false;
         private readonly bool _warn;
         private readonly bool _warnUdp;
-        private Task _sendTask = Task.CompletedTask;
 
         // Map internal connection states to Ice.Instrumentation.ConnectionState state values.
         private static readonly ConnectionState[] _connectionStateMap = new ConnectionState[]
@@ -159,6 +159,10 @@ namespace ZeroC.Ice
         /// <param name="mode">Determines how the connection will be closed.</param>
         public void Close(ConnectionClose mode)
         {
+            // TODO: We should consider removing this method and expose GracefulCloseAsync and CloseAsync
+            // instead. This would remove the support for ConnectionClose.GracefullyWithWait. Is it
+            // useful? Not waiting implies that the pending requests implies these requests will fail and
+            // won't be retried. GracefulCloseAsync could wait for pending requests to complete?
             if (mode == ConnectionClose.Forcefully)
             {
                 _ = CloseAsync(new ConnectionClosedLocallyException("connection closed forcefully"));

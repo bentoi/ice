@@ -275,8 +275,7 @@ namespace ZeroC.Ice
         {
             try
             {
-                var handler = prx.IceReference.GetRequestHandlerAsync().Result as ConnectionRequestHandler;
-                return handler?.GetConnection();
+                return (prx.IceReference.GetRequestHandlerAsync().Result as ConnectionRequestHandler)?.GetConnection();
             }
             catch (AggregateException ex)
             {
