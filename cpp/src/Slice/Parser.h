@@ -376,12 +376,12 @@ public:
         KindDouble,
         KindString,
         KindObject, // the implicit base for all proxies
-        KindValue   // TODO: rename to AnyClass
+        KindAnyClass
     };
 
     virtual std::string typeId() const;
     virtual bool usesClasses() const;
-    virtual bool isClassType() const { return _kind == KindValue; }
+    virtual bool isClassType() const { return _kind == KindAnyClass; }
     virtual bool isInterfaceType() const { return _kind == KindObject; }
     virtual size_t minWireSize() const;
     virtual std::string getTagFormat() const;
@@ -415,7 +415,7 @@ public:
         "double",
         "string",
         "Object",
-        "Value"
+        "AnyClass"
     };
 
 protected:
@@ -545,7 +545,6 @@ public:
     bool hasClassDefs() const;
     bool hasInterfaceDecls() const;
     bool hasInterfaceDefs() const;
-    bool hasValueDefs() const;
     bool hasOnlyClassDecls() const;
     bool hasOnlyInterfaces() const;
     bool hasOperations() const; // interfaces or classes with operations
@@ -758,11 +757,11 @@ public:
 
     // The "in" bit sequence length. It corresponds to the number of in-parameters with optional types that are not
     // class/proxy and that are not tagged.
-    size_t inBitSequenceLength() const;
+    size_t inBitSequenceSize() const;
 
     // The "return" bit sequence length. It corresponds to the number of return parameters with optional types that are
     // not class/proxy and that are not tagged.
-    size_t returnBitSequenceLength() const;
+    size_t returnBitSequenceSize() const;
 
     TypePtr returnType() const;
     bool returnIsTagged() const;

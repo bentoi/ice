@@ -510,7 +510,7 @@ Slice::isValueType(const TypePtr& type)
         {
             case Builtin::KindString:
             case Builtin::KindObject:
-            case Builtin::KindValue:
+            case Builtin::KindAnyClass:
             {
                 return false;
             }
@@ -974,9 +974,9 @@ Slice::CsGenerator::writeUnmarshalCode(Output &out,
     }
     else
     {
-        auto constructed = ConstructedPtr::dynamicCast(type);
+        auto constructed = ConstructedPtr::dynamicCast(underlying);
         assert(constructed);
-        out << helperName(type, scope) << ".Read" << constructed->name() << "(" << stream << ")";
+        out << helperName(underlying, scope) << ".Read" << constructed->name() << "(" << stream << ")";
     }
 
     if (optional)
@@ -1011,7 +1011,7 @@ Slice::CsGenerator::writeTaggedMarshalCode(Output& out,
 
     if (builtin || type->isInterfaceType() || type->isClassType())
     {
-        auto kind = builtin ? builtin->kind() : type->isInterfaceType() ? Builtin::KindObject : Builtin::KindValue;
+        auto kind = builtin ? builtin->kind() : type->isInterfaceType() ? Builtin::KindObject : Builtin::KindAnyClass;
         out << nl << stream << ".WriteTagged" << builtinSuffixTable[kind] << "(" << tag << ", " << param << ");";
     }
     else if(st)
