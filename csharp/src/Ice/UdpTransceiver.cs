@@ -624,7 +624,7 @@ namespace ZeroC.Ice
                 }
                 return s;
             }
-            catch(ObjectDisposedException)
+            catch (ObjectDisposedException)
             {
                 return "<closed>";
             }
@@ -862,7 +862,7 @@ namespace ZeroC.Ice
         private readonly bool _incoming;
         private int _rcvSize;
         private int _sndSize;
-        private Socket _fd;
+        private readonly Socket _fd;
         private EndPoint _addr;
         private readonly IPEndPoint? _sourceAddr;
         private IPEndPoint? _mcastAddr = null;
