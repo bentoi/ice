@@ -171,9 +171,7 @@ namespace ZeroC.Ice
             {
                 Debug.Assert(mode == ConnectionClose.GracefullyWithWait);
 
-                //
                 // Wait until all outstanding requests have been completed.
-                //
                 lock (_mutex)
                 {
                     while (_requests.Count > 0)
@@ -1595,8 +1593,6 @@ namespace ZeroC.Ice
                 }
             }
             _state = state;
-
-            System.Threading.Monitor.PulseAll(_mutex);
         }
 
         private void TraceReceivedAndUpdateObserver(int length)
