@@ -352,7 +352,7 @@ namespace ZeroC.Ice
         /// <param name="progress">Sent progress provider.</param>
         /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
         /// <returns>A task holding the response frame.</returns>
-        public static async ValueTask<OutgoingResponseFrame> ForwardAsync(this IObjectPrx proxy,
+        public static ValueTask<OutgoingResponseFrame> ForwardAsync(this IObjectPrx proxy,
                                                                           bool oneway,
                                                                           IncomingRequestFrame request,
                                                                           IProgress<bool>? progress = null,
@@ -360,18 +360,24 @@ namespace ZeroC.Ice
         {
             var forwardedRequest = new OutgoingRequestFrame(proxy, request.Operation, request.IsIdempotent,
                 request.Context, request.Payload);
-            IncomingResponseFrame response =
-                await proxy.InvokeAsync(forwardedRequest, oneway: oneway, progress, cancel)
-                    .ConfigureAwait(false);
-            return new OutgoingResponseFrame(request.Encoding, response.Payload);
+            ValueTask<IncomingResponseFrame> task =
+                proxy.InvokeAsync(forwardedRequest, oneway: oneway, progress, cancel);
+            return WaitResponseAsync(request, task);
+
+            static async ValueTask<OutgoingResponseFrame> WaitResponseAsync(IncomingRequestFrame request,
+                ValueTask<IncomingResponseFrame> task)
+            {
+                IncomingResponseFrame response = await task.ConfigureAwait(false);
+                return new OutgoingResponseFrame(request.Encoding, response.Payload);
+            }
         }
 
-        private static async ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
-                                                                          OutgoingRequestFrame request,
-                                                                          bool oneway,
-                                                                          bool synchronous,
-                                                                          IProgress<bool>? progress = null,
-                                                                          CancellationToken cancel = default)
+        private static ValueTask<IncomingResponseFrame> InvokeAsync(this IObjectPrx proxy,
+                                                                    OutgoingRequestFrame request,
+                                                                    bool oneway,
+                                                                    bool synchronous,
+                                                                    IProgress<bool>? progress = null,
+                                                                    CancellationToken cancel = default)
         {
             Reference reference = proxy.IceReference;
 
@@ -379,153 +385,165 @@ namespace ZeroC.Ice
             if (mode == InvocationMode.BatchOneway || mode == InvocationMode.BatchDatagram)
             {
                 Debug.Assert(false); // not implemented
-                return null;
+                return default;
             }
-
             if (mode == InvocationMode.Datagram && !oneway)
             {
                 throw new InvalidOperationException("cannot make two-way call on a datagram proxy");
             }
+            return InvokeAsync(proxy, request, oneway, synchronous, progress, cancel);
 
-            IReadOnlyDictionary<string, string>? context = request.Context ?? reference.CurrentContext();
-            IInvocationObserver? observer = ObserverHelper.GetInvocationObserver(proxy, request.Operation, context);
-            int retryCount = 0;
-            CancellationTokenSource? invocationTimeout = null;
-            if (reference.InvocationTimeout > 0)
+            static async ValueTask<IncomingResponseFrame> InvokeAsync(IObjectPrx proxy,
+                                                                      OutgoingRequestFrame request,
+                                                                      bool oneway,
+                                                                      bool synchronous,
+                                                                      IProgress<bool>? progress,
+                                                                      CancellationToken cancel)
             {
-                invocationTimeout = new CancellationTokenSource();
-                invocationTimeout.CancelAfter(reference.InvocationTimeout);
-                if (cancel.CanBeCanceled)
-                {
-                    cancel = CancellationTokenSource.CreateLinkedTokenSource(cancel, invocationTimeout.Token).Token;
-                }
-                else
-                {
-                    cancel = invocationTimeout.Token;
-                }
-            }
+                Reference reference = proxy.IceReference;
 
-            try
-            {
-                while (true)
+                IReadOnlyDictionary<string, string>? context = request.Context ?? reference.CurrentContext();
+                IInvocationObserver? observer = ObserverHelper.GetInvocationObserver(proxy, request.Operation, context);
+                int retryCount = 0;
+                CancellationTokenSource? invocationTimeout = null;
+                if (reference.InvocationTimeout > 0)
                 {
-                    IRequestHandler? handler = null;
-                    bool sent = false;
-                    try
+                    invocationTimeout = new CancellationTokenSource();
+                    invocationTimeout.CancelAfter(reference.InvocationTimeout);
+                    if (cancel.CanBeCanceled)
                     {
-                        // Get the request handler, this will eventually establish a connection if needed.
-                        handler = await CancelableTask.WhenAny(reference.GetRequestHandlerAsync(),
-                            cancel).ConfigureAwait(false);
+                        cancel = CancellationTokenSource.CreateLinkedTokenSource(cancel, invocationTimeout.Token).Token;
+                    }
+                    else
+                    {
+                        cancel = invocationTimeout.Token;
+                    }
+                }
 
-                        // Send the request and if it's a twoway request get the task to wait for the response
-                        Task<IncomingResponseFrame>? responseTask = await CancelableTask.WhenAny(
-                                handler!.SendRequestAsync(request, oneway, synchronous, observer),
+                try
+                {
+                    while (true)
+                    {
+                        IRequestHandler? handler = null;
+                        bool sent = false;
+                        try
+                        {
+                            // Get the request handler, this will eventually establish a connection if needed.
+                            handler = await CancelableTask.WhenAny(reference.GetRequestHandlerAsync(),
                                 cancel).ConfigureAwait(false);
 
-                        sent = true; // Mark the request as sent, it's important for the retry logic
+                            // Send the request and if it's a twoway request get the task to wait for the response
+                            Task<IncomingResponseFrame>? responseTask = await CancelableTask.WhenAny(
+                                    handler!.SendRequestAsync(request, oneway, synchronous, observer),
+                                    cancel).ConfigureAwait(false);
 
-                        // Notify the progress callback
-                        if (progress != null)
-                        {
-                            // TODO: Remove the bool sentSynchronously since it's not longer useful?
-                            _ = Task.Run(() => progress.Report(false));
-                        }
+                            sent = true; // Mark the request as sent, it's important for the retry logic
 
-                        Debug.Assert((oneway && responseTask == null) || (!oneway && responseTask != null));
-
-                        // If there's a response task, wait for the response
-                        if (responseTask != null)
-                        {
-                            IncomingResponseFrame response =
-                                await CancelableTask.WhenAny(responseTask, cancel).ConfigureAwait(false);
-                            switch (response.ReplyStatus)
+                            // Notify the progress callback
+                            if (progress != null)
                             {
-                                case ReplyStatus.OK:
-                                {
-                                    break;
-                                }
-                                case ReplyStatus.UserException:
-                                {
-                                    observer?.RemoteException();
-                                    break;
-                                }
-                                case ReplyStatus.ObjectNotExistException:
-                                case ReplyStatus.FacetNotExistException:
-                                case ReplyStatus.OperationNotExistException:
-                                {
-                                    throw response.ReadDispatchException();
-                                }
-                                case ReplyStatus.UnknownException:
-                                case ReplyStatus.UnknownLocalException:
-                                case ReplyStatus.UnknownUserException:
-                                {
-                                    throw response.ReadUnhandledException();
-                                }
+                                // TODO: Remove the bool sentSynchronously since it's not longer useful?
+                                _ = Task.Run(() => progress.Report(false));
                             }
-                            return response;
-                        }
-                        else
-                        {
-                            return new IncomingResponseFrame(proxy.Communicator, Ice1Definitions.EmptyResponsePayload);
-                        }
-                    }
-                    catch (RetryException)
-                    {
-                        // Clear the proxy's cached request handler if connection caching is enabled
-                        if (reference.IsConnectionCached)
-                        {
-                            proxy.Communicator.ClearCachedRequestHandler(reference, handler!);
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw; // Don't retry cancelled operations
-                    }
-                    catch (Exception ex)
-                    {
-                        // Clear the proxy's cached request handler if connection caching is enabled
-                        if (reference.IsConnectionCached && handler != null)
-                        {
-                            proxy.Communicator.ClearCachedRequestHandler(reference, handler);
-                        }
 
-                        // TODO: revisit retry logic
-                        // We only retry after failing with a DispatchException or a local exception.
-                        int delay = reference.CheckRetryAfterException(ex, sent, request.IsIdempotent, ref retryCount);
-                        if (delay > 0)
-                        {
-                            // The delay task can be cancelled either by the user code using the provided cancellation
-                            // token or if the communicator is destroyed.
-                            CancellationToken token = CancellationTokenSource.CreateLinkedTokenSource(cancel,
-                                proxy.Communicator.CancellationToken).Token;
-                            await CancelableTask.WhenAny(Task.Delay(delay), token).ConfigureAwait(false);
-                        }
+                            Debug.Assert((oneway && responseTask == null) || (!oneway && responseTask != null));
 
-                        observer?.Retried();
+                            // If there's a response task, wait for the response
+                            if (responseTask != null)
+                            {
+                                IncomingResponseFrame response =
+                                    await CancelableTask.WhenAny(responseTask, cancel).ConfigureAwait(false);
+                                switch (response.ReplyStatus)
+                                {
+                                    case ReplyStatus.OK:
+                                    {
+                                        break;
+                                    }
+                                    case ReplyStatus.UserException:
+                                    {
+                                        observer?.RemoteException();
+                                        break;
+                                    }
+                                    case ReplyStatus.ObjectNotExistException:
+                                    case ReplyStatus.FacetNotExistException:
+                                    case ReplyStatus.OperationNotExistException:
+                                    {
+                                        throw response.ReadDispatchException();
+                                    }
+                                    case ReplyStatus.UnknownException:
+                                    case ReplyStatus.UnknownLocalException:
+                                    case ReplyStatus.UnknownUserException:
+                                    {
+                                        throw response.ReadUnhandledException();
+                                    }
+                                }
+                                return response;
+                            }
+                            else
+                            {
+                                return new IncomingResponseFrame(proxy.Communicator,
+                                    Ice1Definitions.EmptyResponsePayload);
+                            }
+                        }
+                        catch (RetryException)
+                        {
+                            // Clear the proxy's cached request handler if connection caching is enabled
+                            if (reference.IsConnectionCached)
+                            {
+                                proxy.Communicator.ClearCachedRequestHandler(reference, handler!);
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw; // Don't retry cancelled operations
+                        }
+                        catch (Exception ex)
+                        {
+                            // Clear the proxy's cached request handler if connection caching is enabled
+                            if (reference.IsConnectionCached && handler != null)
+                            {
+                                proxy.Communicator.ClearCachedRequestHandler(reference, handler);
+                            }
+
+                            // TODO: revisit retry logic
+                            // We only retry after failing with a DispatchException or a local exception.
+                            int delay = reference.CheckRetryAfterException(ex, sent, request.IsIdempotent,
+                                ref retryCount);
+                            if (delay > 0)
+                            {
+                                // The delay task can be cancelled either by the user code using the provided
+                                // cancellation token or if the communicator is destroyed.
+                                CancellationToken token = CancellationTokenSource.CreateLinkedTokenSource(cancel,
+                                    proxy.Communicator.CancellationToken).Token;
+                                await CancelableTask.WhenAny(Task.Delay(delay), token).ConfigureAwait(false);
+                            }
+
+                            observer?.Retried();
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                // Check the reason of the cancellation
-                if (ex is OperationCanceledException)
+                catch (Exception ex)
                 {
-                    if (invocationTimeout?.IsCancellationRequested ?? false)
+                    // Check the reason of the cancellation
+                    if (ex is OperationCanceledException)
                     {
-                        ex = new TimeoutException();
+                        if (invocationTimeout?.IsCancellationRequested ?? false)
+                        {
+                            ex = new TimeoutException();
+                        }
+                        else if (proxy.Communicator.CancellationToken.IsCancellationRequested)
+                        {
+                            ex = new CommunicatorDestroyedException();
+                        }
                     }
-                    else if (proxy.Communicator.CancellationToken.IsCancellationRequested)
-                    {
-                        ex = new CommunicatorDestroyedException();
-                    }
+                    observer?.Failed(ex.GetType().FullName ?? "System.Exception");
+                    throw ex;
                 }
-                observer?.Failed(ex.GetType().FullName ?? "System.Exception");
-                throw ex;
-            }
-            finally
-            {
-                // Use IDisposable for observers, this will allow using "using".
-                observer?.Detach();
+                finally
+                {
+                    // Use IDisposable for observers, this will allow using "using".
+                    observer?.Detach();
+                }
             }
         }
     }
