@@ -490,7 +490,7 @@ namespace ZeroC.Ice
                             // Clear the proxy's cached request handler if connection caching is enabled
                             if (reference.IsConnectionCached)
                             {
-                                proxy.Communicator.ClearCachedRequestHandler(reference, handler!);
+                                proxy.IceReference.ClearRequestHandler(handler!);
                             }
                         }
                         catch (OperationCanceledException)
@@ -502,7 +502,7 @@ namespace ZeroC.Ice
                             // Clear the proxy's cached request handler if connection caching is enabled
                             if (reference.IsConnectionCached && handler != null)
                             {
-                                proxy.Communicator.ClearCachedRequestHandler(reference, handler);
+                                proxy.IceReference.ClearRequestHandler(handler);
                             }
 
                             // TODO: revisit retry logic

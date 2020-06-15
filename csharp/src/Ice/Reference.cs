@@ -42,11 +42,6 @@ namespace ZeroC.Ice
         internal LocatorInfo? LocatorInfo { get; }
         internal bool PreferNonSecure { get; }
         internal Protocol Protocol { get; }
-        internal IRequestHandler? RequestHandler
-        {
-            get => _requestHandler;
-            set => _requestHandler = value;
-        }
         internal RouterInfo? RouterInfo { get; }
         private readonly Connection? _fixedConnection;
         private int _hashCode = 0;
@@ -892,6 +887,12 @@ namespace ZeroC.Ice
             return interval;
         }
 
+        internal void ClearRequestHandler(IRequestHandler handler)
+        {
+            Debug.Assert(!IsFixed);
+            Interlocked.CompareExchange(ref _requestHandler, null, handler);
+        }
+
         internal Reference Clone(string? adapterId = null,
                                  bool? cacheConnection = null,
                                  bool clearLocator = false,
@@ -1366,31 +1367,30 @@ namespace ZeroC.Ice
         internal async ValueTask<IRequestHandler> GetRequestHandlerAsync()
         {
             IRequestHandler? handler = _requestHandler;
-            if (handler != null)
-            {
-                return handler;
-            }
-            else
+            if (handler == null)
             {
                 Debug.Assert(!IsFixed);
 
+                if (IsCollocationOptimized)
+                {
+                    ObjectAdapter? adapter = Communicator.FindObjectAdapter(this);
+                    if (adapter != null)
+                    {
+                        handler = new CollocatedRequestHandler(this, adapter);
+                    }
+                }
+
+                if (handler == null)
+                {
+                    handler = await GetConnectionRequestHandlerAsync().ConfigureAwait(false);
+                }
+
                 if (IsConnectionCached)
                 {
-                    return await Communicator.GetCachedRequestHandlerAsync(this);
-                }
-                else
-                {
-                    if (IsCollocationOptimized)
-                    {
-                        ObjectAdapter? adapter = Communicator.FindObjectAdapter(this);
-                        if (adapter != null)
-                        {
-                            return new CollocatedRequestHandler(this, adapter);
-                        }
-                    }
-                    return await GetConnectionRequestHandlerAsync().ConfigureAwait(false);
+                    _requestHandler = handler;
                 }
             }
+            return handler;
         }
 
         internal Dictionary<string, string> ToProperty(string prefix)

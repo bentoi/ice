@@ -500,6 +500,9 @@ namespace ZeroC.Ice.Test.AMI
                     var context = new Dictionary<string, string>();
                     for (int i = 0; i < 50; ++i)
                     {
+                        // Async serialization only works once the connection is established and if there's no
+                        // retries
+                        serialized.IcePing();
                         for (int j = 0; j < tasks.Length; ++j)
                         {
                             context["value"] = j.ToString(); // This is for debugging
