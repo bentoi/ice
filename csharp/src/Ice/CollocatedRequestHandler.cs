@@ -131,7 +131,6 @@ namespace ZeroC.Ice
                     if (requestId != 0)
                     {
                         outgoingResponseFrame = await vt.ConfigureAwait(false);
-                        dispatchObserver?.Reply(outgoingResponseFrame.Size);
                     }
                 }
                 catch (Exception ex)
@@ -150,12 +149,13 @@ namespace ZeroC.Ice
 
                         Incoming.ReportException(actualEx, dispatchObserver, current);
                         outgoingResponseFrame = new OutgoingResponseFrame(current, actualEx);
-                        dispatchObserver?.Reply(outgoingResponseFrame.Size);
                     }
                 }
 
                 if (outgoingResponseFrame != null)
                 {
+                    dispatchObserver?.Reply(outgoingResponseFrame.Size);
+
                     var incomingResponseFrame = new IncomingResponseFrame(_adapter.Communicator,
                         VectoredBufferExtensions.ToArray(outgoingResponseFrame!.Data));
                     if (_adapter.Communicator.TraceLevels.Protocol >= 1)
@@ -169,11 +169,6 @@ namespace ZeroC.Ice
                 {
                     return null;
                 }
-            }
-            catch (Exception)
-            {
-                // TODO
-                throw;
             }
             finally
             {
