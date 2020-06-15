@@ -115,58 +115,61 @@ namespace ZeroC.Ice
 
             public IRequestHandler GetResult() => _handler ?? throw _exception!;
 
-            private async Task WaitForGetConnectionAndFlushPendingAsync(Task<IRequestHandler> task)
+            private async Task WaitForGetConnectionAndFlushPendingAsync(Task<IRequestHandler>? task)
             {
-                // Wait for the connection request handler to be returned.
-                try
+                while (true)
                 {
-                    _handler = await task.ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _exception = ex;
-                }
-
-                // Get the queued continuations and clear the queue reference. If new continuations are added a new
-                // queue will be created and we'll try to obtain again the connection request handler from the factory.
-                Queue<Action>? queue;
-                lock (_pendingGets)
-                {
-                    queue = _queue;
-                    _queue = null;
-                }
-
-                if (queue != null)
-                {
-                    // Run the continuations
-                    foreach (Action action in queue)
+                    // Wait for the connection request handler to be returned.
+                    try
                     {
-                        action();
+                        task ??= _reference.GetConnectionRequestHandlerAsync().AsTask();
+                        _handler = await task.ConfigureAwait(false);
                     }
-                }
-
-                lock (_pendingGets)
-                {
-                    if (_queue == null)
+                    catch (Exception ex)
                     {
-                        // No more requests queued, it's time to abandon this awaitable, we unregister it from the
-                        // pending gets and we set the request handler on the reference. If another thread is about
-                        // to queue a continuation on the awaitable, the continuatin will be executed synchronously
-                        // since IsPending is now false.
-                        IsPending = false;
-                        _pendingGets.Remove(_reference);
-                        _reference.RequestHandler = _handler;
-                        return;
+                        _exception = ex;
                     }
 
-                    // If new requests got queued while we were flushing the queue, we reset the awaitable and
-                    // try to obtain a new connection request handler.
-                    _handler = null;
-                    _exception = null;
-                    IsPending = true;
-                }
+                    // Get the queued continuations and clear the queue reference. If new continuations are added a new
+                    // queue will be created and we'll try to obtain again the connection request handler from the factory.
+                    Queue<Action>? queue;
+                    lock (_pendingGets)
+                    {
+                        queue = _queue;
+                        _queue = null;
+                    }
 
-                _ = WaitForGetConnectionAndFlushPendingAsync(_reference.GetConnectionRequestHandlerAsync().AsTask());            }
+                    if (queue != null)
+                    {
+                        // Run the continuations
+                        foreach (Action action in queue)
+                        {
+                            action();
+                        }
+                    }
+
+                    lock (_pendingGets)
+                    {
+                        if (_queue == null)
+                        {
+                            // No more requests queued, it's time to abandon this awaitable, we unregister it from the
+                            // pending gets and we set the request handler on the reference. If another thread is about
+                            // to queue a continuation on the awaitable, the continuatin will be executed synchronously
+                            // since IsPending is now false.
+                            IsPending = false;
+                            _pendingGets.Remove(_reference);
+                            _reference.RequestHandler = _handler;
+                            return;
+                        }
+
+                        // If new requests got queued while we were flushing the queue, we reset the awaitable and
+                        // try to obtain a new connection request handler.
+                        _handler = null;
+                        _exception = null;
+                        task = null;
+                    }
+                }
+            }
         }
 
         private struct GetConnectionAwaiter : System.Runtime.CompilerServices.INotifyCompletion
