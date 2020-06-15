@@ -10,6 +10,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
@@ -204,7 +205,7 @@ namespace ZeroC.Ice
         private readonly Dictionary<EndpointType, BufSizeWarnInfo> _setBufSizeWarn =
             new Dictionary<EndpointType, BufSizeWarnInfo>();
 
-        private SslEngine _sslEngine;
+        private readonly SslEngine _sslEngine;
         private int _state;
         private readonly Timer _timer;
 
@@ -219,7 +220,7 @@ namespace ZeroC.Ice
                             Instrumentation.ICommunicatorObserver? observer = null,
                             X509Certificate2Collection? certificates = null,
                             X509Certificate2Collection? caCertificates = null,
-                            ICertificateVerifier? certificateVerifier = null,
+                            RemoteCertificateValidationCallback? certificateValidationCallback = null,
                             IPasswordCallback? passwordCallback = null)
             : this(ref _emptyArgs,
                    null,
@@ -228,7 +229,7 @@ namespace ZeroC.Ice
                    observer,
                    certificates,
                    caCertificates,
-                   certificateVerifier,
+                   certificateValidationCallback,
                    passwordCallback)
         {
         }
@@ -239,7 +240,7 @@ namespace ZeroC.Ice
                             Instrumentation.ICommunicatorObserver? observer = null,
                             X509Certificate2Collection? certificates = null,
                             X509Certificate2Collection? caCertificates = null,
-                            ICertificateVerifier? certificateVerifier = null,
+                            RemoteCertificateValidationCallback? certificateValidationCallback = null,
                             IPasswordCallback? passwordCallback = null)
             : this(ref args,
                    null,
@@ -248,7 +249,7 @@ namespace ZeroC.Ice
                    observer,
                    certificates,
                    caCertificates,
-                   certificateVerifier,
+                   certificateValidationCallback,
                    passwordCallback)
         {
         }
@@ -259,7 +260,7 @@ namespace ZeroC.Ice
                             Instrumentation.ICommunicatorObserver? observer = null,
                             X509Certificate2Collection? certificates = null,
                             X509Certificate2Collection? caCertificates = null,
-                            ICertificateVerifier? certificateVerifier = null,
+                            RemoteCertificateValidationCallback? certificateValidationCallback = null,
                             IPasswordCallback? passwordCallback = null)
             : this(ref _emptyArgs,
                    appSettings,
@@ -268,7 +269,7 @@ namespace ZeroC.Ice
                    observer,
                    certificates,
                    caCertificates,
-                   certificateVerifier,
+                   certificateValidationCallback,
                    passwordCallback)
         {
         }
@@ -280,7 +281,7 @@ namespace ZeroC.Ice
                             Instrumentation.ICommunicatorObserver? observer = null,
                             X509Certificate2Collection? certificates = null,
                             X509Certificate2Collection? caCertificates = null,
-                            ICertificateVerifier? certificateVerifier = null,
+                            RemoteCertificateValidationCallback? certificateValidationCallback = null,
                             IPasswordCallback? passwordCallback = null)
         {
             _state = StateActive;
@@ -588,7 +589,16 @@ namespace ZeroC.Ice
 
                 NetworkProxy = CreateNetworkProxy(IPVersion);
 
-                _sslEngine = new SslEngine(this, certificates, caCertificates, certificateVerifier, passwordCallback);
+                if (caCertificates != null && certificateValidationCallback != null)
+                {
+                    throw new ArgumentException(
+                        @$"the `{nameof(caCertificates)
+                        }' argument cannot be set when certificateValidationCallback argument is set",
+                        nameof(caCertificates));
+                }
+
+                _sslEngine = new SslEngine(
+                    this, certificates, caCertificates, certificateValidationCallback, passwordCallback);
 
                 IceAddEndpointFactory(new TcpEndpointFactory(this));
                 IceAddEndpointFactory(new UdpEndpointFactory(this));
@@ -902,9 +912,9 @@ namespace ZeroC.Ice
 
             Observer?.SetObserverUpdater(null);
 
-            if (Logger is ILoggerAdminLogger)
+            if (Logger is ILoggerAdminLogger adminLogger)
             {
-                ((ILoggerAdminLogger)Logger).Destroy();
+                adminLogger.Destroy();
             }
 
             // Wait for all the threads to be finished.
@@ -976,9 +986,9 @@ namespace ZeroC.Ice
             }
 
             {
-                if (Logger != null && Logger is FileLogger)
+                if (Logger is FileLogger fileLogger)
                 {
-                    ((FileLogger)Logger).Destroy();
+                    fileLogger.Destroy();
                 }
             }
             _currentContext.Dispose();
