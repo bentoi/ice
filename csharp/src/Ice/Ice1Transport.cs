@@ -82,8 +82,6 @@ namespace ZeroC.Ice
         public async ValueTask HeartbeatAsync(CancellationToken cancel) =>
             await SendFrameAsync(0, _validateConnectionFrame, cancel).ConfigureAwait(false);
 
-        public event EventHandler? HeartbeatReceived;
-
         public async ValueTask InitializeAsync(
             Action heartbeatCallback,
             Action<int> sentCallback,
@@ -213,7 +211,7 @@ namespace ZeroC.Ice
             }
         }
 
-        public int NewStream() => ++_nextStreamId;
+        public int NewStream(bool bidirectional) => bidirectional ? ++_nextStreamId : 0;
 
         public ValueTask ResetAsync(int streamId) =>
             throw new NotSupportedException("ice1 transports don't support stream reset");
@@ -234,7 +232,7 @@ namespace ZeroC.Ice
             _warnUdp = Endpoint.Communicator.GetPropertyAsBool("Ice.Warn.Datagrams") ?? false;
             _compressionLevel = Endpoint.Communicator.GetPropertyAsInt("Ice.Compression.Level") ?? 1;
             _sentCallback = _receivedCallback = _ => {};
-            _heartbeatCallback = _ = {};
+            _heartbeatCallback = _ => {};
 
             if (_compressionLevel < 1)
             {

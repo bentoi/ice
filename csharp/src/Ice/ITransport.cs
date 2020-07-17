@@ -26,9 +26,6 @@ namespace ZeroC.Ice
         /// <summary>Sends a heartbeat.</summary>
         ValueTask HeartbeatAsync(CancellationToken cancel);
 
-        /// <summary>Event to get notified when heartbeat is received.</summary>
-        event EventHandler? HeartbeatReceived;
-
         /// <summary>Initializes the transport.</summary>
         ValueTask InitializeAsync(
             Action heartbeatCallback,
@@ -39,7 +36,8 @@ namespace ZeroC.Ice
         /// <summary>Receives a new frame.</summary>
         ValueTask<(int StreamId, object? Frame, bool Fin)> ReceiveAsync(CancellationToken cancel);
 
-        int NewStream();
+        /// <summary>Creates a new stream.</summary>
+        int NewStream(bool bidirectional);
 
         /// <summary>Resets the given stream.</summary>
         ValueTask ResetAsync(int streamId);

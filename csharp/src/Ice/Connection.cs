@@ -420,11 +420,9 @@ namespace ZeroC.Ice
                 Debug.Assert(_state > ConnectionState.Validating);
                 Debug.Assert(_state < ConnectionState.Closing);
 
-                int streamId = 0;
-                if (!oneway)
+                int streamId = Transport.NewStream(!oneway);
+                if (streamId > 0)
                 {
-                    streamId = Transport.NewStream();
-
                     var responseTaskSource = new TaskCompletionSource<IncomingResponseFrame>();
                     _requests[streamId] = (responseTaskSource, synchronous);
                     responseTask = responseTaskSource.Task;
