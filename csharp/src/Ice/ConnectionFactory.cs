@@ -361,11 +361,9 @@ namespace ZeroC.Ice
                                 throw new CommunicatorDisposedException();
                             }
 
-                            connection = connector.Connect().CreateConnection(this,
-                                                                              endpoint,
-                                                                              connector,
-                                                                              connectionId,
-                                                                              null);
+                            // TODO: support other transports
+                            ITransport transport = new Ice1Transport(connector.Connect(), endpoint, null);
+                            connection = endpoint.CreateConnection(this, transport, connector, connectionId, null);
 
                             _connectionsByConnector.Add((connector, connectionId), connection);
                             _connectionsByEndpoint.Add((endpoint, connectionId), connection);
@@ -452,7 +450,7 @@ namespace ZeroC.Ice
     {
         public IAcmMonitor AcmMonitor { get; }
 
-        private readonly IAcceptor? _acceptor;
+        private readonly IServerTransport? _transport;
         private readonly ObjectAdapter _adapter;
         private readonly Communicator _communicator;
         private readonly HashSet<Connection> _connections = new HashSet<Connection>();
@@ -474,15 +472,15 @@ namespace ZeroC.Ice
             async Task PerformDisposeAsync()
             {
                 // Close the acceptor
-                if (_acceptor != null)
+                if (_transport != null)
                 {
                     if (_communicator.TraceLevels.Network >= 1)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
-                            $"stopping to accept {_endpoint.TransportName} connections at {_acceptor}");
+                            $"stopping to accept {_endpoint.TransportName} connections at {_transport}");
                     }
 
-                    _acceptor.Close();
+                    _transport.Dispose();
                 }
 
                 // Wait for all the connections to be closed
@@ -509,7 +507,7 @@ namespace ZeroC.Ice
             }
             else
             {
-                return _acceptor!.ToString();
+                return _transport!.ToString()!;
             }
         }
 
@@ -538,26 +536,23 @@ namespace ZeroC.Ice
                     }
                     _endpoint = _transceiver.Bind();
 
-                    Connection connection = _transceiver.CreateConnection(this, _endpoint, null, "", _adapter);
+                    ITransport transport = new Ice1Transport(_transceiver, _endpoint, _adapter);
+                    Connection connection = _endpoint.CreateConnection(this, transport, null, "", _adapter);
                     connection.Acm = Acm.Disabled; // Don't enable ACM for this connection
                     _ = connection.StartAsync();
                     _connections.Add(connection);
                 }
                 else
                 {
-                    _acceptor = _endpoint.GetAcceptor(_adapter!.Name);
+                    // TODO: support for Quic
+                    _transport = new TcpServerTransport((TcpEndpoint)_endpoint, _adapter);
 
-                    if (_communicator.TraceLevels.Network >= 2)
-                    {
-                        _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
-                            $"attempting to bind to {_endpoint.TransportName} socket {_acceptor}");
-                    }
-                    _endpoint = _acceptor!.Listen();
+                    _endpoint = _transport.Endpoint;
 
                     if (_communicator.TraceLevels.Network >= 1)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
-                            $"listening for {_endpoint.TransportName} connections\n{_acceptor!.ToDetailedString()}");
+                            $"listening for {_endpoint.TransportName} connections\n{_transport!.ToDetailedString()}");
                     }
                 }
             }
@@ -569,7 +564,7 @@ namespace ZeroC.Ice
                 try
                 {
                     _transceiver?.Close();
-                    _acceptor?.Close();
+                    _transport?.Dispose();
                 }
                 catch
                 {
@@ -587,12 +582,12 @@ namespace ZeroC.Ice
             lock (_mutex)
             {
                 Debug.Assert(_disposeTask == null);
-                if (_acceptor != null)
+                if (_transport != null)
                 {
                     if (_communicator.TraceLevels.Network >= 1)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
-                            $"accepting {_endpoint.TransportName} connections at {_acceptor}");
+                            $"accepting {_endpoint.TransportName} connections at {_transport}");
                     }
 
                     // Start the asynchronous operation from the thread pool to prevent eventually accepting
@@ -641,12 +636,12 @@ namespace ZeroC.Ice
         {
             while (true)
             {
-                ITransceiver transceiver;
+                ITransport transport;
                 try
                 {
                     // We don't use ConfigureAwait(false) on purpose. We want to ensure continuations execute on the
                     // object adapter scheduler if an adapter scheduler is set.
-                    transceiver = await _acceptor!.AcceptAsync();
+                    transport = await _transport!.AcceptAsync();
                 }
                 catch (Exception ex)
                 {
@@ -661,7 +656,7 @@ namespace ZeroC.Ice
                             return;
                         }
                     }
-                    _communicator.Logger.Error($"failed to accept connection:\n{ex}\n{_acceptor}");
+                    _communicator.Logger.Error($"failed to accept connection:\n{ex}\n{_transport}");
                     await Task.Delay(TimeSpan.FromSeconds(1));
                     continue;
                 }
@@ -669,12 +664,12 @@ namespace ZeroC.Ice
                 Connection connection;
                 lock (_mutex)
                 {
-                    Debug.Assert(transceiver != null);
+                    Debug.Assert(transport != null);
                     if (_disposeTask != null)
                     {
                         try
                         {
-                            transceiver.Close();
+                            transport.Dispose();
                         }
                         catch
                         {
@@ -685,18 +680,18 @@ namespace ZeroC.Ice
                     if (_communicator.TraceLevels.Network >= 2)
                     {
                         _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
-                            $"trying to accept {_endpoint.TransportName} connection\n{transceiver}");
+                            $"trying to accept {_endpoint.TransportName} connection\n{transport}");
                     }
 
                     try
                     {
-                        connection = transceiver.CreateConnection(this, _endpoint, null, "", _adapter);
+                        connection = _endpoint.CreateConnection(this, transport, null, "", _adapter);
                     }
                     catch (Exception ex)
                     {
                         try
                         {
-                            transceiver.Close();
+                            transport.Dispose();
                         }
                         catch
                         {
@@ -705,7 +700,7 @@ namespace ZeroC.Ice
 
                         if (_warn)
                         {
-                            _communicator.Logger.Warning($"connection exception:\n{ex}\n{_acceptor}");
+                            _communicator.Logger.Warning($"connection exception:\n{ex}\n{_transport}");
                         }
                         continue;
                     }

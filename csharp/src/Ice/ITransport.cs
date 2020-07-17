@@ -3,31 +3,58 @@
 //
 
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using ZeroC.Ice.Instrumentation;
 
 namespace ZeroC.Ice
 {
-    public interface ITransport : IAsyncDisposable
+    public interface ITransport : IDisposable, IAsyncDisposable
     {
-        TimeSpan AcmLastActivity { get; }
         Endpoint Endpoint { get; }
+        ITransceiver Transceiver { get; }
 
+        /// <summary>Gracefully closes the transport.</summary>
         ValueTask CloseAsync(Exception exception, CancellationToken cancel);
+
+        void IDisposable.Dispose()
+        {
+            GC.SuppressFinalize(this);
+            DisposeAsync().AsTask().Wait();
+        }
+
+        /// <summary>Sends a heartbeat.</summary>
         ValueTask HeartbeatAsync(CancellationToken cancel);
-        ValueTask InitializeAsync(CancellationToken cancel);
-        ValueTask<(int StreamId, object Frame, bool Fin)> ReceiveAsync(CancellationToken cancel);
+
+        /// <summary>Event to get notified when heartbeat is received.</summary>
+        event EventHandler? HeartbeatReceived;
+
+        /// <summary>Initializes the transport.</summary>
+        ValueTask InitializeAsync(
+            Action heartbeatCallback,
+            Action<int> sentCallback,
+            Action<int> receivedCallback,
+            CancellationToken cancel);
+
+        /// <summary>Receives a new frame.</summary>
+        ValueTask<(int StreamId, object? Frame, bool Fin)> ReceiveAsync(CancellationToken cancel);
+
+        int NewStream();
+
+        /// <summary>Resets the given stream.</summary>
         ValueTask ResetAsync(int streamId);
+
+        /// <summary>Sends the given frame on an existing stream.</summary>
         ValueTask SendAsync(int streamId, object frame, bool fin, CancellationToken cancel);
-        ValueTask SendAsync(Action<int> streamIdCallback, object frame, bool fin, CancellationToken cancel);
     }
 
-    public interface IServerTransport : IAsyncDisposable
+    public interface IServerTransport : IDisposable
     {
         Endpoint Endpoint { get; }
 
+        /// <summary>Accepts a new transport</summary>
         ValueTask<ITransport> AcceptAsync();
+
         string ToDetailedString();
     }
 }

@@ -74,6 +74,13 @@ namespace ZeroC.Ice
             ostr.WriteString(_resource);
         }
 
+        public override Connection CreateConnection(
+             IConnectionManager manager,
+             ITransport transport,
+             IConnector? connector,
+             string connectionId,
+             ObjectAdapter? adapter) => new WSConnection(manager, this, transport, connector, connectionId, adapter);
+
         public override ITransceiver? GetTransceiver() => null;
 
         internal WSEndpoint(

@@ -109,7 +109,14 @@ namespace ZeroC.Ice
         public override Endpoint NewTimeout(TimeSpan timeout) =>
             timeout == Timeout ? this : CreateIPEndpoint(Host, Port, HasCompressionFlag, timeout);
 
-        public override IAcceptor GetAcceptor(string adapterName) =>
+       public override Connection CreateConnection(
+            IConnectionManager manager,
+            ITransport transport,
+            IConnector? connector,
+            string connectionId,
+            ObjectAdapter? adapter) => new TcpConnection(manager, this, transport, connector, connectionId, adapter);
+
+         public override IAcceptor GetAcceptor(string adapterName) =>
             new TcpAcceptor(this, Communicator, Host, Port, adapterName);
         public override ITransceiver? GetTransceiver() => null;
 

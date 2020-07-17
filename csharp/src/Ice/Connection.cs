@@ -73,17 +73,6 @@ namespace ZeroC.Ice
                     _monitor = value == _manager.AcmMonitor.Acm ?
                         _manager.AcmMonitor : new ConnectionAcmMonitor(value, _communicator.Logger);
 
-                    // TODO: XXX
-                    // if (_monitor.Acm.IsDisabled)
-                    // {
-                    //     // Disable the recording of last activity.
-                    //     _acmLastActivity = Timeout.InfiniteTimeSpan;
-                    // }
-                    // else if (_state == ConnectionState.Active && _acmLastActivity == Timeout.InfiniteTimeSpan)
-                    // {
-                    //     _acmLastActivity = Time.Elapsed;
-                    // }
-
                     if (_state == ConnectionState.Active)
                     {
                         _monitor.Add(this);
@@ -152,6 +141,7 @@ namespace ZeroC.Ice
 
         protected ITransport Transport { get; }
 
+        private TimeSpan _acmLastActivity;
         private ObjectAdapter? _adapter;
         private EventHandler? _closed;
         private Task? _closeTask = null;
@@ -376,19 +366,19 @@ namespace ZeroC.Ice
                 // monitor() method is still only called every (timeout / 2) period.
                 if (_state == ConnectionState.Active &&
                     (acm.Heartbeat == AcmHeartbeat.Always ||
-                    (acm.Heartbeat != AcmHeartbeat.Off && now >= (Transport.AcmLastActivity + (acm.Timeout / 4)))))
+                    (acm.Heartbeat != AcmHeartbeat.Off && now >= (_acmLastActivity + (acm.Timeout / 4)))))
                 {
                     if (acm.Heartbeat != AcmHeartbeat.OnDispatch || _dispatchCount > 0)
                     {
                         Debug.Assert(_state == ConnectionState.Active);
                         if (!Endpoint.IsDatagram)
                         {
-                            Transport.HeartbeatAsync(default);
+                            _ = Transport.HeartbeatAsync(default);
                         }
                     }
                 }
 
-                if (acm.Close != AcmClose.Off && now >= Transport.AcmLastActivity + acm.Timeout)
+                if (acm.Close != AcmClose.Off && now >= _acmLastActivity + acm.Timeout)
                 {
                     if (acm.Close == AcmClose.OnIdleForceful || (acm.Close != AcmClose.OnIdle && (_requests.Count > 0)))
                     {
@@ -408,7 +398,6 @@ namespace ZeroC.Ice
         internal async ValueTask<IncomingResponseFrame> SendRequestAsync(
             OutgoingRequestFrame request,
             bool oneway,
-            bool compress,
             bool synchronous,
             IInvocationObserver? observer,
             IProgress<bool> progress,
@@ -431,6 +420,22 @@ namespace ZeroC.Ice
                 Debug.Assert(_state > ConnectionState.Validating);
                 Debug.Assert(_state < ConnectionState.Closing);
 
+                int streamId = 0;
+                if (!oneway)
+                {
+                    streamId = Transport.NewStream();
+
+                    var responseTaskSource = new TaskCompletionSource<IncomingResponseFrame>();
+                    _requests[streamId] = (responseTaskSource, synchronous);
+                    responseTask = responseTaskSource.Task;
+                }
+
+                if (observer != null)
+                {
+                    childObserver = observer.GetRemoteObserver(this, streamId, request.Size);
+                    childObserver?.Attach();
+                }
+
                 // Ensure the frame isn't bigger than what we can send with the transport.
                 // TODO: XXX: remove?
                 // if (OldProtocol)
@@ -442,19 +447,8 @@ namespace ZeroC.Ice
                 //     Transceiver.CheckSendSize(request.Size + Ice2Definitions.HeaderSize + 4);
                 // }
                 // TODO: this returns a ValueTask
-                // TODO: XXX childObserver?
-                writeTask = Transport.SendAsync(streamId =>
-                {
-                    lock (_mutex)
-                    {
-                        if (_state == ConnectionState.Active)
-                        {
-                            var responseTaskSource = new TaskCompletionSource<IncomingResponseFrame>();
-                            _requests[streamId] = (responseTaskSource, synchronous);
-                            responseTask = responseTaskSource.Task;
-                        }
-                    }
-                }, request, oneway, cancel).AsTask();
+                // TODO: fin = oneway isn't correct for ice2
+                writeTask = Transport.SendAsync(streamId, request, oneway, cancel).AsTask();
             }
 
             try
@@ -463,6 +457,8 @@ namespace ZeroC.Ice
             }
             catch (Exception ex)
             {
+                _ = CloseAsync(ex);
+
                 childObserver?.Failed(ex.GetType().FullName ?? "System.Exception");
                 childObserver?.Detach();
                 throw;
@@ -511,7 +507,7 @@ namespace ZeroC.Ice
                 }
 
                 // Initialize the transport
-                await Transport.InitializeAsync(timeoutToken).ConfigureAwait(false);
+                await Transport.InitializeAsync(OnHeartbeat, OnSent, OnReceived, timeoutToken).ConfigureAwait(false);
 
                 lock (_mutex)
                 {
@@ -571,11 +567,7 @@ namespace ZeroC.Ice
             await _closeTask!.ConfigureAwait(false);
         }
 
-        private async ValueTask InvokeAsync(
-            IncomingRequestFrame request,
-            Current current,
-            int requestId,
-            byte compressionStatus)
+        private async ValueTask InvokeAsync(IncomingRequestFrame request, Current current, int requestId)
         {
             IDispatchObserver? dispatchObserver = null;
             OutgoingResponseFrame? response = null;
@@ -617,7 +609,7 @@ namespace ZeroC.Ice
                             actualEx = new UnhandledException(current.Identity, current.Facet, current.Operation, ex);
                         }
                         Incoming.ReportException(actualEx, dispatchObserver, current);
-                        response = new OutgoingResponseFrame(current, actualEx);
+                        response = new OutgoingResponseFrame(request, actualEx);
                     }
                 }
 
@@ -633,9 +625,7 @@ namespace ZeroC.Ice
                     // Send the response if there's a response
                     if (_state < ConnectionState.Closed && response != null)
                     {
-                        // TODO: XXX compression status
-                        //SendFrameAsync(() => GetResponseFrameData(response, requestId, compressionStatus > 0));
-                        _ = Transport.SendAsync(requestId, response, true, default);
+                        _ = SendResponse(requestId, response);
                     }
 
                     // Decrease the dispatch count
@@ -648,6 +638,19 @@ namespace ZeroC.Ice
                 }
 
                 dispatchObserver?.Detach();
+            }
+
+            async Task SendResponse(int requestId, OutgoingResponseFrame response)
+            {
+                try
+                {
+                    // TODO: support for cancellation
+                    await Transport.SendAsync(requestId, response, fin: true, cancel: default);
+                }
+                catch (Exception ex)
+                {
+                    _ = CloseAsync(ex);
+                }
             }
         }
 
@@ -751,13 +754,19 @@ namespace ZeroC.Ice
             {
                 while (true)
                 {
-                    (int streamId, object frame, bool fin) = await Transport.ReceiveAsync(default).ConfigureAwait(false);
+                    (int streamId, object? frame, bool fin) =
+                        await Transport.ReceiveAsync(default).ConfigureAwait(false);
 
                     Func<ValueTask>? incoming = null;
                     ObjectAdapter? adapter = null;
                     lock (_mutex)
                     {
-                        if (frame is IncomingRequestFrame requestFrame)
+                        if (frame == null)
+                        {
+                            Debug.Assert(fin);
+                            // TODO: this indicates that the stream was reset.
+                        }
+                        else if (frame is IncomingRequestFrame requestFrame)
                         {
                             if (_adapter == null)
                             {
@@ -768,16 +777,15 @@ namespace ZeroC.Ice
                             else
                             {
                                 adapter = _adapter;
-                                // TODO: instead of a default cancellation token, we'll have to create a cancellation
-                                // token source here and keep track of them in a dictionnary for each dispatch. When a
-                                // stream is cancelled with ice2, we'll request cancellation on the cached token source.
+                                // TODO: if fin != false, we need to keep track of the stream in a dictionnary. The
+                                // cancellation token provided here will have to be a token created for a stream to
+                                // allow cancelling the request if the stream is closed.
                                 var current = new Current(_adapter,
                                                           requestFrame,
                                                           oneway: fin,
                                                           cancel: default,
                                                           this);
-                                // TODO: XXX deal with compression status
-                                incoming = () => InvokeAsync(requestFrame, current, streamId, compressionStatus: 0);
+                                incoming = () => InvokeAsync(requestFrame, current, streamId);
                                 ++_dispatchCount;
                             }
                         }
@@ -811,7 +819,7 @@ namespace ZeroC.Ice
                         }
                         else
                         {
-                            // TODO:
+                            // TODO: handle data frames for streaming
                             Debug.Assert(false);
                         }
                     }
@@ -855,6 +863,10 @@ namespace ZeroC.Ice
                         }
                     }
                 }
+            }
+            catch (ConnectionClosedByPeerException ex)
+            {
+                await GracefulCloseAsync(ex);
             }
             catch (Exception ex)
             {
@@ -937,11 +949,6 @@ namespace ZeroC.Ice
             {
                 if (state == ConnectionState.Active)
                 {
-                    // TODO
-                    // if (_acmLastActivity != Timeout.InfiniteTimeSpan)
-                    // {
-                    //     _acmLastActivity = Time.Elapsed;
-                    // }
                     _monitor.Add(this);
                 }
                 else if (_state == ConnectionState.Active)
@@ -975,31 +982,58 @@ namespace ZeroC.Ice
             _state = state;
         }
 
-        private void TraceReceivedAndUpdateObserver(int length)
+        private void OnHeartbeat()
         {
-            if (_communicator.TraceLevels.Network >= 3 && length > 0)
+            Task.Run(() =>
             {
-                _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
-                    $"received {length} bytes via {Endpoint.TransportName}\n{this}");
-            }
+                try
+                {
+                    HeartbeatReceived?.Invoke(this, EventArgs.Empty);
+                }
+                catch (Exception ex)
+                {
+                    _communicator.Logger.Error($"connection callback exception:\n{ex}\n{this}");
+                }
+            });
+        }
 
-            if (_observer != null && length > 0)
+        private void OnReceived(int length)
+        {
+            lock (_mutex)
             {
-                _observer.ReceivedBytes(length);
+                _acmLastActivity = Time.Elapsed;
+
+                _validated = true;
+
+                if (_communicator.TraceLevels.Network >= 3 && length > 0)
+                {
+                    _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
+                        $"received {length} bytes via {Endpoint.TransportName}\n{this}");
+                }
+
+                if (_observer != null && length > 0)
+                {
+                    _observer.ReceivedBytes(length);
+                }
             }
         }
 
-        private void TraceSentAndUpdateObserver(int length)
+        private void OnSent(int length)
         {
-            if (_communicator.TraceLevels.Network >= 3 && length > 0)
+            lock (_mutex)
             {
-                _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
-                    $"sent {length} bytes via {Endpoint.TransportName}\n{this}");
-            }
+                _acmLastActivity = Time.Elapsed;
 
-            if (_observer != null && length > 0)
-            {
-                _observer.SentBytes(length);
+                if (_communicator.TraceLevels.Network >= 3 && length > 0)
+                {
+                    _communicator.Logger.Trace(_communicator.TraceLevels.NetworkCategory,
+                        $"sent {length} bytes via {Endpoint.TransportName}\n{this}");
+                }
+
+                if (_observer != null && length > 0)
+                {
+                    _observer.SentBytes(length);
+                }
             }
         }
     }
@@ -1014,7 +1048,7 @@ namespace ZeroC.Ice
             {
                 try
                 {
-                    return Transceiver.Fd()?.LocalEndPoint as System.Net.IPEndPoint;
+                    return Transport.Transceiver.Fd()?.LocalEndPoint as System.Net.IPEndPoint;
                 }
                 catch
                 {
@@ -1030,7 +1064,7 @@ namespace ZeroC.Ice
             {
                 try
                 {
-                    return Transceiver.Fd()?.RemoteEndPoint as System.Net.IPEndPoint;
+                    return Transport.Transceiver.Fd()?.RemoteEndPoint as System.Net.IPEndPoint;
                 }
                 catch
                 {
@@ -1042,11 +1076,11 @@ namespace ZeroC.Ice
         protected IPConnection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransceiver transceiver,
+            ITransport transport,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
-            : base(manager, endpoint, transceiver, connector, connectionId, adapter)
+            : base(manager, endpoint, transport, connector, connectionId, adapter)
         {
         }
     }
@@ -1082,17 +1116,17 @@ namespace ZeroC.Ice
         /// null if the connection is not secure.</summary>
         public SslProtocols? SslProtocol => SslStream?.SslProtocol;
 
-        private SslStream? SslStream => (Transceiver as SslTransceiver)?.SslStream ??
-            (Transceiver as WSTransceiver)?.SslStream;
+        private SslStream? SslStream => (Transport.Transceiver as SslTransceiver)?.SslStream ??
+            (Transport.Transceiver as WSTransceiver)?.SslStream;
 
         protected internal TcpConnection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransceiver transceiver,
+            ITransport transport,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
-            : base(manager, endpoint, transceiver, connector, connectionId, adapter)
+            : base(manager, endpoint, transport, connector, connectionId, adapter)
         {
         }
     }
@@ -1101,16 +1135,16 @@ namespace ZeroC.Ice
     public class UdpConnection : IPConnection
     {
         /// <summary>The multicast IP-endpoint for a multicast connection otherwise null.</summary>
-        public System.Net.IPEndPoint? McastEndpoint => (Transceiver as UdpTransceiver)?.McastAddress;
+        public System.Net.IPEndPoint? McastEndpoint => (Transport.Transceiver as UdpTransceiver)?.McastAddress;
 
         protected internal UdpConnection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransceiver transceiver,
+            ITransport transport,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
-            : base(manager, endpoint, transceiver, connector, connectionId, adapter)
+            : base(manager, endpoint, transport, connector, connectionId, adapter)
         {
         }
     }
@@ -1119,16 +1153,16 @@ namespace ZeroC.Ice
     public class WSConnection : TcpConnection
     {
         /// <summary>The HTTP headers in the WebSocket upgrade request.</summary>
-        public IReadOnlyDictionary<string, string> Headers => ((WSTransceiver)Transceiver).Headers;
+        public IReadOnlyDictionary<string, string> Headers => ((WSTransceiver)Transport.Transceiver).Headers;
 
         protected internal WSConnection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransceiver transceiver,
+            ITransport transport,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
-            : base(manager, endpoint, transceiver, connector, connectionId, adapter)
+            : base(manager, endpoint, transport, connector, connectionId, adapter)
         {
         }
     }

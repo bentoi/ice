@@ -123,6 +123,13 @@ namespace ZeroC.Ice
 
         public override Endpoint NewTimeout(TimeSpan timeout) => this;
 
+        public override Connection CreateConnection(
+             IConnectionManager manager,
+             ITransport transport,
+             IConnector? connector,
+             string connectionId,
+             ObjectAdapter? adapter) => new UdpConnection(manager, this, transport, connector, connectionId, adapter);
+
         public override IAcceptor? GetAcceptor(string adapterName) => null;
 
         public override ITransceiver GetTransceiver() =>

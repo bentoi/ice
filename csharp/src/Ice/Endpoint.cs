@@ -153,6 +153,23 @@ namespace ZeroC.Ice
         // Returns a connector for this endpoint, or empty list if no connector is available.
         public abstract ValueTask<IEnumerable<IConnector>> ConnectorsAsync(EndpointSelectionType endpointSelection);
 
+        /// <summary>Creates a new connection to the given endpoint.</summary>
+        /// <param name="manager">The connection manager which owns the connection.</param>
+        /// <param name="transport">The transport associated with the new connection.</param>
+        /// <param name="connector">The connector associated with the new connection, this is always null for incoming
+        /// connections.</param>
+        /// <param name="connectionId">The connection ID associated with the new connection. This is always an empty
+        /// string for incoming connections.</param>
+        /// <param name="adapter">The adapter associated with the new connection, this is always null for outgoing
+        /// connections.</param>
+        /// <returns>A new connection to the given endpoint.</returns>
+        public abstract Connection CreateConnection(
+            IConnectionManager manager,
+            ITransport transport,
+            IConnector? connector,
+            string connectionId,
+            ObjectAdapter? adapter);
+
         // Expands endpoint out in to separate endpoints for each local host if listening on INADDR_ANY on server side
         // or if no host was specified on client side.
         public abstract IEnumerable<Endpoint> ExpandIfWildcard();
