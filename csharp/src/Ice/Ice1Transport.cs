@@ -232,7 +232,7 @@ namespace ZeroC.Ice
             _warnUdp = Endpoint.Communicator.GetPropertyAsBool("Ice.Warn.Datagrams") ?? false;
             _compressionLevel = Endpoint.Communicator.GetPropertyAsInt("Ice.Compression.Level") ?? 1;
             _sentCallback = _receivedCallback = _ => {};
-            _heartbeatCallback = _ => {};
+            _heartbeatCallback = () => {};
 
             if (_compressionLevel < 1)
             {
