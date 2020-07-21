@@ -76,12 +76,10 @@ namespace ZeroC.Ice
 
         public override Connection CreateConnection(
              IConnectionManager manager,
-             ITransport transport,
+             IBinaryConnection connection,
              IConnector? connector,
              string connectionId,
-             ObjectAdapter? adapter) => new WSConnection(manager, this, transport, connector, connectionId, adapter);
-
-        public override ITransceiver? GetTransceiver() => null;
+             ObjectAdapter? adapter) => new WSConnection(manager, this, connection, connector, connectionId, adapter);
 
         internal WSEndpoint(
             Communicator communicator,

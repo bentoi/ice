@@ -125,12 +125,10 @@ namespace ZeroC.Ice
 
         public override Connection CreateConnection(
              IConnectionManager manager,
-             ITransport transport,
+             IBinaryConnection connection,
              IConnector? connector,
              string connectionId,
-             ObjectAdapter? adapter) => new UdpConnection(manager, this, transport, connector, connectionId, adapter);
-
-        public override IAcceptor? GetAcceptor(string adapterName) => null;
+             ObjectAdapter? adapter) => new UdpConnection(manager, this, connection, connector, connectionId, adapter);
 
         public override ITransceiver GetTransceiver() =>
             new UdpTransceiver(this, Communicator, Host, Port, McastInterface, _connect);

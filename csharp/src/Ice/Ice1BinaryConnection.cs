@@ -8,11 +8,10 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
-using ZeroC.Ice.Instrumentation;
 
 namespace ZeroC.Ice
 {
-    internal class Ice1Transport : ITransport
+    internal class Ice1BinaryConnection : IBinaryConnection
     {
         public Endpoint Endpoint { get; }
         public ITransceiver Transceiver { get; }
@@ -21,7 +20,6 @@ namespace ZeroC.Ice
         private readonly int _frameSizeMax;
         private Action _heartbeatCallback;
         private readonly bool _incoming;
-        private readonly object _mutex = new object();
         private int _nextStreamId;
         private Task _receiveTask = Task.CompletedTask;
         private Action<int> _receivedCallback;
@@ -186,19 +184,17 @@ namespace ZeroC.Ice
                 int requestId = 0;
                 object? frame = null;
                 Task<ArraySegment<byte>>? task = null;
-                lock (_mutex)
+                ValueTask<ArraySegment<byte>> receiveTask = PerformReceiveFrameAsync();
+                if (receiveTask.IsCompletedSuccessfully)
                 {
-                    ValueTask<ArraySegment<byte>> receiveTask = PerformReceiveFrameAsync();
-                    if (receiveTask.IsCompletedSuccessfully)
-                    {
-                        _receiveTask = Task.CompletedTask;
-                        (requestId, frame) = ParseFrame(receiveTask.Result);
-                    }
-                    else
-                    {
-                        _receiveTask = task = receiveTask.AsTask();
-                    }
+                    _receiveTask = Task.CompletedTask;
+                    (requestId, frame) = ParseFrame(receiveTask.Result);
                 }
+                else
+                {
+                    _receiveTask = task = receiveTask.AsTask();
+                }
+
                 if (task != null)
                 {
                     (requestId, frame) = ParseFrame(await task.ConfigureAwait(false));
@@ -221,7 +217,7 @@ namespace ZeroC.Ice
 
         public override string ToString() => Transceiver.ToString()!;
 
-        internal Ice1Transport(ITransceiver transceiver, Endpoint endpoint, ObjectAdapter? adapter)
+        internal Ice1BinaryConnection(ITransceiver transceiver, Endpoint endpoint, ObjectAdapter? adapter)
         {
             Transceiver = transceiver;
             Endpoint = endpoint;
@@ -284,13 +280,9 @@ namespace ZeroC.Ice
                 case Ice1Definitions.FrameType.Request:
                 {
                     var request = new IncomingRequestFrame(Endpoint.Protocol,
-                                                            readBuffer.Slice(Ice1Definitions.HeaderSize + 4),
-                                                            compressionStatus);
+                                                           readBuffer.Slice(Ice1Definitions.HeaderSize + 4),
+                                                           compressionStatus);
                     ProtocolTrace.TraceFrame(Endpoint.Communicator, readBuffer, request);
-                    if (!_incoming)
-                    {
-                        throw new ObjectNotExistException(request.Identity, request.Facet, request.Operation);
-                    }
                     return (InputStream.ReadInt(readBuffer.AsSpan(Ice1Definitions.HeaderSize, 4)), request);
                 }
 
@@ -310,7 +302,7 @@ namespace ZeroC.Ice
                 case Ice1Definitions.FrameType.Reply:
                 {
                     var responseFrame = new IncomingResponseFrame(Endpoint.Protocol,
-                                                                    readBuffer.Slice(Ice1Definitions.HeaderSize + 4));
+                                                                  readBuffer.Slice(Ice1Definitions.HeaderSize + 4));
                     ProtocolTrace.TraceFrame(Endpoint.Communicator, readBuffer, responseFrame);
                     return (InputStream.ReadInt(readBuffer.AsSpan(14, 4)), responseFrame);
                 }
@@ -342,6 +334,7 @@ namespace ZeroC.Ice
             if (Endpoint.IsDatagram)
             {
                 readBuffer = await Transceiver.ReadAsync().ConfigureAwait(false);
+                _receivedCallback(readBuffer.Count);
             }
             else
             {
@@ -350,6 +343,7 @@ namespace ZeroC.Ice
                 while (offset < Ice1Definitions.HeaderSize)
                 {
                     offset += await Transceiver.ReadAsync(readBuffer, offset).ConfigureAwait(false);
+                    _receivedCallback(readBuffer.Count);
                 }
             }
 
@@ -365,8 +359,6 @@ namespace ZeroC.Ice
             {
                 throw new InvalidDataException($"frame with {size} bytes exceeds Ice.MessageSizeMax value");
             }
-
-            _receivedCallback(Ice1Definitions.HeaderSize);
 
             // Read the remainder of the frame if needed
             if (!Endpoint.IsDatagram)
@@ -417,29 +409,20 @@ namespace ZeroC.Ice
                 writeBuffer = Ice1Definitions.GetRequestData(requestFrame, streamId);
                 // TODO: Add support for OutgoingRequestFrame.Compress
                 //compress = requestFrame.Compress;
-                if (Endpoint.Communicator.TraceLevels.Protocol >= 1)
-                {
-                    ProtocolTrace.TraceFrame(Endpoint.Communicator, writeBuffer[0], requestFrame);
-                }
+                ProtocolTrace.TraceFrame(Endpoint.Communicator, writeBuffer[0], requestFrame);
             }
             else if (frame is OutgoingResponseFrame responseFrame)
             {
                 Debug.Assert(streamId > 0);
                 writeBuffer = Ice1Definitions.GetResponseData(responseFrame, streamId);
                 compress = responseFrame.CompressionStatus > 0;
-                if (Endpoint.Communicator.TraceLevels.Protocol > 0)
-                {
-                    ProtocolTrace.TraceFrame(Endpoint.Communicator, writeBuffer[0], responseFrame);
-                }
+                ProtocolTrace.TraceFrame(Endpoint.Communicator, writeBuffer[0], responseFrame);
             }
             else
             {
                 Debug.Assert(frame is List<ArraySegment<byte>>);
                 writeBuffer = (List<ArraySegment<byte>>)frame;
-                if (Endpoint.Communicator.TraceLevels.Protocol > 0)
-                {
-                    ProtocolTrace.TraceSend(Endpoint.Communicator, Endpoint.Protocol, writeBuffer[0]);
-                }
+                ProtocolTrace.TraceSend(Endpoint.Communicator, Endpoint.Protocol, writeBuffer[0]);
             }
 
             // Compress the frame if needed and possible
@@ -464,6 +447,9 @@ namespace ZeroC.Ice
                 }
             }
 
+            // Ensure the frame isn't bigger than what we can send with the transport.
+            Transceiver.CheckSendSize(size);
+
             // Write the frame
             int offset = 0;
             while (offset < size)
@@ -476,13 +462,10 @@ namespace ZeroC.Ice
 
         private Task SendFrameAsync(int streamId, object frame, CancellationToken cancel)
         {
-            lock (_mutex)
-            {
-                cancel.ThrowIfCancellationRequested();
-                ValueTask sendTask = QueueAsync(streamId, frame, cancel);
-                _sendTask = sendTask.IsCompletedSuccessfully ? Task.CompletedTask : sendTask.AsTask();
-                return _sendTask;
-            }
+            cancel.ThrowIfCancellationRequested();
+            ValueTask sendTask = QueueAsync(streamId, frame, cancel);
+            _sendTask = sendTask.IsCompletedSuccessfully ? Task.CompletedTask : sendTask.AsTask();
+            return _sendTask;
 
             async ValueTask QueueAsync(int streamId, object frame, CancellationToken cancel)
             {
@@ -491,13 +474,19 @@ namespace ZeroC.Ice
                 {
                     await _sendTask.ConfigureAwait(false);
                 }
+                catch (DatagramLimitException)
+                {
+                    // If the send failed because the datagram was too large, ignore and continue sending.
+                }
                 catch (OperationCanceledException)
                 {
-                    // If the previous send was canceled, ignore and continue sending.
+                    // If the send was canceled, ignore and continue sending.
                 }
 
                 // If the send got cancelled, throw now. This isn't a fatal connection error, the next pending
                 // outgoing will be sent because we ignore the cancelation exception above.
+                // TODO: is it really a good idea to cancel the request here? The stream/request ID assigned for the
+                // the request won't be used.
                 cancel.ThrowIfCancellationRequested();
 
                 // Perform the write

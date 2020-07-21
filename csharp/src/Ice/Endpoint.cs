@@ -155,7 +155,7 @@ namespace ZeroC.Ice
 
         /// <summary>Creates a new connection to the given endpoint.</summary>
         /// <param name="manager">The connection manager which owns the connection.</param>
-        /// <param name="transport">The transport associated with the new connection.</param>
+        /// <param name="connection">The binary connection associated with the new connection.</param>
         /// <param name="connector">The connector associated with the new connection, this is always null for incoming
         /// connections.</param>
         /// <param name="connectionId">The connection ID associated with the new connection. This is always an empty
@@ -165,7 +165,7 @@ namespace ZeroC.Ice
         /// <returns>A new connection to the given endpoint.</returns>
         public abstract Connection CreateConnection(
             IConnectionManager manager,
-            ITransport transport,
+            IBinaryConnection connection,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter);
@@ -179,9 +179,6 @@ namespace ZeroC.Ice
         // used to connect to these endpoints (e.g.: with the IP endpoint, it returns this endpoint if it uses a fixed
         // port, null otherwise).
         public abstract IEnumerable<Endpoint> ExpandHost(out Endpoint? publishedEndpoint);
-
-        // Returns an acceptor for this endpoint, or null if no acceptor is available.
-        public abstract IAcceptor? GetAcceptor(string adapterName);
 
         // Return a server side transceiver for this endpoint, or null if a transceiver can only be created by an
         // acceptor.

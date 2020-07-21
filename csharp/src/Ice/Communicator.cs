@@ -379,7 +379,7 @@ namespace ZeroC.Ice
                 }
                 else
                 {
-                    DefaultProtocol = Protocol.Ice2;
+                    DefaultProtocol = Protocol.Ice1;
                 }
 
                 if (GetProperty("Ice.Default.Encoding") is string encoding)

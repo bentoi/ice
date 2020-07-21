@@ -111,13 +111,10 @@ namespace ZeroC.Ice
 
        public override Connection CreateConnection(
             IConnectionManager manager,
-            ITransport transport,
+            IBinaryConnection connection,
             IConnector? connector,
             string connectionId,
-            ObjectAdapter? adapter) => new TcpConnection(manager, this, transport, connector, connectionId, adapter);
-
-         public override IAcceptor GetAcceptor(string adapterName) =>
-            new TcpAcceptor(this, Communicator, Host, Port, adapterName);
+            ObjectAdapter? adapter) => new TcpConnection(manager, this, connection, connector, connectionId, adapter);
         public override ITransceiver? GetTransceiver() => null;
 
         internal TcpEndpoint(

@@ -139,7 +139,7 @@ namespace ZeroC.Ice
             }
         }
 
-        protected ITransport Transport { get; }
+        protected IBinaryConnection BinaryConnection { get; }
 
         private TimeSpan _acmLastActivity;
         private ObjectAdapter? _adapter;
@@ -223,7 +223,7 @@ namespace ZeroC.Ice
         /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
         public async ValueTask HeartbeatAsync(IProgress<bool>? progress = null, CancellationToken cancel = default)
         {
-            await Transport.HeartbeatAsync(cancel).ConfigureAwait(false);
+            await BinaryConnection.HeartbeatAsync(cancel).ConfigureAwait(false);
             progress?.Report(true);
         }
 
@@ -269,12 +269,12 @@ namespace ZeroC.Ice
         /// <summary>Returns a description of the connection as human readable text, suitable for logging or error
         /// messages.</summary>
         /// <returns>The description of the connection as human readable text.</returns>
-        public override string ToString() => Transport.ToString()!;
+        public override string ToString() => BinaryConnection.ToString()!;
 
         internal Connection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransport transport,
+            IBinaryConnection connection,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
@@ -282,7 +282,7 @@ namespace ZeroC.Ice
             _communicator = endpoint.Communicator;
             _manager = manager;
             _monitor = manager.AcmMonitor;
-            Transport = transport;
+            BinaryConnection = connection;
             _connector = connector;
             ConnectionId = connectionId;
             Endpoint = endpoint;
@@ -373,7 +373,7 @@ namespace ZeroC.Ice
                         Debug.Assert(_state == ConnectionState.Active);
                         if (!Endpoint.IsDatagram)
                         {
-                            _ = Transport.HeartbeatAsync(default);
+                            _ = BinaryConnection.HeartbeatAsync(default);
                         }
                     }
                 }
@@ -406,6 +406,7 @@ namespace ZeroC.Ice
             IChildInvocationObserver? childObserver = null;
             Task writeTask;
             Task<IncomingResponseFrame>? responseTask = null;
+            int streamId;
             lock (_mutex)
             {
                 //
@@ -420,7 +421,7 @@ namespace ZeroC.Ice
                 Debug.Assert(_state > ConnectionState.Validating);
                 Debug.Assert(_state < ConnectionState.Closing);
 
-                int streamId = Transport.NewStream(!oneway);
+                streamId = BinaryConnection.NewStream(!oneway);
                 if (streamId > 0)
                 {
                     var responseTaskSource = new TaskCompletionSource<IncomingResponseFrame>();
@@ -446,20 +447,50 @@ namespace ZeroC.Ice
                 // }
                 // TODO: this returns a ValueTask
                 // TODO: fin = oneway isn't correct for ice2
-                writeTask = Transport.SendAsync(streamId, request, oneway, cancel).AsTask();
+                writeTask = BinaryConnection.SendAsync(streamId, request, oneway, cancel).AsTask();
             }
 
             try
             {
                 await writeTask.ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (OperationCanceledException ex)
             {
-                _ = CloseAsync(ex);
-
                 childObserver?.Failed(ex.GetType().FullName ?? "System.Exception");
                 childObserver?.Detach();
-                throw;
+                lock (_mutex)
+                {
+                    _requests.Remove(streamId);
+                    if (_requests.Count == 0)
+                    {
+                        System.Threading.Monitor.PulseAll(_mutex); // Notify threads blocked in Close()
+                    }
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (ex is OperationCanceledException || ex is DatagramLimitException)
+                {
+                    // Non fatal exception, remove the request from the request map.
+                    lock (_mutex)
+                    {
+                        _requests.Remove(streamId);
+                        if (_requests.Count == 0)
+                        {
+                            System.Threading.Monitor.PulseAll(_mutex); // Notify threads blocked in Close()
+                        }
+                    }
+                }
+                else
+                {
+                    // If it's a fatal exception, we close the connection and rethrow the connection's exception
+                    _ = CloseAsync(ex);
+                    ex = _exception!;
+                }
+                childObserver?.Failed(ex.GetType().FullName ?? "System.Exception");
+                childObserver?.Detach();
+                throw ExceptionUtil.Throw(ex);
             }
 
             // The request is sent
@@ -505,7 +536,7 @@ namespace ZeroC.Ice
                 }
 
                 // Initialize the transport
-                await Transport.InitializeAsync(OnHeartbeat, OnSent, OnReceived, timeoutToken).ConfigureAwait(false);
+                await BinaryConnection.InitializeAsync(OnHeartbeat, OnSent, OnReceived, timeoutToken).ConfigureAwait(false);
 
                 lock (_mutex)
                 {
@@ -643,7 +674,7 @@ namespace ZeroC.Ice
                 try
                 {
                     // TODO: support for cancellation
-                    await Transport.SendAsync(requestId, response, fin: true, cancel: default);
+                    await BinaryConnection.SendAsync(requestId, response, fin: true, cancel: default);
                 }
                 catch (Exception ex)
                 {
@@ -657,11 +688,11 @@ namespace ZeroC.Ice
             // Close the transport
             try
             {
-                await Transport.DisposeAsync();
+                await BinaryConnection.DisposeAsync();
             }
             catch (Exception ex)
             {
-                _communicator.Logger.Error($"unexpected connection exception:\n{ex}\n{Transport}");
+                _communicator.Logger.Error($"unexpected connection exception:\n{ex}\n{BinaryConnection}");
             }
 
             if (_state > ConnectionState.Validating && _communicator.TraceLevels.Network >= 1)
@@ -741,7 +772,7 @@ namespace ZeroC.Ice
                 timeoutToken = source.Token;
             }
 
-            await Transport.CloseAsync(_exception!, timeoutToken);
+            await BinaryConnection.CloseAsync(_exception!, timeoutToken);
 
             source?.Dispose();
         }
@@ -753,7 +784,7 @@ namespace ZeroC.Ice
                 while (true)
                 {
                     (int streamId, object? frame, bool fin) =
-                        await Transport.ReceiveAsync(default).ConfigureAwait(false);
+                        await BinaryConnection.ReceiveAsync(default).ConfigureAwait(false);
 
                     Func<ValueTask>? incoming = null;
                     ObjectAdapter? adapter = null;
@@ -1046,7 +1077,7 @@ namespace ZeroC.Ice
             {
                 try
                 {
-                    return Transport.Transceiver.Fd()?.LocalEndPoint as System.Net.IPEndPoint;
+                    return BinaryConnection.Transceiver.Fd()?.LocalEndPoint as System.Net.IPEndPoint;
                 }
                 catch
                 {
@@ -1062,7 +1093,7 @@ namespace ZeroC.Ice
             {
                 try
                 {
-                    return Transport.Transceiver.Fd()?.RemoteEndPoint as System.Net.IPEndPoint;
+                    return BinaryConnection.Transceiver.Fd()?.RemoteEndPoint as System.Net.IPEndPoint;
                 }
                 catch
                 {
@@ -1074,11 +1105,11 @@ namespace ZeroC.Ice
         protected IPConnection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransport transport,
+            IBinaryConnection connection,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
-            : base(manager, endpoint, transport, connector, connectionId, adapter)
+            : base(manager, endpoint, connection, connector, connectionId, adapter)
         {
         }
     }
@@ -1114,17 +1145,17 @@ namespace ZeroC.Ice
         /// null if the connection is not secure.</summary>
         public SslProtocols? SslProtocol => SslStream?.SslProtocol;
 
-        private SslStream? SslStream => (Transport.Transceiver as SslTransceiver)?.SslStream ??
-            (Transport.Transceiver as WSTransceiver)?.SslStream;
+        private SslStream? SslStream => (BinaryConnection.Transceiver as SslTransceiver)?.SslStream ??
+            (BinaryConnection.Transceiver as WSTransceiver)?.SslStream;
 
         protected internal TcpConnection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransport transport,
+            IBinaryConnection connection,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
-            : base(manager, endpoint, transport, connector, connectionId, adapter)
+            : base(manager, endpoint, connection, connector, connectionId, adapter)
         {
         }
     }
@@ -1133,16 +1164,16 @@ namespace ZeroC.Ice
     public class UdpConnection : IPConnection
     {
         /// <summary>The multicast IP-endpoint for a multicast connection otherwise null.</summary>
-        public System.Net.IPEndPoint? McastEndpoint => (Transport.Transceiver as UdpTransceiver)?.McastAddress;
+        public System.Net.IPEndPoint? McastEndpoint => (BinaryConnection.Transceiver as UdpTransceiver)?.McastAddress;
 
         protected internal UdpConnection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransport transport,
+            IBinaryConnection connection,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
-            : base(manager, endpoint, transport, connector, connectionId, adapter)
+            : base(manager, endpoint, connection, connector, connectionId, adapter)
         {
         }
     }
@@ -1151,16 +1182,16 @@ namespace ZeroC.Ice
     public class WSConnection : TcpConnection
     {
         /// <summary>The HTTP headers in the WebSocket upgrade request.</summary>
-        public IReadOnlyDictionary<string, string> Headers => ((WSTransceiver)Transport.Transceiver).Headers;
+        public IReadOnlyDictionary<string, string> Headers => ((WSTransceiver)BinaryConnection.Transceiver).Headers;
 
         protected internal WSConnection(
             IConnectionManager manager,
             Endpoint endpoint,
-            ITransport transport,
+            IBinaryConnection connection,
             IConnector? connector,
             string connectionId,
             ObjectAdapter? adapter)
-            : base(manager, endpoint, transport, connector, connectionId, adapter)
+            : base(manager, endpoint, connection, connector, connectionId, adapter)
         {
         }
     }

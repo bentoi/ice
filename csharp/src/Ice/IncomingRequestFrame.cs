@@ -78,6 +78,8 @@ namespace ZeroC.Ice
         internal IncomingRequestFrame(Protocol protocol, ArraySegment<byte> data, byte compressionStatus)
             : this(protocol, data)
         {
+            // IncomingRequestFrame with compression status is only supported with Ice1, compression is handled
+            // by the 2.0 encoding with Ice2.
             Debug.Assert(protocol == Protocol.Ice1);
             CompressionStatus = compressionStatus;
         }

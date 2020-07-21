@@ -9,7 +9,7 @@ using ZeroC.Ice.Instrumentation;
 
 namespace ZeroC.Ice
 {
-    public interface ITransport : IDisposable, IAsyncDisposable
+    public interface IBinaryConnection : IDisposable, IAsyncDisposable
     {
         Endpoint Endpoint { get; }
         ITransceiver Transceiver { get; }
@@ -44,15 +44,5 @@ namespace ZeroC.Ice
 
         /// <summary>Sends the given frame on an existing stream.</summary>
         ValueTask SendAsync(int streamId, object frame, bool fin, CancellationToken cancel);
-    }
-
-    public interface IServerTransport : IDisposable
-    {
-        Endpoint Endpoint { get; }
-
-        /// <summary>Accepts a new transport</summary>
-        ValueTask<ITransport> AcceptAsync();
-
-        string ToDetailedString();
     }
 }
