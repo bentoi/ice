@@ -13,9 +13,20 @@ namespace ZeroC.Ice
     /// WaitAsync operation.</summary>
     internal class AsyncSemaphore
     {
+        internal int Count
+        {
+            get
+            {
+                lock (_mutex)
+                {
+                    return _currentCount;
+                }
+            }
+        }
+
         private int _currentCount;
         private readonly int _maxCount;
-        private readonly object _mutex = new object();
+        private readonly object _mutex = new();
         private readonly Queue<ManualResetValueTaskCompletionSource<bool>> _queue = new();
 
         internal AsyncSemaphore(int initialCount)

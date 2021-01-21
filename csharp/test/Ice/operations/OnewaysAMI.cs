@@ -1,7 +1,9 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Test;
@@ -91,8 +93,24 @@ namespace ZeroC.Ice.Test.Operations
             {
                 Task.Run(async () =>
                 {
-                    await p.OpSendStream1Async(File.OpenRead("AllTests.cs")).ConfigureAwait(false);
-                    await p.OpSendStream2Async("AllTests.cs", File.OpenRead("AllTests.cs")).ConfigureAwait(false);
+                    byte[] buffer = new byte[1024];
+                    byte[] largeBuffer = new byte[1024 * 1024];
+                    var streams = new List<MemoryStreamWithDisposeCheck>();
+
+                    streams.Add(new MemoryStreamWithDisposeCheck(buffer));
+                    await p.OpSendStream1Async(streams.Last()).ConfigureAwait(false);
+                    streams.Add(new MemoryStreamWithDisposeCheck(buffer));
+                    await p.OpSendStream2Async(buffer.Length, streams.Last()).ConfigureAwait(false);
+
+                    streams.Add(new MemoryStreamWithDisposeCheck(largeBuffer));
+                    await p.OpSendStream1Async(streams.Last()).ConfigureAwait(false);
+                    streams.Add(new MemoryStreamWithDisposeCheck(largeBuffer));
+                    await p.OpSendStream2Async(largeBuffer.Length, streams.Last()).ConfigureAwait(false);
+
+                    foreach (MemoryStreamWithDisposeCheck stream in streams)
+                    {
+                        stream.WaitForDispose();
+                    }
                 }).Wait();
             }
         }

@@ -1,6 +1,7 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,8 +16,8 @@ namespace ZeroC.Ice
     {
         internal bool IsSignaled
         {
-            get
-            {
+           get
+           {
                 bool lockTaken = false;
                 try
                 {
@@ -29,7 +30,7 @@ namespace ZeroC.Ice
                     {
                         _lock.Exit();
                     }
-                }
+               }
             }
         }
 
@@ -37,15 +38,68 @@ namespace ZeroC.Ice
         // Provide thread safety using a spin lock to avoid having to create another object on the heap. The lock
         // is used to protect the setting of the signal value or exception with the manual reset value task source.
         private SpinLock _lock;
+        private Queue<T>? _resultQueue;
         private ManualResetValueTaskSourceCore<T> _source;
         private CancellationTokenRegistration _tokenRegistration;
         private static readonly Exception _disposedException =
             new ObjectDisposedException(nameof(SignaledSocketStream<T>));
 
-        /// <summary>Aborts the stream. If the stream is waiting to be signaled and the stream is not signaled
-        /// already, the stream will be signaled with the exception. If the stream is signaled, we save the
-        /// exception to raise it after the stream consumes the signal and waits for a new signal</summary>
-        public override void Abort(Exception ex)
+        /// <summary>Aborts the stream.</summary>
+        public override void Abort(Exception ex) => SetException(ex);
+
+        protected SignaledSocketStream(MultiStreamSocket socket, long streamId)
+            : base(socket, streamId) => _source.RunContinuationsAsynchronously = true;
+
+        protected SignaledSocketStream(MultiStreamSocket socket, bool bidirectional, bool control)
+            : base(socket, bidirectional, control) => _source.RunContinuationsAsynchronously = true;
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing)
+            {
+                // Ensure the stream signaling fails after disposal.
+                SetException(_disposedException);
+
+                // Unregister the cancellation token callback
+                _tokenRegistration.Dispose();
+            }
+        }
+
+        protected void QueueResult(T result)
+        {
+            bool lockTaken = false;
+            try
+            {
+                _lock.Enter(ref lockTaken);
+                if (_source.GetStatus(_source.Version) == ValueTaskSourceStatus.Pending)
+                {
+                    // If the source isn't already signaled, signal completion by setting the result. The queue
+                    // should be empty if the source is pending.
+                    Debug.Assert(_resultQueue == null || _resultQueue.Count == 0);
+                    _source.SetResult(result);
+                }
+                else if (_exception != null)
+                {
+                    // The stream is already signaled because it got aborted.
+                    throw new InvalidOperationException("the stream is already signaled");
+                }
+                else
+                {
+                    _resultQueue ??= new();
+                    _resultQueue.Enqueue(result);
+                }
+            }
+            finally
+            {
+                if (lockTaken)
+                {
+                    _lock.Exit();
+                }
+            }
+        }
+
+        protected void SetException(Exception ex)
         {
             bool lockTaken = false;
             try
@@ -75,26 +129,7 @@ namespace ZeroC.Ice
             }
         }
 
-        protected SignaledSocketStream(MultiStreamSocket socket, long streamId)
-            : base(socket, streamId) => _source.RunContinuationsAsynchronously = true;
-
-        protected SignaledSocketStream(MultiStreamSocket socket, bool bidirectional, bool control)
-            : base(socket, bidirectional, control) => _source.RunContinuationsAsynchronously = true;
-
-        protected override void Dispose(bool disposing)
-        {
-            base.Dispose(disposing);
-            if (disposing)
-            {
-                // Ensure the stream signaling fails after disposal
-                Abort(_disposedException);
-
-                // Unregister the cancellation token callback
-                _tokenRegistration.Dispose();
-            }
-        }
-
-        protected void SignalCompletion(T result)
+        protected void SetResult(T result)
         {
             bool lockTaken = false;
             try
@@ -107,8 +142,8 @@ namespace ZeroC.Ice
                 }
                 else
                 {
-                    // The stream is already signaled because it got aborted.
                     Debug.Assert(_exception != null);
+                    // The stream is already signaled because it got aborted.
                     throw new InvalidOperationException("the stream is already signaled");
                 }
             }
@@ -127,7 +162,7 @@ namespace ZeroC.Ice
             {
                 Debug.Assert(_tokenRegistration == default);
                 cancel.ThrowIfCancellationRequested();
-                _tokenRegistration = cancel.Register(() => Abort(new OperationCanceledException(cancel)));
+                _tokenRegistration = cancel.Register(() => SetException(new OperationCanceledException(cancel)));
             }
             return new ValueTask<T>(this, _source.Version);
         }
@@ -149,9 +184,14 @@ namespace ZeroC.Ice
                 _tokenRegistration = default;
                 _source.Reset();
 
-                // If an exception is set, we set it on the source.
-                if (_exception != null)
+                if (_resultQueue != null && _resultQueue.Count > 0)
                 {
+                    // If there are results queued, dequeue the result the result and set it on the source.
+                    _source.SetResult(_resultQueue.Dequeue());
+                }
+                else if (_exception != null)
+                {
+                    // If an exception is set, we set it on the source.
                     _source.SetException(_exception);
                 }
                 return result;

@@ -25,6 +25,10 @@ namespace ZeroC.Ice
             }
         }
 
+        protected override void EnableReceiveFlowControl() => throw new InvalidOperationException("not supported");
+
+        protected override void EnableSendFlowControl() => throw new InvalidOperationException("not supported");
+
         protected override ValueTask<int> ReceiveAsync(Memory<byte> buffer, CancellationToken cancel) =>
             // This is never called because we override the default ReceiveFrameAsync implementation
             throw new NotImplementedException();
@@ -47,17 +51,12 @@ namespace ZeroC.Ice
 
         internal void ReceivedFrame(Ice1FrameType frameType, ArraySegment<byte> frame)
         {
-            // If we received a response, we make sure to run the continuation asynchronously since this might end
-            // up calling user code and could therefore prevent receiving further data since AcceptStreamAsync
-            // would be blocked calling user code through this method.
-            if (frameType == Ice1FrameType.Reply)
+            if (frameType == Ice1FrameType.Reply && _socket.LastResponseStreamId < Id)
             {
-                if (_socket.LastResponseStreamId < Id)
-                {
-                    _socket.LastResponseStreamId = Id;
-                }
+                _socket.LastResponseStreamId = Id;
             }
-            SignalCompletion((frameType, frame));
+
+            SetResult((frameType, frame));
         }
 
         private protected override async ValueTask<ArraySegment<byte>> ReceiveFrameAsync(

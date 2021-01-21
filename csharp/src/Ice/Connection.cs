@@ -460,7 +460,7 @@ namespace ZeroC.Ice
 
             async Task PerformAbortAsync()
             {
-                await Socket.AbortAsync(exception).ConfigureAwait(false);
+                Socket.Abort(exception);
 
                 // Dispose of the socket.
                 Socket.Dispose();
@@ -496,7 +496,7 @@ namespace ZeroC.Ice
                 // Accept a new stream.
                 stream = await Socket.AcceptStreamAsync(CancellationToken.None).ConfigureAwait(false);
 
-                // Start a new accept stream task otherwise to accept another stream.
+                // Start a new accept stream task to accept another stream.
                 _acceptStreamTask = Task.Run(() => AcceptStreamAsync().AsTask());
 
                 using var cancelSource = new CancellationTokenSource();
@@ -533,8 +533,8 @@ namespace ZeroC.Ice
                 if (adapter.TaskScheduler != null)
                 {
                     response = await TaskRun(() => adapter.DispatchAsync(request, current, cancel),
-                                             cancel,
-                                             adapter.TaskScheduler).ConfigureAwait(false);
+                                            cancel,
+                                            adapter.TaskScheduler).ConfigureAwait(false);
                 }
                 else
                 {

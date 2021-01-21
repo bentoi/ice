@@ -4,11 +4,38 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Test;
 
 namespace ZeroC.Ice.Test.Operations
 {
+    internal class MemoryStreamWithDisposeCheck : MemoryStream
+    {
+        private readonly SemaphoreSlim _semaphore = new(0, 1);
+
+        internal MemoryStreamWithDisposeCheck(byte[] buffer)
+            : base(buffer)
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            _semaphore.Release();
+            // Wait for WaitForDispose to release the semaphore before calling Dispose on it.
+            _semaphore.Wait();
+            _semaphore.Dispose();
+        }
+
+        internal void WaitForDispose()
+        {
+            _semaphore.Wait();
+            // Release the semaphore to allow Dispose() to dispose it.
+            _semaphore.Release();
+        }
+    }
+
     public static class TwowaysAMI
     {
         internal static void Run(TestHelper helper, IMyClassPrx p)
@@ -1346,58 +1373,117 @@ namespace ZeroC.Ice.Test.Operations
                     }
                 }).Wait();
 
+            void AssertStreamEquals(System.IO.Stream s1, System.IO.Stream s2)
             {
-                void AssertStreamEquals(System.IO.Stream s1, System.IO.Stream s2)
+                int v1, v2;
+                do
                 {
-                    int v1, v2;
-                    do
-                    {
-                        v1 = s1.ReadByte();
-                        v2 = s2.ReadByte();
-                        TestHelper.Assert(v1 == v2);
-                    }
-                    while (v1 != -1 && v2 != -1);
+                    v1 = s1.ReadByte();
+                    v2 = s2.ReadByte();
+                    TestHelper.Assert(v1 == v2);
                 }
-
-                if (p.Protocol != Protocol.Ice1)
-                {
-                    Task.Run(async () =>
-                    {
-                        await p.OpSendStream1Async(File.OpenRead("AllTests.cs")).ConfigureAwait(false);
-
-                        await p.OpSendStream2Async("AllTests.cs", File.OpenRead("AllTests.cs")).ConfigureAwait(false);
-
-                        {
-                            using Stream stream = await p.OpGetStream1Async().ConfigureAwait(false);
-                            using Stream fileStream = File.OpenRead("AllTests.cs");
-                            AssertStreamEquals(stream, fileStream);
-                        }
-
-                        {
-                            (string fileName, Stream stream) = await p.OpGetStream2Async().ConfigureAwait(false);
-                            using Stream fileStream = File.OpenRead(fileName);
-                            AssertStreamEquals(stream, File.OpenRead(fileName));
-                            stream.Dispose();
-                        }
-
-                        {
-                            using Stream stream =
-                                await p.OpSendAndGetStream1Async(File.OpenRead("AllTests.cs")).ConfigureAwait(false);
-                            using Stream fileStream = File.OpenRead("AllTests.cs");
-                            AssertStreamEquals(stream, fileStream);
-                        }
-
-                        {
-                            (string fileName, Stream stream) = await p.OpSendAndGetStream2Async(
-                                "AllTests.cs",
-                                File.OpenRead("AllTests.cs")).ConfigureAwait(false);
-                            using Stream fileStream = File.OpenRead(fileName);
-                            AssertStreamEquals(stream, fileStream);
-                            stream.Dispose();
-                        }
-                    }).Wait();
-                }
+                while (v1 != -1 && v2 != -1);
             }
+
+            void ConsumeStream(int receivedSize, Stream s)
+            {
+                byte[] buffer = new byte[1024];
+                int size = 0;
+                while (true)
+                {
+                    int read = s.Read(new Span<byte>(buffer));
+                    if (read == 0)
+                    {
+                        break;
+                    }
+                    size += read;
+                }
+                TestHelper.Assert(receivedSize == -1 || receivedSize == size);
+            }
+
+            Task.Run(async () =>
+                {
+                    if (p.Protocol == Protocol.Ice1)
+                    {
+                        return;
+                    }
+
+                    {
+                        using Stream receivedStream = await p.OpGetStream1Async().ConfigureAwait(false);
+                        ConsumeStream(-1, receivedStream);
+                    }
+
+                    {
+                        (int receivedSize, Stream receivedStream) = await p.OpGetStream2Async().ConfigureAwait(false);
+                        ConsumeStream(receivedSize, receivedStream);
+                        receivedStream.Dispose();
+                    }
+
+                    foreach (int size in new List<int>() { 32, 1024, 1024 * 1024 })
+                    {
+                        byte[] buffer = new byte[size];
+                        var streams = new List<MemoryStreamWithDisposeCheck>();
+                        try
+                        {
+                            {
+                                streams.Add(new MemoryStreamWithDisposeCheck(buffer));
+                                await p.OpSendStream1Async(streams.Last()).ConfigureAwait(false);
+                            }
+
+                            {
+                                streams.Add(new MemoryStreamWithDisposeCheck(buffer));
+                                await p.OpSendStream2Async(size, streams.Last()).ConfigureAwait(false);
+                            }
+
+                            {
+                                streams.Add(new MemoryStreamWithDisposeCheck(buffer));
+                                using Stream receivedStream =
+                                    await p.OpSendAndGetStream1Async(streams.Last()).ConfigureAwait(false);
+
+                                using var compareStream = new MemoryStream(buffer);
+                                AssertStreamEquals(compareStream, receivedStream);
+                            }
+
+                            {
+                                streams.Add(new MemoryStreamWithDisposeCheck(buffer));
+                                (int receivedSize, Stream receivedStream) = await p.OpSendAndGetStream2Async(
+                                    size, streams.Last()).ConfigureAwait(false);
+
+                                TestHelper.Assert(receivedSize == size);
+                                using var compareStream = new MemoryStream(buffer);
+                                AssertStreamEquals(compareStream, receivedStream);
+                                receivedStream.Dispose();
+                            }
+
+                            {
+                                // Ensure we can receive two streams at the same time
+                                (int receivedSize1, Stream receivedStream1) =
+                                    await p.OpGetStream2Async().ConfigureAwait(false);
+                                (int receivedSize2, Stream receivedStream2) =
+                                    await p.OpGetStream2Async().ConfigureAwait(false);
+
+                                AssertStreamEquals(receivedStream1, receivedStream2);
+
+                                receivedStream1.Dispose();
+                                receivedStream2.Dispose();
+                            }
+                        }
+                        finally
+                        {
+                            foreach (Stream stream in streams)
+                            {
+                                try
+                                {
+                                    stream.ReadByte();
+                                    TestHelper.Assert(false);
+                                }
+                                catch (ObjectDisposedException)
+                                {
+                                }
+                            }
+                        }
+                    }
+                }).Wait();
         }
     }
 }

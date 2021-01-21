@@ -1,6 +1,7 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
@@ -20,6 +21,7 @@ namespace ZeroC.Ice
             get => _idleTimeout;
             internal set => throw new NotSupportedException("setting IdleTimeout is not supported with Slic");
         }
+        internal int PeerPacketMaxSize { get; private set; }
 
         private int _bidirectionalStreamCount;
         private AsyncSemaphore? _bidirectionalStreamSemaphore;
@@ -30,8 +32,9 @@ namespace ZeroC.Ice
         private readonly int _maxUnidirectionalStreams;
         private long _nextBidirectionalId;
         private long _nextUnidirectionalId;
+        private Memory<byte>? _receiveBuffer;
         private readonly ManualResetValueTaskCompletionSource<int> _receiveStreamCompletionTaskSource = new();
-        private readonly AsyncSemaphore _sendSemaphore = new AsyncSemaphore(1);
+        private readonly AsyncSemaphore _sendSemaphore = new(1);
         private readonly BufferedReceiveOverSingleStreamSocket _socket;
         private int _unidirectionalStreamCount;
         private AsyncSemaphore? _unidirectionalStreamSemaphore;
@@ -57,10 +60,6 @@ namespace ZeroC.Ice
                         }
                         _ = PrepareAndSendFrameAsync(SlicDefinitions.FrameType.Pong, cancel: CancellationToken.None);
                         ReceivedPing();
-                        if (Endpoint.Communicator.TraceLevels.Transport > 2)
-                        {
-                            TraceTransportFrame("received ", type, size, streamId);
-                        }
                         break;
                     }
                     case SlicDefinitions.FrameType.Pong:
@@ -69,10 +68,6 @@ namespace ZeroC.Ice
                         if (size != 0)
                         {
                             throw new InvalidDataException("unexpected data for Slic Pong fame");
-                        }
-                        if (Endpoint.Communicator.TraceLevels.Transport > 2)
-                        {
-                            TraceTransportFrame("received ", type, size, streamId);
                         }
                         break;
                     }
@@ -96,26 +91,13 @@ namespace ZeroC.Ice
                                 // Notify the stream that data is available for read.
                                 stream.ReceivedFrame(size, fin);
 
-                                if (size > 0)
-                                {
-                                    // Wait for the stream to receive the data before reading a new Slic frame.
-                                    await WaitForReceivedStreamDataCompletionAsync(cancel).ConfigureAwait(false);
-                                }
-                                else
-                                {
-                                    if (Endpoint.Communicator.TraceLevels.Transport > 2)
-                                    {
-                                        TraceTransportFrame("received ",
-                                                            SlicDefinitions.FrameType.StreamLast,
-                                                            0,
-                                                            streamId);
-                                    }
-                                }
+                                // Wait for the stream to receive the data before reading a new Slic frame.
+                                await WaitForReceivedStreamDataCompletionAsync(cancel).ConfigureAwait(false);
                             }
                             catch
                             {
                                 // The stream has been aborted if it can't be signaled, read and ignore the data.
-                                await IgnoreReceivedData(type, size, streamId.Value).ConfigureAwait(false);
+                                await IgnoreReceivedStreamDataAsync(size).ConfigureAwait(false);
                             }
                         }
                         else if (isIncoming &&
@@ -176,7 +158,7 @@ namespace ZeroC.Ice
                             }
 
                             // Ignored the received data if we can't create a stream to handle it.
-                            await IgnoreReceivedData(type, size, streamId.Value).ConfigureAwait(false);
+                            await IgnoreReceivedStreamDataAsync(size).ConfigureAwait(false);
                         }
                         else
                         {
@@ -194,7 +176,7 @@ namespace ZeroC.Ice
                             }
 
                             // The stream has been disposed, read and ignore the data.
-                            await IgnoreReceivedData(type, size, streamId.Value).ConfigureAwait(false);
+                            await IgnoreReceivedStreamDataAsync(size).ConfigureAwait(false);
                         }
                         break;
                     }
@@ -215,9 +197,29 @@ namespace ZeroC.Ice
                         {
                             stream.ReceivedReset((long)streamReset.ApplicationProtocolErrorCode);
                         }
-                        if (Endpoint.Communicator.TraceLevels.Transport > 2)
+                        break;
+                    }
+                    case SlicDefinitions.FrameType.StreamConsumed:
+                    {
+                        Debug.Assert(streamId != null);
+                        if (streamId == 2 || streamId == 3)
                         {
-                            TraceTransportFrame("received ", type, size, streamId);
+                            throw new InvalidDataException("control streams don't support flow control");
+                        }
+                        if (size > 32)
+                        {
+                            throw new InvalidDataException("stream consumed frame too large");
+                        }
+
+                        _receiveBuffer ??= new byte[32];
+
+                        await ReceiveDataAsync(_receiveBuffer.Value[0..size], cancel).ConfigureAwait(false);
+
+                        var istr = new InputStream(_receiveBuffer.Value[0..size], SlicDefinitions.Encoding);
+                        var streamConsumed = new StreamConsumedBody(istr);
+                        if (TryGetStream(streamId.Value, out SlicStream? stream))
+                        {
+                            stream.ReceivedConsumed((int)streamConsumed.Size);
                         }
                         break;
                     }
@@ -228,16 +230,19 @@ namespace ZeroC.Ice
                 }
             }
 
-            async ValueTask IgnoreReceivedData(SlicDefinitions.FrameType type, int size, long streamId)
+            async ValueTask IgnoreReceivedStreamDataAsync(int size)
             {
                 if (size > 0)
                 {
-                    await ReceiveDataAsync(new byte[size], cancel).ConfigureAwait(false);
-                }
-
-                if (Endpoint.Communicator.TraceLevels.Transport > 2)
-                {
-                    TraceTransportFrame("received ", type, size, streamId);
+                    var receiveBuffer = new ArraySegment<byte>(ArrayPool<byte>.Shared.Rent(size), 0, size);
+                    try
+                    {
+                        await ReceiveDataAsync(receiveBuffer, cancel).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(receiveBuffer.Array!);
+                    }
                 }
             }
         }
@@ -369,6 +374,10 @@ namespace ZeroC.Ice
             _receiveStreamCompletionTaskSource.RunContinuationAsynchronously = true;
             _receiveStreamCompletionTaskSource.SetResult(0);
 
+            // Initially set the peer packet max size to the local max size to ensure we can receive the first
+            // initialize frame.
+            PeerPacketMaxSize = endpoint.Communicator.SlicPacketMaxSize;
+
             // If serialization is enabled on the adapter, we configure the maximum stream counts to 1 to ensure
             // the peer won't open more than one stream.
             bool serializeDispatch = adapter?.SerializeDispatch ?? false;
@@ -401,18 +410,7 @@ namespace ZeroC.Ice
             return streamIds;
         }
 
-        internal void FinishedReceivedStreamData(long streamId, int frameOffset, int frameSize, bool fin)
-        {
-            // The stream finished receiving stream data.
-            if (Endpoint.Communicator.TraceLevels.Transport > 2)
-            {
-                TraceTransportFrame("received ",
-                                    fin ? SlicDefinitions.FrameType.StreamLast : SlicDefinitions.FrameType.Stream,
-                                    frameSize,
-                                    streamId);
-            }
-            _receiveStreamCompletionTaskSource.SetResult(frameSize - frameOffset);
-        }
+        internal void FinishedReceivedStreamData(int size) => _receiveStreamCompletionTaskSource.SetResult(size);
 
         internal async Task PrepareAndSendFrameAsync(
             SlicDefinitions.FrameType type,
@@ -573,11 +571,6 @@ namespace ZeroC.Ice
                     return;
                 }
 
-                // The given buffer includes space for the Slic header, we subtract the header size from the given
-                // frame size.
-                Debug.Assert(packetSize >= SlicDefinitions.FrameHeader.Length);
-                packetSize -= SlicDefinitions.FrameHeader.Length;
-
                 // Compute how much space the size and stream ID require to figure out the start of the Slic header.
                 int streamIdLength = OutputStream.GetSizeLength20(stream.Id);
                 packetSize += streamIdLength;
@@ -631,6 +624,7 @@ namespace ZeroC.Ice
                 SlicDefinitions.FrameType.Stream => "stream",
                 SlicDefinitions.FrameType.StreamLast => "last stream",
                 SlicDefinitions.FrameType.StreamReset => "reset stream",
+                SlicDefinitions.FrameType.StreamConsumed => "consumed stream",
                 _ => "unknown",
             } + " frame";
 
@@ -648,6 +642,11 @@ namespace ZeroC.Ice
             {
                 s.Append("\nstream ID = ");
                 s.Append(streamId);
+            }
+
+            if (type == SlicDefinitions.FrameType.StreamConsumed)
+            {
+
             }
 
             s.Append('\n');
@@ -680,6 +679,10 @@ namespace ZeroC.Ice
                         _idleTimeout = peerIdleTimeout.Value;
                     }
                 }
+                else if (key == (int)ParameterKey.PacketMaxSize)
+                {
+                    PeerPacketMaxSize = (int)value.Span.ReadVarULong().Value;
+                }
                 else
                 {
                     // Ignore unsupported parameters
@@ -704,13 +707,17 @@ namespace ZeroC.Ice
                 // configured idle timeout is larger than the client's idle timeout.
                 throw new InvalidDataException("missing IdleTimeout Slic connection parameter");
             }
+
+            if (PeerPacketMaxSize < 1024)
+            {
+                throw new InvalidDataException($"invalid PacketMaxSize={PeerPacketMaxSize} Slic connection parameter");
+            }
         }
 
         private async ValueTask<(SlicDefinitions.FrameType, ArraySegment<byte>)> ReceiveFrameAsync(
             CancellationToken cancel)
         {
-            (SlicDefinitions.FrameType type, int size, long? streamId) =
-                await ReceiveHeaderAsync(cancel).ConfigureAwait(false);
+            (SlicDefinitions.FrameType type, int size, long? _) = await ReceiveHeaderAsync(cancel).ConfigureAwait(false);
             ArraySegment<byte> data;
             if (size > 0)
             {
@@ -720,10 +727,6 @@ namespace ZeroC.Ice
             else
             {
                 data = ArraySegment<byte>.Empty;
-            }
-            if (Endpoint.Communicator.TraceLevels.Transport > 2)
-            {
-                TraceTransportFrame("received ", type, size, streamId);
             }
             return (type, data);
         }
@@ -750,7 +753,7 @@ namespace ZeroC.Ice
             // Receive the stream ID if the frame includes a stream ID. We receive at most 8 or size bytes and rewind
             // the socket buffered position if we read too much data.
             (ulong? streamId, int streamIdLength) = (null, 0);
-            if (type >= SlicDefinitions.FrameType.Stream && type <= SlicDefinitions.FrameType.StreamReset)
+            if (type >= SlicDefinitions.FrameType.Stream && type <= SlicDefinitions.FrameType.StreamConsumed)
             {
                 int receiveSize = Math.Min(size, 8);
                 buffer = await _socket.ReceiveAsync(receiveSize, cancel).ConfigureAwait(false);
@@ -759,7 +762,19 @@ namespace ZeroC.Ice
             }
 
             Received(1 + sizeLength + streamIdLength);
-            return (type, size - streamIdLength, (long?)streamId);
+
+            if (Endpoint.Communicator.TraceLevels.Transport > 2)
+            {
+                TraceTransportFrame("receiving ", type, size, (long?)streamId);
+            }
+
+            // The size check doesn't include the stream ID length
+            size -= streamIdLength;
+            if (size > PeerPacketMaxSize)
+            {
+                throw new InvalidDataException("peer sent Slic packet larger than the configured packet maximum size");
+            }
+            return (type, size, (long?)streamId);
         }
 
         private async ValueTask WaitForReceivedStreamDataCompletionAsync(CancellationToken cancel)
@@ -769,8 +784,15 @@ namespace ZeroC.Ice
             int size = await _receiveStreamCompletionTaskSource.ValueTask.WaitAsync(cancel).ConfigureAwait(false);
             if (size > 0)
             {
-                ArraySegment<byte> data = new byte[size];
-                await ReceiveDataAsync(data, cancel).ConfigureAwait(false);
+                var receiveBuffer = new ArraySegment<byte>(ArrayPool<byte>.Shared.Rent(size), 0, size);
+                try
+                {
+                    await ReceiveDataAsync(receiveBuffer, cancel).ConfigureAwait(false);
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(receiveBuffer.Array!);
+                }
             }
         }
 
@@ -780,7 +802,7 @@ namespace ZeroC.Ice
             // idle timeout is smaller then the configured idle timeout, we can omit sending the server's idle timeout.
             bool writeIdleTimeout = !IsIncoming || Endpoint.Communicator.IdleTimeout < _idleTimeout;
 
-            ostr.WriteSize(writeIdleTimeout ? 3 : 2);
+            ostr.WriteSize(writeIdleTimeout ? 4 : 3);
             ostr.WriteBinaryContextEntry((int)ParameterKey.MaxBidirectionalStreams,
                                          (ulong)_maxBidirectionalStreams,
                                          OutputStream.IceWriterFromVarULong);
@@ -793,6 +815,10 @@ namespace ZeroC.Ice
                                              (ulong)_idleTimeout.TotalMilliseconds,
                                              OutputStream.IceWriterFromVarULong);
             }
+
+            ostr.WriteBinaryContextEntry((int)ParameterKey.PacketMaxSize,
+                                         (ulong)Endpoint.Communicator.SlicPacketMaxSize,
+                                         OutputStream.IceWriterFromVarULong);
         }
     }
 }

@@ -13,8 +13,7 @@ namespace ZeroC.Ice
     internal class ColocatedStream : SignaledSocketStream<(object, bool)>
     {
         protected override bool ReceivedEndOfStream => _receivedEndOfStream;
-
-        private ConcurrentQueue<ArraySegment<byte>>? _receivedData;
+        private bool _queueReceivedFrames;
         private bool _receivedEndOfStream;
         private ArraySegment<byte> _receiveSegment;
         private readonly ColocatedSocket _socket;
@@ -29,19 +28,21 @@ namespace ZeroC.Ice
             }
         }
 
+        protected override void EnableReceiveFlowControl() => _queueReceivedFrames = true;
+
+        protected override void EnableSendFlowControl()
+        {
+            // TODO
+        }
+
         protected override async ValueTask<int> ReceiveAsync(Memory<byte> buffer, CancellationToken cancel)
         {
             int received = 0;
             while (buffer.Length > 0)
             {
-                if (_receiveSegment.Count > 0 || (_receivedData?.TryDequeue(out _receiveSegment) ?? false))
+                if (_receiveSegment.Count > 0)
                 {
-                    if (_receiveSegment.Count == 0)
-                    {
-                        _receivedEndOfStream = true;
-                        return received;
-                    }
-                    else if (buffer.Length < _receiveSegment.Count)
+                    if (buffer.Length < _receiveSegment.Count)
                     {
                         _receiveSegment[0..buffer.Length].AsMemory().CopyTo(buffer);
                         received += buffer.Length;
@@ -58,7 +59,12 @@ namespace ZeroC.Ice
                 }
                 else
                 {
-                    await WaitSignalAsync(cancel).ConfigureAwait(false);
+                    (object frame, bool fin) = await WaitSignalAsync(cancel).ConfigureAwait(false);
+
+                    var data = (List<ArraySegment<byte>>)frame;
+                    Debug.Assert(data.Count == 1);
+                    _receiveSegment = data[0];
+                    _receivedEndOfStream = fin;
                 }
             }
             return received;
@@ -82,29 +88,13 @@ namespace ZeroC.Ice
 
         internal void ReceivedFrame(object frame, bool fin)
         {
-            if (_receivedData != null)
+            if (_queueReceivedFrames)
             {
-                Debug.Assert(frame is List<ArraySegment<byte>>);
-                var data = (List<ArraySegment<byte>>)frame;
-                Debug.Assert(data.Count == 1);
-                _receivedData.Enqueue(data[0]);
-                if (fin)
-                {
-                    _receivedData.Enqueue(ArraySegment<byte>.Empty);
-                }
+                QueueResult((frame, fin));
             }
-            else if (frame is IncomingFrame && !fin)
+            else
             {
-                // If it's a request or response and the stream is not finished, create a concurrent queue to
-                // keep track of additional data frames.
-                _receivedData = new ConcurrentQueue<ArraySegment<byte>>();
-            }
-
-            // Run the continuation asynchronously if it's a response to ensure we don't end up calling user
-            // code which could end up blocking the AcceptStreamAsync task.
-            if (!IsSignaled)
-            {
-                SignalCompletion((frame, fin));
+                SetResult((frame, fin));
             }
         }
 
@@ -121,7 +111,7 @@ namespace ZeroC.Ice
             else
             {
                 frame.SocketStream = this;
-                Interlocked.Increment(ref UseCount);
+                Interlocked.Increment(ref _useCount);
             }
             return frame;
         }
@@ -154,7 +144,7 @@ namespace ZeroC.Ice
             else
             {
                 frame.SocketStream = this;
-                Interlocked.Increment(ref UseCount);
+                Interlocked.Increment(ref _useCount);
             }
 
             return frame;

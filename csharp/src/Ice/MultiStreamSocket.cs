@@ -122,10 +122,9 @@ namespace ZeroC.Ice
         /// unmanaged resources.</param>
         protected virtual void Dispose(bool disposing)
         {
-            // Dispose of the control streams.
+            // Dispose the remaining streams.
             foreach (SocketStream stream in _streams.Values)
             {
-                Debug.Assert(stream.IsControl);
                 stream.Dispose();
             }
         }
@@ -209,7 +208,7 @@ namespace ZeroC.Ice
             return false;
         }
 
-        internal async ValueTask AbortAsync(Exception exception)
+        internal void Abort(Exception exception)
         {
             // Abort the transport.
             Abort();
@@ -225,8 +224,6 @@ namespace ZeroC.Ice
             // call this again even if has already been called previously by graceful connection closure. Not all the
             // streams might have been aborted and at this point we want to make sure all the streams are aborted.
             AbortStreams(exception);
-
-            await WaitForEmptyStreamsAsync().ConfigureAwait(false);
 
             lock (_mutex)
             {
