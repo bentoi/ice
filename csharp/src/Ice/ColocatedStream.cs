@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace ZeroC.Ice
@@ -13,10 +14,33 @@ namespace ZeroC.Ice
     internal class ColocatedStream : SignaledSocketStream<(object, bool)>
     {
         protected override bool ReceivedEndOfStream => _receivedEndOfStream;
-        private bool _queueReceivedFrames;
         private bool _receivedEndOfStream;
         private ArraySegment<byte> _receiveSegment;
+        private ChannelWriter<byte[]>? _streamWriter;
+        private ChannelReader<byte[]>? _streamReader;
         private readonly ColocatedSocket _socket;
+
+        public override void SendDataFromIOStream(System.IO.Stream ioStream, CancellationToken cancel)
+        {
+            // Create a channel to send the data directly to the peer's stream. It's a bounded channel
+            // of one element which requires the sender to wait if the channel is full. This ensures
+            // that don't send the data faster than the receiver can process.
+            var channelOptions = new BoundedChannelOptions(1)
+            {
+                SingleReader = true,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.Wait,
+                AllowSynchronousContinuations = false
+            };
+            var channel = Channel.CreateBounded<byte[]>(channelOptions);
+            _streamWriter = channel.Writer;
+
+            // Send the channel reader to the peer. Receiving data will first wait for the channel reader
+            // to be transmitted.
+            _socket.SendFrameAsync(this, frame: channel.Reader, fin: false, cancel).AsTask();
+
+            base.SendDataFromIOStream(ioStream, cancel);
+        }
 
         protected override void Dispose(bool disposing)
         {
@@ -28,15 +52,17 @@ namespace ZeroC.Ice
             }
         }
 
-        protected override void EnableReceiveFlowControl() => _queueReceivedFrames = true;
-
-        protected override void EnableSendFlowControl()
-        {
-            // TODO
-        }
-
         protected override async ValueTask<int> ReceiveAsync(Memory<byte> buffer, CancellationToken cancel)
         {
+            // If we didn't get the stream reader yet, wait for the peer stream to provide it through the
+            // socket channel.
+            if (_streamReader == null)
+            {
+                (object frame, bool fin) = await WaitSignalAsync(cancel).ConfigureAwait(false);
+                _streamReader = frame as ChannelReader<byte[]>;
+                Debug.Assert(_streamReader != null);
+            }
+
             int received = 0;
             while (buffer.Length > 0)
             {
@@ -54,17 +80,24 @@ namespace ZeroC.Ice
                         _receiveSegment.AsMemory().CopyTo(buffer);
                         received += _receiveSegment.Count;
                         _receiveSegment = new ArraySegment<byte>();
-                        buffer = buffer[_receiveSegment.Count..];
+                        buffer = Memory<byte>.Empty;
                     }
                 }
                 else
                 {
-                    (object frame, bool fin) = await WaitSignalAsync(cancel).ConfigureAwait(false);
+                    if (_receivedEndOfStream)
+                    {
+                        return 0;
+                    }
 
-                    var data = (List<ArraySegment<byte>>)frame;
-                    Debug.Assert(data.Count == 1);
-                    _receiveSegment = data[0];
-                    _receivedEndOfStream = fin;
+                    try
+                    {
+                        _receiveSegment = await _streamReader.ReadAsync(cancel).ConfigureAwait(false);
+                    }
+                    catch (ChannelClosedException)
+                    {
+                        _receivedEndOfStream = true;
+                    }
                 }
             }
             return received;
@@ -75,8 +108,31 @@ namespace ZeroC.Ice
             // TODO: Provide the error code?
             _socket.SendFrameAsync(this, frame: null, fin: true, CancellationToken.None);
 
-        protected override ValueTask SendAsync(IList<ArraySegment<byte>> buffer, bool fin, CancellationToken cancel) =>
-            _socket.SendFrameAsync(this, frame: new List<ArraySegment<byte>>(buffer), fin: fin, cancel);
+        protected override async ValueTask SendAsync(
+            IList<ArraySegment<byte>> buffer,
+            bool fin,
+            CancellationToken cancel)
+        {
+            if (_streamWriter == null)
+            {
+                await _socket.SendFrameAsync(this, buffer, fin, cancel).ConfigureAwait(false);
+            }
+            else
+            {
+                if (buffer[0].Count > 0)
+                {
+                    // TODO: replace the Channel with a better mechanism which doesn't require copying the data
+                    // from the sender.
+                    byte[] copy = new byte[buffer[0].Count];
+                    buffer[0].CopyTo(copy);
+                    await _streamWriter.WriteAsync(copy, cancel).ConfigureAwait(false);
+                }
+                if (fin)
+                {
+                    _streamWriter.Complete();
+                }
+            }
+        }
 
         /// <summary>Constructor for incoming colocated stream</summary>
         internal ColocatedStream(ColocatedSocket socket, long streamId)
@@ -86,17 +142,7 @@ namespace ZeroC.Ice
         internal ColocatedStream(ColocatedSocket socket, bool bidirectional, bool control)
             : base(socket, bidirectional, control) => _socket = socket;
 
-        internal void ReceivedFrame(object frame, bool fin)
-        {
-            if (_queueReceivedFrames)
-            {
-                QueueResult((frame, fin));
-            }
-            else
-            {
-                SetResult((frame, fin));
-            }
-        }
+        internal void ReceivedFrame(object frame, bool fin) => QueueResult((frame, fin));
 
         internal override async ValueTask<IncomingRequestFrame> ReceiveRequestFrameAsync(CancellationToken cancel)
         {
@@ -113,6 +159,12 @@ namespace ZeroC.Ice
                 frame.SocketStream = this;
                 Interlocked.Increment(ref _useCount);
             }
+
+            if (_socket.Endpoint.Communicator.TraceLevels.Protocol >= 1)
+            {
+                _socket.TraceFrame(Id, frame);
+            }
+
             return frame;
         }
 
@@ -145,6 +197,11 @@ namespace ZeroC.Ice
             {
                 frame.SocketStream = this;
                 Interlocked.Increment(ref _useCount);
+            }
+
+            if (_socket.Endpoint.Communicator.TraceLevels.Protocol >= 1)
+            {
+                _socket.TraceFrame(Id, frame);
             }
 
             return frame;

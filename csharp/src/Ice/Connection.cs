@@ -498,7 +498,16 @@ namespace ZeroC.Ice
 
                 // Start a new accept stream task to accept another stream.
                 _acceptStreamTask = Task.Run(() => AcceptStreamAsync().AsTask());
+            }
+            catch (Exception ex)
+            {
+                _ = AbortAsync(ex);
+                throw;
+            }
 
+            Debug.Assert(stream != null);
+            try
+            {
                 using var cancelSource = new CancellationTokenSource();
                 CancellationToken cancel = cancelSource.Token;
                 if (stream.IsBidirectional)
@@ -564,11 +573,12 @@ namespace ZeroC.Ice
             {
                 // Ignore, the dispatch got canceled
             }
-            catch (Exception ex)
+            catch (Exception exception)
             {
-                // Other exceptions are considered fatal, abort the connection
-                _ = AbortAsync(ex);
-                throw;
+                if (Communicator.WarnConnections)
+                {
+                    Communicator.Logger.Warning($"connection stream exception:\n{exception}\n{this}");
+                }
             }
             finally
             {

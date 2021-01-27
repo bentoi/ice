@@ -1043,7 +1043,7 @@ namespace ZeroC.Ice.Test.Operations
 
         private static void ConsumeStream(int receivedSize, Stream stream)
         {
-            var buffer = new byte[1024];
+            byte[] buffer = new byte[1024];
             int size = 0;
             while (true)
             {
@@ -1051,6 +1051,10 @@ namespace ZeroC.Ice.Test.Operations
                 if (read == 0)
                 {
                     break;
+                }
+                for (int i = 0; i < read; ++i)
+                {
+                    TestHelper.Assert(buffer[i] == (byte)((size + i) % 256), $"{buffer[i]} != {(size + i) % 256}");
                 }
                 size += read;
             }

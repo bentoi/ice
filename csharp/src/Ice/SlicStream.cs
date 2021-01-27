@@ -27,6 +27,37 @@ namespace ZeroC.Ice
         private AsyncSemaphore? _sendSemaphore;
         private readonly SlicSocket _socket;
 
+        public override Stream ReceiveDataIntoIOStream()
+        {
+            // Create a receive buffer to buffer the received stream data. The sender must ensure it doesn't send
+            // more data than this receiver allows. For now, the limit is fixed to 2 Slic packet.
+            // TODO: buffer at most 2 Slic packet, configurable buffer capacity?
+            _receiveBuffer = new CircularBuffer(2 * _socket.Endpoint.Communicator.SlicPacketMaxSize);
+
+            // If the stream is in the signaled state, the socket is waiting for the frame to be received. In this
+            // case we get the frame information and notify again the stream that the frame was received. The frame
+            // will be received in the circular buffer and queued.
+            if (IsSignaled)
+            {
+                ValueTask<(int, bool, bool)> valueTask = WaitSignalAsync();
+                Debug.Assert(valueTask.IsCompleted);
+                (int size, bool fin, bool buffered) = valueTask.Result;
+                Debug.Assert(!buffered);
+                ReceivedFrame(size, fin);
+            }
+
+            return base.ReceiveDataIntoIOStream();
+        }
+
+        public override void SendDataFromIOStream(Stream ioStream, CancellationToken cancel)
+        {
+            // Create send semaphore for flow control. The send semaphore ensures that the stream doesn't send
+            // more data than it is allowed to the peer.
+            _sendSemaphore = new AsyncSemaphore(1);
+
+            base.SendDataFromIOStream(ioStream, cancel);
+        }
+
         protected override void Dispose(bool disposing)
         {
             base.Dispose(disposing);
@@ -68,26 +99,6 @@ namespace ZeroC.Ice
             }
         }
 
-        protected override void EnableReceiveFlowControl()
-        {
-            // TODO: buffer at most 2 Slic packet, configurable buffer capacity?
-            _receiveBuffer = new CircularBuffer(2 * _socket.Endpoint.Communicator.SlicPacketMaxSize);
-
-            // If the stream is in the signaled state, the socket is waiting for the frame to be received. In this
-            // case we get the frame information and notify again the stream that the frame was received. This time
-            // the frame will be received in the buffer and queued.
-            if (IsSignaled)
-            {
-                ValueTask<(int, bool, bool)> valueTask = WaitSignalAsync();
-                Debug.Assert(valueTask.IsCompleted);
-                (int size, bool fin, bool buffered) = valueTask.Result;
-                Debug.Assert(!buffered);
-                ReceivedFrame(size, fin);
-            }
-        }
-
-        protected override void EnableSendFlowControl() => _sendSemaphore = new AsyncSemaphore(1);
-
         protected override async ValueTask<int> ReceiveAsync(Memory<byte> buffer, CancellationToken cancel)
         {
             if (_receivedSize == _receivedOffset)
@@ -103,7 +114,6 @@ namespace ZeroC.Ice
                 // multiple Slic frame might have been received and buffered while waiting for the signal.
                 (_receivedSize, _receivedEndOfStream, _receivedFromBuffer) =
                     await WaitSignalAsync(cancel).ConfigureAwait(false);
-                Console.Error.WriteLine($"DEQUEUED {_receivedSize} {_receivedEndOfStream}");
                 if (_receivedSize == 0)
                 {
                     if (!_receivedFromBuffer)
@@ -125,14 +135,18 @@ namespace ZeroC.Ice
                 // If we've consumed 75% or more of the circular buffer capacity, notify the peer to allow more data
                 // to be sent.
                 int consumed = Interlocked.Add(ref _receiveBufferConsumed, size);
-                if (_socket.Endpoint.Communicator.TraceLevels.Transport > 2)
-                {
-                    _socket.Endpoint.Communicator.Logger.Trace(
-                        TraceLevels.TransportCategory,
-                        $"consumed {consumed}/{_receiveBuffer.Capacity} bytes of flow control credit");
-                }
                 if (consumed >= _receiveBuffer.Capacity * 0.75)
                 {
+                    if (_socket.Endpoint.Communicator.TraceLevels.Transport > 2)
+                    {
+                        _socket.Endpoint.Communicator.Logger.Trace(
+                            TraceLevels.TransportCategory,
+                            $"consumed {consumed} / {_receiveBuffer.Available} bytes of flow control credit");
+                    }
+
+                    // Reset _receiveBufferConsumed before notifying the peer.
+                    Interlocked.Exchange(ref _receiveBufferConsumed, 0);
+
                     // Notify the peer that it can send additional data.
                     await _socket.PrepareAndSendFrameAsync(
                         SlicDefinitions.FrameType.StreamConsumed,
@@ -145,7 +159,6 @@ namespace ZeroC.Ice
                         },
                         Id,
                         CancellationToken.None).ConfigureAwait(false);
-                    Interlocked.Exchange(ref _receiveBufferConsumed, 0);
                 }
             }
             else
@@ -213,7 +226,7 @@ namespace ZeroC.Ice
                     if (_sendSemaphore != null)
                     {
                         // Acquire the semaphore to ensure flow control allows sending additional data.
-                        await _sendSemaphore.WaitAsync(cancel).ConfigureAwait(false);
+                        await _sendSemaphore.EnterAsync(cancel).ConfigureAwait(false);
                     }
 
                     // Compute next packet size which can be smaller or larger than the packet max size if flow
@@ -298,7 +311,7 @@ namespace ZeroC.Ice
                 if (_sendSemaphore != null)
                 {
                     // Acquire the semaphore to ensure flow control allows sending additional data.
-                    await _sendSemaphore.WaitAsync(cancel).ConfigureAwait(false);
+                    await _sendSemaphore.EnterAsync(cancel).ConfigureAwait(false);
                 }
 
                 // If the buffer to send is small enough to fit in a single Slic stream frame, send it directly.
@@ -425,14 +438,7 @@ namespace ZeroC.Ice
 
                 // Queue the result before notify the socket we're done reading. It's important to ensure the
                 // frame receives are queued in order.
-                try
-                {
-                    QueueResult((size, fin, true));
-                }
-                catch
-                {
-                    // Ignore, the stream has been canceled.
-                }
+                QueueResult((size, fin, true));
 
                 _socket.FinishedReceivedStreamData(0);
             }

@@ -89,30 +89,53 @@ namespace ZeroC.Ice.Test.Operations
 
             (byte ReturnValue, byte p3) = p.OpByteAsync(0xff, 0x0f).Result;
 
-            if (p.Protocol != Protocol.Ice1)
+            Task.Run(async () =>
             {
-                Task.Run(async () =>
+                if (p.Protocol == Protocol.Ice1)
                 {
-                    byte[] buffer = new byte[1024];
-                    byte[] largeBuffer = new byte[1024 * 1024];
-                    var streams = new List<MemoryStreamWithDisposeCheck>();
+                    return;
+                }
 
-                    streams.Add(new MemoryStreamWithDisposeCheck(buffer));
-                    await p.OpSendStream1Async(streams.Last()).ConfigureAwait(false);
-                    streams.Add(new MemoryStreamWithDisposeCheck(buffer));
-                    await p.OpSendStream2Async(buffer.Length, streams.Last()).ConfigureAwait(false);
-
-                    streams.Add(new MemoryStreamWithDisposeCheck(largeBuffer));
-                    await p.OpSendStream1Async(streams.Last()).ConfigureAwait(false);
-                    streams.Add(new MemoryStreamWithDisposeCheck(largeBuffer));
-                    await p.OpSendStream2Async(largeBuffer.Length, streams.Last()).ConfigureAwait(false);
-
-                    foreach (MemoryStreamWithDisposeCheck stream in streams)
+                foreach (int size in new List<int>() { 32, 1024, 1024 * 1024 })
+                {
+                    byte[] buffer = new byte[size];
+                    for (int i = 0; i < buffer.Length; ++i)
                     {
-                        stream.WaitForDispose();
+                        buffer[i] = (byte)(i % 256);
                     }
-                }).Wait();
-            }
+
+                    var streams = new List<MemoryStreamWithDisposeCheck>();
+                    try
+                    {
+                        streams.Add(new MemoryStreamWithDisposeCheck(buffer));
+                        await p.OpSendStream1Async(streams.Last()).ConfigureAwait(false);
+                        streams.Last().WaitForDispose();
+
+                        streams.Add(new MemoryStreamWithDisposeCheck(buffer));
+                        await p.OpSendStream2Async(buffer.Length, streams.Last()).ConfigureAwait(false);
+                        streams.Last().WaitForDispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"test failed: {ex}");
+                        throw;
+                    }
+                    finally
+                    {
+                        foreach (Stream stream in streams)
+                        {
+                            try
+                            {
+                                stream.ReadByte();
+                                TestHelper.Assert(false);
+                            }
+                            catch (ObjectDisposedException)
+                            {
+                            }
+                        }
+                    }
+                }
+            }).Wait();
         }
     }
 }

@@ -134,7 +134,7 @@ namespace ZeroC.Ice
                                 _bidirectionalSerializeSemaphore : _unidirectionalSerializeSemaphore;
                             if (semaphore != null)
                             {
-                                await semaphore.WaitAsync(cancel).ConfigureAwait(false);
+                                await semaphore.EnterAsync(cancel).ConfigureAwait(false);
                             }
                             stream.ReceivedFrame(frameType, frame);
                             return stream;
@@ -267,7 +267,7 @@ namespace ZeroC.Ice
         {
             // Wait for sending of other frames to complete. The semaphore is used as an asynchronous queue
             // to serialize the sending of frames.
-            await _sendSemaphore.WaitAsync(cancel).ConfigureAwait(false);
+            await _sendSemaphore.EnterAsync(cancel).ConfigureAwait(false);
 
             try
             {

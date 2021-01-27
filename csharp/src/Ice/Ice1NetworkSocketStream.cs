@@ -25,10 +25,6 @@ namespace ZeroC.Ice
             }
         }
 
-        protected override void EnableReceiveFlowControl() => throw new InvalidOperationException("not supported");
-
-        protected override void EnableSendFlowControl() => throw new InvalidOperationException("not supported");
-
         protected override ValueTask<int> ReceiveAsync(Memory<byte> buffer, CancellationToken cancel) =>
             // This is never called because we override the default ReceiveFrameAsync implementation
             throw new NotImplementedException();

@@ -86,19 +86,11 @@ namespace ZeroC.Ice
 
                         if (TryGetStream(streamId.Value, out SlicStream? stream))
                         {
-                            try
-                            {
-                                // Notify the stream that data is available for read.
-                                stream.ReceivedFrame(size, fin);
+                            // Notify the stream that data is available for read.
+                            stream.ReceivedFrame(size, fin);
 
-                                // Wait for the stream to receive the data before reading a new Slic frame.
-                                await WaitForReceivedStreamDataCompletionAsync(cancel).ConfigureAwait(false);
-                            }
-                            catch
-                            {
-                                // The stream has been aborted if it can't be signaled, read and ignore the data.
-                                await IgnoreReceivedStreamDataAsync(size).ConfigureAwait(false);
-                            }
+                            // Wait for the stream to receive the data before reading a new Slic frame.
+                            await WaitForReceivedStreamDataCompletionAsync(cancel).ConfigureAwait(false);
                         }
                         else if (isIncoming &&
                                  streamId.Value > (isBidirectional ? _lastBidirectionalId : _lastUnidirectionalId))
@@ -122,43 +114,31 @@ namespace ZeroC.Ice
                             }
 
                             // Accept the new incoming stream and notify the stream that data is available.
-                            try
+                            stream = new SlicStream(this, streamId.Value);
+                            if (stream.IsControl)
                             {
-                                stream = new SlicStream(this, streamId.Value);
-                                if (stream.IsControl)
-                                {
-                                    // We don't acquire flow control credit for the control stream.
-                                }
-                                else if (isBidirectional)
-                                {
-                                    if (_bidirectionalStreamCount == _maxBidirectionalStreams)
-                                    {
-                                        throw new InvalidDataException(
-                                            $"maximum bidirectional stream count {_maxBidirectionalStreams} reached");
-                                    }
-                                    Interlocked.Increment(ref _bidirectionalStreamCount);
-                                }
-                                else
-                                {
-                                    if (_unidirectionalStreamCount == _maxUnidirectionalStreams)
-                                    {
-                                        throw new InvalidDataException(
-                                            $"maximum unidirectional stream count {_maxUnidirectionalStreams} reached");
-                                    }
-                                    Interlocked.Increment(ref _unidirectionalStreamCount);
-                                }
-                                stream.ReceivedFrame(size, fin);
-                                return stream;
+                                // We don't acquire flow control credit for the control stream.
                             }
-                            catch
+                            else if (isBidirectional)
                             {
-                                // Ignore, the socket no longer accepts new streams because it's being closed or the
-                                // stream has been disposed shortly after being constructed.
-                                stream?.Dispose();
+                                if (_bidirectionalStreamCount == _maxBidirectionalStreams)
+                                {
+                                    throw new InvalidDataException(
+                                        $"maximum bidirectional stream count {_maxBidirectionalStreams} reached");
+                                }
+                                Interlocked.Increment(ref _bidirectionalStreamCount);
                             }
-
-                            // Ignored the received data if we can't create a stream to handle it.
-                            await IgnoreReceivedStreamDataAsync(size).ConfigureAwait(false);
+                            else
+                            {
+                                if (_unidirectionalStreamCount == _maxUnidirectionalStreams)
+                                {
+                                    throw new InvalidDataException(
+                                        $"maximum unidirectional stream count {_maxUnidirectionalStreams} reached");
+                                }
+                                Interlocked.Increment(ref _unidirectionalStreamCount);
+                            }
+                            stream.ReceivedFrame(size, fin);
+                            return stream;
                         }
                         else
                         {
@@ -176,7 +156,18 @@ namespace ZeroC.Ice
                             }
 
                             // The stream has been disposed, read and ignore the data.
-                            await IgnoreReceivedStreamDataAsync(size).ConfigureAwait(false);
+                            if (size > 0)
+                            {
+                                var receiveBuffer = new ArraySegment<byte>(ArrayPool<byte>.Shared.Rent(size), 0, size);
+                                try
+                                {
+                                    await ReceiveDataAsync(receiveBuffer, cancel).ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    ArrayPool<byte>.Shared.Return(receiveBuffer.Array!);
+                                }
+                            }
                         }
                         break;
                     }
@@ -226,22 +217,6 @@ namespace ZeroC.Ice
                     default:
                     {
                         throw new InvalidDataException($"unexpected Slic frame with frame type `{type}'");
-                    }
-                }
-            }
-
-            async ValueTask IgnoreReceivedStreamDataAsync(int size)
-            {
-                if (size > 0)
-                {
-                    var receiveBuffer = new ArraySegment<byte>(ArrayPool<byte>.Shared.Rent(size), 0, size);
-                    try
-                    {
-                        await ReceiveDataAsync(receiveBuffer, cancel).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(receiveBuffer.Array!);
                     }
                 }
             }
@@ -404,13 +379,14 @@ namespace ZeroC.Ice
             (long, long) streamIds = base.AbortStreams(exception, predicate);
 
             // Unblock requests waiting on the semaphores.
-            _bidirectionalStreamSemaphore?.CancelAwaiters(exception);
-            _unidirectionalStreamSemaphore?.CancelAwaiters(exception);
+            _bidirectionalStreamSemaphore?.Complete(exception);
+            _unidirectionalStreamSemaphore?.Complete(exception);
 
             return streamIds;
         }
 
-        internal void FinishedReceivedStreamData(int size) => _receiveStreamCompletionTaskSource.SetResult(size);
+        internal void FinishedReceivedStreamData(int remainingSize) =>
+            _receiveStreamCompletionTaskSource.SetResult(remainingSize);
 
         internal async Task PrepareAndSendFrameAsync(
             SlicDefinitions.FrameType type,
@@ -437,7 +413,7 @@ namespace ZeroC.Ice
             }
 
             // Wait for other packets to be sent.
-            await _sendSemaphore.WaitAsync(cancel).ConfigureAwait(false);
+            await _sendSemaphore.EnterAsync(cancel).ConfigureAwait(false);
 
             try
             {
@@ -509,7 +485,7 @@ namespace ZeroC.Ice
                 // flow control is released by SlicStream.Dispose(). For outgoing streams, the flow
                 // control will be released once the peer send the StreamLast frame after receiving the
                 // stream reset frame.
-                await _sendSemaphore.WaitAsync(cancel).ConfigureAwait(false);
+                await _sendSemaphore.EnterAsync(cancel).ConfigureAwait(false);
             }
             else
             {
@@ -519,17 +495,17 @@ namespace ZeroC.Ice
                 Debug.Assert(!stream.IsIncoming);
                 if (stream.IsBidirectional)
                 {
-                    await _bidirectionalStreamSemaphore!.WaitAsync(cancel).ConfigureAwait(false);
+                    await _bidirectionalStreamSemaphore!.EnterAsync(cancel).ConfigureAwait(false);
                 }
                 else
                 {
-                    await _unidirectionalStreamSemaphore!.WaitAsync(cancel).ConfigureAwait(false);
+                    await _unidirectionalStreamSemaphore!.EnterAsync(cancel).ConfigureAwait(false);
                 }
 
                 // Wait for queued packets to be sent.
                 try
                 {
-                    await _sendSemaphore.WaitAsync(cancel).ConfigureAwait(false);
+                    await _sendSemaphore.EnterAsync(cancel).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -642,11 +618,6 @@ namespace ZeroC.Ice
             {
                 s.Append("\nstream ID = ");
                 s.Append(streamId);
-            }
-
-            if (type == SlicDefinitions.FrameType.StreamConsumed)
-            {
-
             }
 
             s.Append('\n');

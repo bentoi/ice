@@ -21,18 +21,23 @@ namespace ZeroC.Ice.Test.Operations
 
         protected override void Dispose(bool disposing)
         {
-            base.Dispose(disposing);
-            _semaphore.Release();
-            // Wait for WaitForDispose to release the semaphore before calling Dispose on it.
-            _semaphore.Wait();
-            _semaphore.Dispose();
+            if (disposing)
+            {
+                base.Dispose(disposing);
+                _semaphore.Release();
+                _semaphore.Dispose();
+            }
         }
 
         internal void WaitForDispose()
         {
-            _semaphore.Wait();
-            // Release the semaphore to allow Dispose() to dispose it.
-            _semaphore.Release();
+            try
+            {
+                _semaphore.Wait();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
     }
 
@@ -1398,6 +1403,7 @@ namespace ZeroC.Ice.Test.Operations
                     }
                     size += read;
                 }
+
                 TestHelper.Assert(receivedSize == -1 || receivedSize == size);
             }
 
@@ -1422,17 +1428,24 @@ namespace ZeroC.Ice.Test.Operations
                     foreach (int size in new List<int>() { 32, 1024, 1024 * 1024 })
                     {
                         byte[] buffer = new byte[size];
+                        for (int i = 0; i < buffer.Length; ++i)
+                        {
+                            buffer[i] = (byte)(i % 256);
+                        }
+
                         var streams = new List<MemoryStreamWithDisposeCheck>();
                         try
                         {
                             {
                                 streams.Add(new MemoryStreamWithDisposeCheck(buffer));
                                 await p.OpSendStream1Async(streams.Last()).ConfigureAwait(false);
+                                streams.Last().WaitForDispose();
                             }
 
                             {
                                 streams.Add(new MemoryStreamWithDisposeCheck(buffer));
                                 await p.OpSendStream2Async(size, streams.Last()).ConfigureAwait(false);
+                                streams.Last().WaitForDispose();
                             }
 
                             {
@@ -1467,6 +1480,11 @@ namespace ZeroC.Ice.Test.Operations
                                 receivedStream1.Dispose();
                                 receivedStream2.Dispose();
                             }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"test failed: {ex}");
+                            throw;
                         }
                         finally
                         {

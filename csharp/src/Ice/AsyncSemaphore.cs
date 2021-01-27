@@ -35,7 +35,7 @@ namespace ZeroC.Ice
             _maxCount = initialCount;
         }
 
-        internal void CancelAwaiters(Exception exception)
+        internal void Complete(Exception? exception = null)
         {
             lock (_mutex)
             {
@@ -44,17 +44,32 @@ namespace ZeroC.Ice
                 // the awaiters will throw the given exception instead of a generic OperationCanceledException.
                 foreach (ManualResetValueTaskCompletionSource<bool> source in _queue)
                 {
-                    source.SetException(exception);
+                    try
+                    {
+                        if (exception != null)
+                        {
+                            source.SetException(exception);
+                        }
+                        else
+                        {
+                            source.SetResult(false);
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore, the source might already be completed if canceled.
+                    }
                 }
                 _queue.Clear();
             }
         }
 
-        internal async ValueTask WaitAsync(CancellationToken cancel = default)
+        internal async ValueTask EnterAsync(CancellationToken cancel = default)
         {
             cancel.ThrowIfCancellationRequested();
 
             ManualResetValueTaskCompletionSource<bool> taskCompletionSource;
+            CancellationTokenRegistration? tokenRegistration = null;
             lock (_mutex)
             {
                 if (_currentCount > 0)
@@ -67,23 +82,31 @@ namespace ZeroC.Ice
                 // ensure that the exception won't be cleared if the task is canceled.
                 taskCompletionSource = new ManualResetValueTaskCompletionSource<bool>(autoReset: false);
                 taskCompletionSource.RunContinuationAsynchronously = true;
+                if (cancel.CanBeCanceled)
+                {
+                    cancel.ThrowIfCancellationRequested();
+                    tokenRegistration = cancel.Register(
+                        () =>
+                        {
+                            lock (_mutex)
+                            {
+                                if (_queue.Contains(taskCompletionSource))
+                                {
+                                    taskCompletionSource.SetException(new OperationCanceledException(cancel));
+                                }
+                            }
+                        });
+                }
                 _queue.Enqueue(taskCompletionSource);
             }
 
             try
             {
-                await taskCompletionSource.ValueTask.WaitAsync(cancel).ConfigureAwait(false);
+                await taskCompletionSource.ValueTask.ConfigureAwait(false);
             }
-            catch (Exception ex)
+            finally
             {
-                lock (_mutex)
-                {
-                    if (_queue.Contains(taskCompletionSource))
-                    {
-                        taskCompletionSource.SetException(ex);
-                    }
-                }
-                throw;
+                tokenRegistration?.Dispose();
             }
         }
 

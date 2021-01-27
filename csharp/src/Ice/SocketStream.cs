@@ -88,16 +88,15 @@ namespace ZeroC.Ice
             GC.SuppressFinalize(this);
         }
 
-        public virtual System.IO.Stream ReceiveDataIntoIOStream()
-        {
-            EnableReceiveFlowControl();
-            return new IOStream(this);
-        }
+        /// <summary>Receives data from the socket stream into the returned IO stream.</summary>
+        /// <return>The IO stream which can be used to read the data received from the stream.</return>
+        public virtual System.IO.Stream ReceiveDataIntoIOStream() => new IOStream(this);
 
+        /// <summary>Send data from the given IO stream to the socket stream.</summary>
+        /// <param name="ioStream">The IO stream to read the data to send over the socket stream.</param>
+        /// <param name="cancel">A cancellation token that receives the cancellation requests.</param>
         public virtual void SendDataFromIOStream(System.IO.Stream ioStream, CancellationToken cancel)
         {
-            EnableSendFlowControl();
-
             Interlocked.Increment(ref _useCount);
             Task.Run(async () =>
                 {
@@ -131,9 +130,8 @@ namespace ZeroC.Ice
                                 sendBuffers[0] = receiveBuffer.Slice(0, TransportHeader.Length + received);
                                 await SendAsync(sendBuffers, received == 0, cancel).ConfigureAwait(false);
                             }
-                            catch (Exception ex)
+                            catch
                             {
-                                Console.Error.WriteLine($"{ex}");
                                 await ResetAsync((long)StreamResetErrorCode.StopStreamingData).ConfigureAwait(false);
                                 break;
                             }
@@ -143,19 +141,13 @@ namespace ZeroC.Ice
                     finally
                     {
                         ArrayPool<byte>.Shared.Return(receiveBuffer.Array!);
-                    }
 
-                    TryDispose();
-                    ioStream.Dispose();
+                        TryDispose();
+                        ioStream.Dispose();
+                    }
                 },
                 cancel);
         }
-
-        /// <summary>Enable receive flow control.</summary>
-        protected abstract void EnableReceiveFlowControl();
-
-        /// <summary>Enable send flow control.</summary>
-        protected abstract void EnableSendFlowControl();
 
         /// <summary>Receives data in the given buffer and return the number of received bytes.</summary>
         /// <param name="buffer">The buffer to store the received data.</param>
