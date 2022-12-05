@@ -25,7 +25,7 @@ public final class ThreadPool
             }
         }
     }
-    
+
     static final class FinishedWorkItem implements ThreadPoolWorkItem
     {
         public
@@ -41,7 +41,7 @@ public final class ThreadPool
 
         private final EventHandler _handler;
     }
-    
+
     static final class JoinThreadWorkItem implements ThreadPoolWorkItem
     {
         public
@@ -49,17 +49,17 @@ public final class ThreadPool
         {
             _thread = thread;
         }
-        
+
         public void execute(ThreadPoolCurrent current)
         {
             // No call to ioCompleted, this shouldn't block (and we don't want to cause
             // a new thread to be started).
             _thread.join();
         }
-        
+
         private final EventHandlerThread _thread;
     }
- 
+
     //
     // Exception raised by the thread pool work queue when the thread pool
     // is destroyed.
@@ -81,7 +81,7 @@ public final class ThreadPool
         _promote = true;
         _serialize = _instance.initializationData().properties.getPropertyAsInt(_prefix + ".Serialize") > 0;
         _serverIdleTime = timeout;
-        
+
         Ice.Properties properties = _instance.initializationData().properties;
 
         String programName = properties.getProperty("Ice.ProgramName");
@@ -107,7 +107,21 @@ public final class ThreadPool
             String s = _prefix + ".Size < 1; Size adjusted to 1";
             _instance.initializationData().logger.warning(s);
             size = 1;
-        }               
+        }
+
+        int sizeIO = properties.getPropertyAsIntWithDefault(_prefix + ".SizeIO", -1);
+        if(sizeIO == 0)
+        {
+            String s = _prefix + ".SizeIO < 1; SizeIO adjusted to 1";
+            _instance.initializationData().logger.warning(s);
+            sizeIO = 1;
+        }
+        if(sizeIO > size)
+        {
+            String s = _prefix + ".SizeIO > " + _prefix + ".Size; SizeIO adjusted to Size (" + size + ")";
+            _instance.initializationData().logger.warning(s);
+            sizeIO = size;
+        }
 
         int sizeMax = properties.getPropertyAsIntWithDefault(_prefix + ".SizeMax", size);
         if(sizeMax == -1)
@@ -120,7 +134,7 @@ public final class ThreadPool
             _instance.initializationData().logger.warning(s);
             sizeMax = size;
         }
-                
+
         int sizeWarn = properties.getPropertyAsInt(_prefix + ".SizeWarn");
         if(sizeWarn != 0 && sizeWarn < size)
         {
@@ -146,7 +160,7 @@ public final class ThreadPool
         _size = size;
         _sizeMax = sizeMax;
         _sizeWarn = sizeWarn;
-        _sizeIO = Math.min(sizeMax, nProcessors);
+        _sizeIO = sizeIO == -1 ? Math.min(size, nProcessors) : sizeIO;
         _threadIdleTime = threadIdleTime;
 
         int stackSize = properties.getPropertyAsInt( _prefix + ".StackSize");
@@ -171,14 +185,14 @@ public final class ThreadPool
         _workQueue = new ThreadPoolWorkQueue(this, _instance, _selector);
 
         _nextHandler = _handlers.iterator();
-        
+
         if(_instance.traceLevels().threadPool >= 1)
         {
             String s = "creating " + _prefix + ": Size = " + _size + ", SizeMax = " + _sizeMax + ", SizeWarn = " +
                        _sizeWarn;
             _instance.initializationData().logger.trace(_instance.traceLevels().threadPoolCat, s);
         }
-        
+
         try
         {
             for(int i = 0; i < _size; i++)
@@ -370,7 +384,7 @@ public final class ThreadPool
                     if(!current._ioCompleted)
                     {
                         //
-                        // The handler didn't call ioCompleted() so we take care of decreasing 
+                        // The handler didn't call ioCompleted() so we take care of decreasing
                         // the IO thread count now.
                         //
                         --_inUseIO;
@@ -396,7 +410,7 @@ public final class ThreadPool
                         return; // Wait timed-out.
                     }
                 }
-                else if(!current._ioCompleted && 
+                else if(!current._ioCompleted &&
                         (current.operation & SocketOperation.Read) != 0 && current._handler.hasMoreData())
                 {
                     _selector.hasMoreData(current._handler);
@@ -420,9 +434,9 @@ public final class ThreadPool
                 if(current._handler == null)
                 {
                     //
-                    // If there are no more ready handlers and there are still threads busy performing 
+                    // If there are no more ready handlers and there are still threads busy performing
                     // IO, we give up leadership and promote another follower (which will perform the
-                    // select() only once all the IOs are completed). Otherwise, if there's no more 
+                    // select() only once all the IOs are completed). Otherwise, if there's no more
                     // threads peforming IOs, it's time to do another select().
                     //
                     if(_inUseIO > 0)
@@ -462,17 +476,17 @@ public final class ThreadPool
         if(_sizeMax > 1)
         {
             --_inUseIO;
-            
+
             if((current.operation & SocketOperation.Read) != 0 && current._handler.hasMoreData())
             {
                 _selector.hasMoreData(current._handler);
             }
-            
+
             if(_serialize && !_destroyed)
             {
                 _selector.disable(current._handler, current.operation);
-            }    
-                
+            }
+
             if(current._leader)
             {
                 //
@@ -487,16 +501,16 @@ public final class ThreadPool
 
             assert(_inUse >= 0);
             ++_inUse;
-                
+
             if(_inUse == _sizeWarn)
             {
                 String s = "thread pool `" + _prefix + "' is running low on threads\n"
                     + "Size=" + _size + ", " + "SizeMax=" + _sizeMax + ", " + "SizeWarn=" + _sizeWarn;
                 _instance.initializationData().logger.warning(s);
             }
-                
+
             if(!_destroyed)
-            {            
+            {
                 assert(_inUse <= _threads.size());
                 if(_inUse < _sizeMax && _inUse == _threads.size())
                 {
@@ -505,7 +519,7 @@ public final class ThreadPool
                         String s = "growing " + _prefix + ": Size=" + (_threads.size() + 1);
                         _instance.initializationData().logger.trace(_instance.traceLevels().threadPoolCat, s);
                     }
-                        
+
                     try
                     {
                         EventHandlerThread thread = new EventHandlerThread(_threadPrefix + "-" + _threadIndex++);
@@ -532,7 +546,7 @@ public final class ThreadPool
             _selector.hasMoreData(current._handler);
         }
     }
-    
+
     private synchronized void
     promoteFollower(ThreadPoolCurrent current)
     {
@@ -559,7 +573,7 @@ public final class ThreadPool
         //
         current._handler = null;
         current.stream.reset();
-        
+
         //
         // Wait to be promoted and for all the IO threads to be done.
         //
