@@ -363,6 +363,20 @@ IceInternal::ThreadPool::ThreadPool(const InstancePtr& instance, const string& p
         sizeWarn = sizeMax;
     }
 
+    int sizeIO = properties->getPropertyAsIntWithDefault(_prefix + ".SizeIO", -1);
+    if (sizeIO == 0)
+    {
+        Warning out(_instance->initializationData().logger);
+        out << _prefix << ".SizeIO < 1; SizeIO adjusted to 1";
+        sizeIO = 1;
+    }
+    if (sizeIO > sizeMax)
+    {
+        Warning out(_instance->initializationData().logger);
+        out << _prefix << ".SizeIO > " << _prefix << ".Size; SizeIO adjusted to SizeMax (" << sizeMax << ")";
+        sizeIO = sizeMax;
+    }
+
     int threadIdleTime = properties->getPropertyAsIntWithDefault(_prefix + ".ThreadIdleTime", 60);
     if(threadIdleTime < 0)
     {
@@ -375,9 +389,9 @@ IceInternal::ThreadPool::ThreadPool(const InstancePtr& instance, const string& p
     const_cast<int&>(_sizeMax) = sizeMax;
     const_cast<int&>(_sizeWarn) = sizeWarn;
 #ifndef ICE_OS_UWP
-    const_cast<int&>(_sizeIO) = min(sizeMax, nProcessors);
+    const_cast<int&>(_sizeIO) = sizeIO == -1 ? min(sizeMax, nProcessors) : sizeIO;
 #else
-    const_cast<int&>(_sizeIO) = sizeMax;
+    const_cast<int&>(_sizeIO) = sizeIO == -1 ? sizeMax : sizeIO;
 #endif
     const_cast<int&>(_threadIdleTime) = threadIdleTime;
 

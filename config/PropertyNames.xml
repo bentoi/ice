@@ -250,6 +250,7 @@ generated from the section label.
 
     <class name="threadpool" prefix-only="true">
         <suffix name="Size" />
+        <suffix name="SizeIO" />
         <suffix name="SizeMax" />
         <suffix name="SizeWarn" />
         <suffix name="StackSize" />

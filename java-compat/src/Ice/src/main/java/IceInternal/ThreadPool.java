@@ -143,6 +143,20 @@ public final class ThreadPool
             sizeWarn = sizeMax;
         }
 
+        int sizeIO = properties.getPropertyAsIntWithDefault(_prefix + ".SizeIO", -1);
+        if(sizeIO == 0)
+        {
+            String s = _prefix + ".SizeIO < 1; SizeIO adjusted to 1";
+            _instance.initializationData().logger.warning(s);
+            sizeIO = 1;
+        }
+        if(sizeIO > sizeMax)
+        {
+            String s = _prefix + ".SizeIO > " + _prefix + ".Size; SizeIO adjusted to SizeMax (" + sizeMax + ")";
+            _instance.initializationData().logger.warning(s);
+            sizeIO = sizeMax;
+        }
+
         int threadIdleTime = properties.getPropertyAsIntWithDefault(_prefix + ".ThreadIdleTime", 60);
         if(threadIdleTime < 0)
         {
@@ -154,7 +168,7 @@ public final class ThreadPool
         _size = size;
         _sizeMax = sizeMax;
         _sizeWarn = sizeWarn;
-        _sizeIO = Math.min(sizeMax, nProcessors);
+        _sizeIO = sizeIO == -1 ? Math.min(sizeMax, nProcessors) : sizeIO;
         _threadIdleTime = threadIdleTime;
 
         int stackSize = properties.getPropertyAsInt( _prefix + ".StackSize");
