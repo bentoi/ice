@@ -699,7 +699,6 @@ RegistryI::setupInternalRegistry()
         _database,
         _reaper,
         _wellKnownObjects,
-        _idleTimeout,
         *_session);
     InternalRegistryPrx registry{_registryAdapter->add(internalRegistry, internalRegistryId)};
 
@@ -926,7 +925,7 @@ RegistryI::createSession(string user, string password, const Current& current)
 
     auto session = _clientSessionFactory->createSessionServant(user);
     auto proxy = session->_register(_servantManager, current.con);
-    _reaper->add(make_shared<SessionReapableWithHeartbeat<SessionI>>(_traceLevels->logger, session), current.con);
+    _reaper->add(make_shared<SessionReapable<SessionI>>(_traceLevels->logger, session), current.con);
     return SessionPrx(proxy);
 }
 
@@ -972,7 +971,7 @@ RegistryI::createAdminSession(string user, string password, const Current& curre
 
     auto session = _adminSessionFactory->createSessionServant(user);
     auto proxy = session->_register(_servantManager, current.con);
-    _reaper->add(make_shared<SessionReapableWithHeartbeat<AdminSessionI>>(_traceLevels->logger, session), current.con);
+    _reaper->add(make_shared<SessionReapable<AdminSessionI>>(_traceLevels->logger, session), current.con);
     return AdminSessionPrx(proxy);
 }
 
@@ -1025,7 +1024,7 @@ RegistryI::createSessionFromSecureConnection(const Current& current)
 
     auto session = _clientSessionFactory->createSessionServant(userDN);
     auto proxy = session->_register(_servantManager, current.con);
-    _reaper->add(make_shared<SessionReapableWithHeartbeat<SessionI>>(_traceLevels->logger, session), current.con);
+    _reaper->add(make_shared<SessionReapable<SessionI>>(_traceLevels->logger, session), current.con);
     return SessionPrx(proxy);
 }
 
@@ -1071,7 +1070,7 @@ RegistryI::createAdminSessionFromSecureConnection(const Current& current)
     //
     auto session = _adminSessionFactory->createSessionServant(userDN);
     auto proxy = session->_register(_servantManager, current.con);
-    _reaper->add(make_shared<SessionReapableWithHeartbeat<AdminSessionI>>(_traceLevels->logger, session), current.con);
+    _reaper->add(make_shared<SessionReapable<AdminSessionI>>(_traceLevels->logger, session), current.con);
     return AdminSessionPrx(proxy);
 }
 

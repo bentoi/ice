@@ -25,7 +25,6 @@ namespace IceGrid
             const std::shared_ptr<Database>&,
             const std::shared_ptr<ReapThread>&,
             const std::shared_ptr<WellKnownObjectsManager>&,
-            const std::chrono::seconds&,
             ReplicaSessionManager&);
 
         std::optional<NodeSessionPrx>
@@ -59,7 +58,8 @@ namespace IceGrid
         const std::shared_ptr<WellKnownObjectsManager> _wellKnownObjects;
         const std::shared_ptr<FileCache> _fileCache;
         ReplicaSessionManager& _session;
-        std::chrono::seconds _idleTimeout;
+        std::chrono::seconds _replicaSessionTimeout;
+        std::chrono::seconds _nodeSessionTimeout;
     };
 
 };

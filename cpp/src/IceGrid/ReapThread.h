@@ -20,8 +20,6 @@ namespace IceGrid
     public:
         virtual ~Reapable() = default;
 
-        virtual void heartbeat() const {};
-
         virtual bool isDestroyed() const = 0;
         virtual void destroy(bool) = 0;
     };
@@ -65,26 +63,6 @@ namespace IceGrid
         const std::shared_ptr<T> _session;
     };
 
-    template<class T> class SessionReapableWithHeartbeat final : public SessionReapable<T>
-    {
-    public:
-        SessionReapableWithHeartbeat(const Ice::LoggerPtr& logger, const std::shared_ptr<T>& session)
-            : SessionReapable<T>(logger, session)
-        {
-        }
-
-        void heartbeat() const override
-        {
-            try
-            {
-                SessionReapable<T>::_session->keepAlive(Ice::Current());
-            }
-            catch (Ice::Exception&)
-            {
-            }
-        }
-    };
-
     class ReapThread final
     {
     public:
@@ -94,14 +72,12 @@ namespace IceGrid
         void join();
         void add(const std::shared_ptr<Reapable>&, const Ice::ConnectionPtr& = nullptr);
 
-        void connectionHeartbeat(const Ice::ConnectionPtr&);
         void connectionClosed(const Ice::ConnectionPtr&);
 
     private:
         void run();
 
         Ice::CloseCallback _closeCallback;
-        Ice::HeartbeatCallback _heartbeatCallback;
         std::chrono::milliseconds _wakeInterval;
         bool _terminated;
         struct ReapableItem

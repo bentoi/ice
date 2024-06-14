@@ -26,16 +26,19 @@ InternalRegistryI::InternalRegistryI(
     const shared_ptr<Database>& database,
     const shared_ptr<ReapThread>& reaper,
     const shared_ptr<WellKnownObjectsManager>& wellKnownObjects,
-    const chrono::seconds& idleTimeout,
     ReplicaSessionManager& session)
     : _registry(registry),
       _database(database),
       _reaper(reaper),
       _wellKnownObjects(wellKnownObjects),
       _fileCache(make_shared<FileCache>(database->getCommunicator())),
-      _session(session),
-      _idleTimeout(idleTimeout)
+      _session(session)
 {
+    auto properties = database->getCommunicator()->getProperties();
+    _nodeSessionTimeout =
+        chrono::seconds(properties->getPropertyAsIntWithDefault("IceGrid.Registry.NodeSessionTimeout", 60));
+    _replicaSessionTimeout =
+        chrono::seconds(properties->getPropertyAsIntWithDefault("IceGrid.Registry.ReplicaSessionTimeout", 60));
 }
 
 optional<NodeSessionPrx>
@@ -60,7 +63,7 @@ InternalRegistryI::registerNode(
 
     try
     {
-        auto session = NodeSessionI::create(_database, std::move(*node), info, _idleTimeout, load);
+        auto session = NodeSessionI::create(_database, std::move(*node), info, _nodeSessionTimeout, load);
         _reaper->add(make_shared<SessionReapable<NodeSessionI>>(logger, session));
         return session->getProxy();
     }
@@ -91,7 +94,7 @@ InternalRegistryI::registerReplica(
 
     try
     {
-        auto s = ReplicaSessionI::create(_database, _wellKnownObjects, info, std::move(*prx), _idleTimeout);
+        auto s = ReplicaSessionI::create(_database, _wellKnownObjects, info, std::move(*prx), _replicaSessionTimeout);
         _reaper->add(make_shared<SessionReapable<ReplicaSessionI>>(logger, s));
         return s->getProxy();
     }
