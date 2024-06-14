@@ -60,7 +60,7 @@ namespace IceGrid
         const std::shared_ptr<TraceLevels> _traceLevels;
         const InternalRegistryPrx _internalRegistry;
         const std::shared_ptr<InternalReplicaInfo> _info;
-        const std::chrono::seconds _timeout;
+        const std::chrono::seconds _idleTimeout;
         const ReplicaSessionPrx _proxy;
         std::optional<DatabaseObserverPrx> _observer;
         ObjectInfoSeq _replicaWellKnownObjects;

@@ -62,14 +62,14 @@ NodeSessionI::NodeSessionI(
     const shared_ptr<Database>& database,
     NodePrx node,
     const shared_ptr<InternalNodeInfo>& info,
-    std::chrono::seconds timeout,
+    std::chrono::seconds idleTimeout,
     NodeSessionPrx proxy,
     const LoadInfo& load)
     : _database(database),
       _traceLevels(database->getTraceLevels()),
       _node(std::move(node)),
       _info(info),
-      _timeout(timeout),
+      _idleTimeout(idleTimeout),
       _proxy(std::move(proxy)),
       _timestamp(chrono::steady_clock::now()),
       _load(load),
@@ -121,7 +121,8 @@ NodeSessionI::setReplicaObserver(std::optional<ReplicaObserverPrx> observer, con
 int
 NodeSessionI::getTimeout(const Ice::Current&) const
 {
-    return secondsToInt(_timeout);
+    // Return the idle timeout. This method is kept for backward compatibility with IceGrid < 3.8.
+    return secondsToInt(_idleTimeout);
 }
 
 optional<NodeObserverPrx>

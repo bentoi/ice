@@ -251,7 +251,7 @@ RegistryI::startImpl()
     _master = _replicaName == "Master";
 
     int idleTimeout = properties->getIcePropertyAsInt("Ice.Connection.IdleTimeout");
-    _sessionTimeout = chrono::seconds(
+    _idleTimeout = chrono::seconds(
         properties->getPropertyAsIntWithDefault("IceGrid.Registry.Client.Connection.IdleTimeout", idleTimeout));
 
     if (!_initFromReplica.empty() && (_initFromReplica == _replicaName || (_master && _initFromReplica == "Master")))
@@ -694,8 +694,13 @@ RegistryI::setupInternalRegistry()
 
     Identity internalRegistryId = {"InternalRegistry-" + _replicaName, _instanceName};
 
-    auto internalRegistry =
-        make_shared<InternalRegistryI>(shared_from_this(), _database, _reaper, _wellKnownObjects, *_session);
+    auto internalRegistry = make_shared<InternalRegistryI>(
+        shared_from_this(),
+        _database,
+        _reaper,
+        _wellKnownObjects,
+        _idleTimeout,
+        *_session);
     InternalRegistryPrx registry{_registryAdapter->add(internalRegistry, internalRegistryId)};
 
     _wellKnownObjects->add(registry, string{InternalRegistry::ice_staticId()});
@@ -921,9 +926,7 @@ RegistryI::createSession(string user, string password, const Current& current)
 
     auto session = _clientSessionFactory->createSessionServant(user);
     auto proxy = session->_register(_servantManager, current.con);
-    _reaper->add(
-        make_shared<SessionReapableWithHeartbeat<SessionI>>(_traceLevels->logger, session),
-        current.con);
+    _reaper->add(make_shared<SessionReapableWithHeartbeat<SessionI>>(_traceLevels->logger, session), current.con);
     return SessionPrx(proxy);
 }
 
@@ -969,9 +972,7 @@ RegistryI::createAdminSession(string user, string password, const Current& curre
 
     auto session = _adminSessionFactory->createSessionServant(user);
     auto proxy = session->_register(_servantManager, current.con);
-    _reaper->add(
-        make_shared<SessionReapableWithHeartbeat<AdminSessionI>>(_traceLevels->logger, session),
-        current.con);
+    _reaper->add(make_shared<SessionReapableWithHeartbeat<AdminSessionI>>(_traceLevels->logger, session), current.con);
     return AdminSessionPrx(proxy);
 }
 
@@ -1024,9 +1025,7 @@ RegistryI::createSessionFromSecureConnection(const Current& current)
 
     auto session = _clientSessionFactory->createSessionServant(userDN);
     auto proxy = session->_register(_servantManager, current.con);
-    _reaper->add(
-        make_shared<SessionReapableWithHeartbeat<SessionI>>(_traceLevels->logger, session),
-        current.con);
+    _reaper->add(make_shared<SessionReapableWithHeartbeat<SessionI>>(_traceLevels->logger, session), current.con);
     return SessionPrx(proxy);
 }
 
@@ -1072,16 +1071,14 @@ RegistryI::createAdminSessionFromSecureConnection(const Current& current)
     //
     auto session = _adminSessionFactory->createSessionServant(userDN);
     auto proxy = session->_register(_servantManager, current.con);
-    _reaper->add(
-        make_shared<SessionReapableWithHeartbeat<AdminSessionI>>(_traceLevels->logger, session),
-        current.con);
+    _reaper->add(make_shared<SessionReapableWithHeartbeat<AdminSessionI>>(_traceLevels->logger, session), current.con);
     return AdminSessionPrx(proxy);
 }
 
 int
 RegistryI::getSessionTimeout(const Ice::Current&) const
 {
-    return secondsToInt(_sessionTimeout);
+    return secondsToInt(_idleTimeout);
 }
 
 int

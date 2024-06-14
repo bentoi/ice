@@ -62,7 +62,7 @@ namespace IceGrid
         const std::string _name;
         const NodePrx _node;
         const std::shared_ptr<InternalNodeInfo> _info;
-        const std::chrono::seconds _timeout;
+        const std::chrono::seconds _idleTimeout;
         NodeSessionPrx _proxy;
         std::optional<ReplicaObserverPrx> _replicaObserver;
         std::chrono::steady_clock::time_point _timestamp;

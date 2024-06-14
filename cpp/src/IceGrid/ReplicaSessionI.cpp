@@ -68,14 +68,14 @@ ReplicaSessionI::ReplicaSessionI(
     const shared_ptr<WellKnownObjectsManager>& wellKnownObjects,
     const shared_ptr<InternalReplicaInfo>& info,
     InternalRegistryPrx internalRegistry,
-    chrono::seconds timeout,
+    chrono::seconds idleTimeout,
     ReplicaSessionPrx proxy)
     : _database(database),
       _wellKnownObjects(wellKnownObjects),
       _traceLevels(database->getTraceLevels()),
       _internalRegistry(std::move(internalRegistry)),
       _info(info),
-      _timeout(timeout),
+      _idleTimeout(idleTimeout),
       _proxy(std::move(proxy)),
       _timestamp(chrono::steady_clock::now()),
       _destroyed(false)
@@ -103,7 +103,8 @@ ReplicaSessionI::keepAlive(const Ice::Current&)
 int
 ReplicaSessionI::getTimeout(const Ice::Current&) const
 {
-    return secondsToInt(_timeout);
+    // Return the idle timeout. This method is kept for backward compatibility with IceGrid < 3.8.
+    return secondsToInt(_idleTimeout);
 }
 
 void
