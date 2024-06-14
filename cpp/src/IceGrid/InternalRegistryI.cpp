@@ -63,7 +63,7 @@ InternalRegistryI::registerNode(
     try
     {
         auto session = NodeSessionI::create(_database, std::move(*node), info, _nodeSessionTimeout, load);
-        _reaper->add(make_shared<SessionReapable<NodeSessionI>>(logger, session), _nodeSessionTimeout);
+        _reaper->add(make_shared<SessionReapable<NodeSessionI>>(logger, session));
         return session->getProxy();
     }
     catch (const Ice::ObjectAdapterDeactivatedException&)
@@ -94,7 +94,7 @@ InternalRegistryI::registerReplica(
     try
     {
         auto s = ReplicaSessionI::create(_database, _wellKnownObjects, info, std::move(*prx), _replicaSessionTimeout);
-        _reaper->add(make_shared<SessionReapable<ReplicaSessionI>>(logger, s), _replicaSessionTimeout);
+        _reaper->add(make_shared<SessionReapable<ReplicaSessionI>>(logger, s));
         return s->getProxy();
     }
     catch (const Ice::ObjectAdapterDeactivatedException&)

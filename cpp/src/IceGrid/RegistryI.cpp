@@ -250,8 +250,9 @@ RegistryI::startImpl()
     _replicaName = properties->getIceProperty("IceGrid.Registry.ReplicaName");
     _master = _replicaName == "Master";
 
-    // TODO: temporary. For now, synchronized with the default idle timeout.
-    _sessionTimeout = chrono::seconds(60);
+    int idleTimeout = properties->getIcePropertyAsInt("Ice.Connection.IdleTimeout");
+    _sessionTimeout = chrono::seconds(
+        properties->getPropertyAsIntWithDefault("IceGrid.Registry.Client.Connection.IdleTimeout", idleTimeout));
 
     if (!_initFromReplica.empty() && (_initFromReplica == _replicaName || (_master && _initFromReplica == "Master")))
     {
@@ -922,7 +923,6 @@ RegistryI::createSession(string user, string password, const Current& current)
     auto proxy = session->_register(_servantManager, current.con);
     _reaper->add(
         make_shared<SessionReapableWithHeartbeat<SessionI>>(_traceLevels->logger, session),
-        _sessionTimeout,
         current.con);
     return SessionPrx(proxy);
 }
@@ -971,7 +971,6 @@ RegistryI::createAdminSession(string user, string password, const Current& curre
     auto proxy = session->_register(_servantManager, current.con);
     _reaper->add(
         make_shared<SessionReapableWithHeartbeat<AdminSessionI>>(_traceLevels->logger, session),
-        _sessionTimeout,
         current.con);
     return AdminSessionPrx(proxy);
 }
@@ -1027,7 +1026,6 @@ RegistryI::createSessionFromSecureConnection(const Current& current)
     auto proxy = session->_register(_servantManager, current.con);
     _reaper->add(
         make_shared<SessionReapableWithHeartbeat<SessionI>>(_traceLevels->logger, session),
-        _sessionTimeout,
         current.con);
     return SessionPrx(proxy);
 }
@@ -1076,7 +1074,6 @@ RegistryI::createAdminSessionFromSecureConnection(const Current& current)
     auto proxy = session->_register(_servantManager, current.con);
     _reaper->add(
         make_shared<SessionReapableWithHeartbeat<AdminSessionI>>(_traceLevels->logger, session),
-        _sessionTimeout,
         current.con);
     return AdminSessionPrx(proxy);
 }
@@ -1088,11 +1085,9 @@ RegistryI::getSessionTimeout(const Ice::Current&) const
 }
 
 int
-RegistryI::getACMTimeout(const Ice::Current&) const
+RegistryI::getACMTimeout(const Ice::Current& current) const
 {
-    auto properties = _communicator->getProperties();
-    int idleTimeout = properties->getIcePropertyAsInt("Ice.Connection.IdleTimeout");
-    return properties->getPropertyAsIntWithDefault("IceGrid.Registry.Client.Connection.IdleTimeout", idleTimeout);
+    return getSessionTimeout(current);
 }
 
 string

@@ -73,7 +73,7 @@ NodeSessionI::NodeSessionI(
       _proxy(std::move(proxy)),
       _timestamp(chrono::steady_clock::now()),
       _load(load),
-      _destroy(false)
+      _destroyed(false)
 {
 }
 
@@ -82,7 +82,7 @@ NodeSessionI::keepAlive(LoadInfo load, const Ice::Current&)
 {
     lock_guard lock(_mutex);
 
-    if (_destroy)
+    if (_destroyed)
     {
         throw Ice::ObjectNotExistException(__FILE__, __LINE__);
     }
@@ -103,7 +103,7 @@ NodeSessionI::setReplicaObserver(std::optional<ReplicaObserverPrx> observer, con
 {
     lock_guard lock(_mutex);
 
-    if (_destroy)
+    if (_destroyed)
     {
         return;
     }
@@ -186,15 +186,11 @@ NodeSessionI::destroy(const Ice::Current&)
     destroyImpl(false);
 }
 
-chrono::steady_clock::time_point
-NodeSessionI::timestamp() const
+bool
+NodeSessionI::isDestroyed() const
 {
     lock_guard lock(_mutex);
-    if (_destroy)
-    {
-        throw Ice::ObjectNotExistException(__FILE__, __LINE__);
-    }
-    return _timestamp;
+    return _destroyed;
 }
 
 void
@@ -228,23 +224,16 @@ NodeSessionI::getProxy() const
     return _proxy;
 }
 
-bool
-NodeSessionI::isDestroyed() const
-{
-    lock_guard lock(_mutex);
-    return _destroy;
-}
-
 void
 NodeSessionI::destroyImpl(bool shutdown)
 {
     {
         lock_guard lock(_mutex);
-        if (_destroy)
+        if (_destroyed)
         {
             throw Ice::ObjectNotExistException(__FILE__, __LINE__);
         }
-        _destroy = true;
+        _destroyed = true;
     }
 
     ServerEntrySeq servers = _database->getNode(_info->name)->getServers();

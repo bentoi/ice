@@ -14,12 +14,12 @@ ReapThread::ReapThread()
       _terminated(false),
       _thread([this] { run(); })
 {
+    _wakeInterval = 30s;
 }
 
 void
 ReapThread::run()
 {
-    vector<ReapableItem> reap;
     while (true)
     {
         {
@@ -29,19 +29,7 @@ ReapThread::run()
                 break;
             }
 
-            calcWakeInterval();
-
-            //
-            // If the wake interval is zero then we wait forever.
-            //
-            if (_wakeInterval == 0s)
-            {
-                _condVar.wait(lock);
-            }
-            else
-            {
-                _condVar.wait_for(lock, _wakeInterval);
-            }
+            _condVar.wait_for(lock, _wakeInterval);
 
             if (_terminated)
             {
@@ -51,55 +39,33 @@ ReapThread::run()
             auto p = _sessions.begin();
             while (p != _sessions.end())
             {
-                try
+                if (p->item->isDestroyed())
                 {
-                    if (p->timeout == 0s)
+                    //
+                    // Remove the reapable
+                    //
+                    if (p->connection)
                     {
-                        p->item->timestamp(); // This should throw if the reapable is destroyed.
-                        ++p;
-                        continue;
-                    }
-                    else if ((chrono::steady_clock::now() - p->item->timestamp()) > p->timeout)
-                    {
-                        // TODO: for now, we no longer reap anything. All this code should be removed in a follow-up PR.
-                        // reap.push_back(*p);
-                    }
-                    else
-                    {
-                        ++p;
-                        continue;
-                    }
-                }
-                catch (const Ice::ObjectNotExistException&)
-                {
-                }
-
-                //
-                // Remove the reapable
-                //
-                if (p->connection)
-                {
-                    auto q = _connections.find(p->connection);
-                    if (q != _connections.end())
-                    {
-                        q->second.erase(p->item);
-                        if (q->second.empty())
+                        auto q = _connections.find(p->connection);
+                        if (q != _connections.end())
                         {
-                            p->connection->setCloseCallback(nullptr);
-                            p->connection->setHeartbeatCallback(nullptr);
-                            _connections.erase(q);
+                            q->second.erase(p->item);
+                            if (q->second.empty())
+                            {
+                                p->connection->setCloseCallback(nullptr);
+                                p->connection->setHeartbeatCallback(nullptr);
+                                _connections.erase(q);
+                            }
                         }
                     }
+                    p = _sessions.erase(p);
                 }
-                p = _sessions.erase(p);
+                else
+                {
+                    ++p;
+                }
             }
         }
-
-        for (const auto& r : reap)
-        {
-            r.item->destroy(false);
-        }
-        reap.clear();
     }
 }
 
@@ -141,10 +107,7 @@ ReapThread::join()
 }
 
 void
-ReapThread::add(
-    const shared_ptr<Reapable>& reapable,
-    chrono::seconds timeout,
-    const shared_ptr<Ice::Connection>& connection)
+ReapThread::add(const shared_ptr<Reapable>& reapable, const shared_ptr<Ice::Connection>& connection)
 {
     lock_guard lock(_mutex);
     if (_terminated)
@@ -152,20 +115,7 @@ ReapThread::add(
         return;
     }
 
-    //
-    // NOTE: registering a reapable with a null timeout is allowed. The reapable is reaped
-    // only when the reaper thread is shutdown.
-    //
-
-    //
-    // 10 seconds is the minimum permissable timeout.
-    //
-    if (timeout > 0s && timeout < 10s)
-    {
-        timeout = 10s;
-    }
-
-    _sessions.push_back({reapable, connection, timeout});
+    _sessions.push_back({reapable, connection});
 
     if (connection)
     {
@@ -177,24 +127,6 @@ ReapThread::add(
             connection->setHeartbeatCallback(_heartbeatCallback);
         }
         p->second.insert(reapable);
-    }
-
-    if (timeout > 0s)
-    {
-        //
-        // If there is a new minimum wake interval then wake the reaping
-        // thread.
-        //
-        if (calcWakeInterval())
-        {
-            _condVar.notify_one();
-        }
-
-        //
-        // Since we just added a new session with a non null timeout there
-        // must be a non-zero wakeInterval.
-        //
-        assert(_wakeInterval != 0s);
     }
 }
 
@@ -235,28 +167,4 @@ ReapThread::connectionClosed(const shared_ptr<Ice::Connection>& con)
         reapable->destroy(false);
     }
     _connections.erase(p);
-}
-
-//
-// Returns true if the calculated wake interval is less than the current wake
-// interval (or if the original wake interval was "forever").
-//
-bool
-ReapThread::calcWakeInterval()
-{
-    // Re-calculate minimum timeout
-    auto oldWakeInterval = _wakeInterval;
-    chrono::milliseconds minimum = 0s;
-    bool first = true;
-    for (const auto& session : _sessions)
-    {
-        if (session.timeout != 0s && (first || session.timeout < minimum))
-        {
-            minimum = session.timeout;
-            first = false;
-        }
-    }
-
-    _wakeInterval = minimum;
-    return oldWakeInterval == 0s || minimum < oldWakeInterval;
 }

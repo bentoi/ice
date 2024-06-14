@@ -22,7 +22,7 @@ namespace IceGrid
 
         virtual void heartbeat() const {};
 
-        virtual std::chrono::steady_clock::time_point timestamp() const = 0;
+        virtual bool isDestroyed() const = 0;
         virtual void destroy(bool) = 0;
     };
 
@@ -35,7 +35,7 @@ namespace IceGrid
         {
         }
 
-        std::chrono::steady_clock::time_point timestamp() const override { return _session->timestamp(); }
+        bool isDestroyed() const override { return _session->isDestroyed(); }
 
         void destroy(bool shutdown) override
         {
@@ -92,15 +92,13 @@ namespace IceGrid
 
         void terminate();
         void join();
-        void add(const std::shared_ptr<Reapable>&, std::chrono::seconds, const Ice::ConnectionPtr& = nullptr);
+        void add(const std::shared_ptr<Reapable>&, const Ice::ConnectionPtr& = nullptr);
 
         void connectionHeartbeat(const Ice::ConnectionPtr&);
         void connectionClosed(const Ice::ConnectionPtr&);
 
     private:
         void run();
-
-        bool calcWakeInterval();
 
         Ice::CloseCallback _closeCallback;
         Ice::HeartbeatCallback _heartbeatCallback;
@@ -110,7 +108,6 @@ namespace IceGrid
         {
             std::shared_ptr<Reapable> item;
             Ice::ConnectionPtr connection;
-            std::chrono::milliseconds timeout;
         };
         std::list<ReapableItem> _sessions;
 

@@ -78,7 +78,7 @@ ReplicaSessionI::ReplicaSessionI(
       _timeout(timeout),
       _proxy(std::move(proxy)),
       _timestamp(chrono::steady_clock::now()),
-      _destroy(false)
+      _destroyed(false)
 {
 }
 
@@ -86,7 +86,7 @@ void
 ReplicaSessionI::keepAlive(const Ice::Current&)
 {
     lock_guard lock(_mutex);
-    if (_destroy)
+    if (_destroyed)
     {
         throw Ice::ObjectNotExistException(__FILE__, __LINE__);
     }
@@ -166,7 +166,7 @@ ReplicaSessionI::setDatabaseObserver(
 
     {
         lock_guard lock(_mutex);
-        if (_destroy)
+        if (_destroyed)
         {
             throw Ice::ObjectNotExistException(__FILE__, __LINE__);
         }
@@ -187,7 +187,7 @@ ReplicaSessionI::setEndpoints(StringObjectProxyDict endpoints, const Ice::Curren
 {
     {
         lock_guard lock(_mutex);
-        if (_destroy)
+        if (_destroyed)
         {
             throw Ice::ObjectNotExistException(__FILE__, __LINE__);
         }
@@ -202,7 +202,7 @@ ReplicaSessionI::registerWellKnownObjects(ObjectInfoSeq objects, const Ice::Curr
     int serial;
     {
         lock_guard lock(_mutex);
-        if (_destroy)
+        if (_destroyed)
         {
             throw Ice::ObjectNotExistException(__FILE__, __LINE__);
         }
@@ -250,15 +250,11 @@ ReplicaSessionI::destroy(const Ice::Current&)
     destroyImpl(false);
 }
 
-chrono::steady_clock::time_point
-ReplicaSessionI::timestamp() const
+bool
+ReplicaSessionI::isDestroyed() const
 {
     lock_guard lock(_mutex);
-    if (_destroy)
-    {
-        throw Ice::ObjectNotExistException(__FILE__, __LINE__);
-    }
-    return _timestamp;
+    return _destroyed;
 }
 
 void
@@ -289,18 +285,11 @@ optional<Ice::ObjectPrx>
 ReplicaSessionI::getEndpoint(const std::string& name)
 {
     lock_guard lock(_mutex);
-    if (_destroy)
+    if (_destroyed)
     {
         return nullopt;
     }
     return _replicaEndpoints[name];
-}
-
-bool
-ReplicaSessionI::isDestroyed() const
-{
-    lock_guard lock(_mutex);
-    return _destroy;
 }
 
 void
@@ -308,11 +297,11 @@ ReplicaSessionI::destroyImpl(bool shutdown)
 {
     {
         lock_guard lock(_mutex);
-        if (_destroy)
+        if (_destroyed)
         {
             throw Ice::ObjectNotExistException(__FILE__, __LINE__);
         }
-        _destroy = true;
+        _destroyed = true;
     }
 
     if (_observer)

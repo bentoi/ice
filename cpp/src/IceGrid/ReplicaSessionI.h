@@ -35,7 +35,7 @@ namespace IceGrid
         void receivedUpdate(TopicName, int, std::string, const Ice::Current&) override;
         void destroy(const Ice::Current&) override;
 
-        std::chrono::steady_clock::time_point timestamp() const;
+        bool isDestroyed() const;
         void shutdown();
 
         const InternalRegistryPrx& getInternalRegistry() const;
@@ -43,7 +43,6 @@ namespace IceGrid
         ReplicaSessionPrx getProxy() const;
 
         std::optional<Ice::ObjectPrx> getEndpoint(const std::string&);
-        bool isDestroyed() const;
 
     private:
         ReplicaSessionI(
@@ -67,7 +66,7 @@ namespace IceGrid
         ObjectInfoSeq _replicaWellKnownObjects;
         StringObjectProxyDict _replicaEndpoints;
         std::chrono::steady_clock::time_point _timestamp;
-        bool _destroy;
+        bool _destroyed;
 
         mutable std::mutex _mutex;
     };

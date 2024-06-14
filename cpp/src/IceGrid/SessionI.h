@@ -24,7 +24,7 @@ namespace IceGrid
     public:
         virtual ~BaseSessionI() = default;
 
-        std::chrono::steady_clock::time_point timestamp() const;
+        bool isDestroyed() const;
         void shutdown();
         std::optional<Glacier2::IdentitySetPrx> getGlacier2IdentitySet();
         std::optional<Glacier2::StringSetPrx> getGlacier2AdapterIdSet();

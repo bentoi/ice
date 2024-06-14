@@ -38,15 +38,13 @@ namespace IceGrid
             const Ice::Current&) const final;
         void destroy(const Ice::Current&) final;
 
-        std::chrono::steady_clock::time_point timestamp() const;
+        bool isDestroyed() const;
         void shutdown();
 
         const NodePrx& getNode() const;
         const std::shared_ptr<InternalNodeInfo>& getInfo() const;
         const LoadInfo& getLoadInfo() const;
         NodeSessionPrx getProxy() const;
-
-        bool isDestroyed() const;
 
     private:
         NodeSessionI(
@@ -69,7 +67,7 @@ namespace IceGrid
         std::optional<ReplicaObserverPrx> _replicaObserver;
         std::chrono::steady_clock::time_point _timestamp;
         LoadInfo _load;
-        bool _destroy;
+        bool _destroyed;
 
         mutable std::mutex _mutex;
     };

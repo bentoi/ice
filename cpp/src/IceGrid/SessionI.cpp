@@ -80,15 +80,11 @@ BaseSessionI::destroyImpl(bool)
     }
 }
 
-std::chrono::steady_clock::time_point
-BaseSessionI::timestamp() const
+bool
+BaseSessionI::isDestroyed() const
 {
     lock_guard lock(_mutex);
-    if (_destroyed)
-    {
-        throw Ice::ObjectNotExistException(__FILE__, __LINE__);
-    }
-    return _timestamp;
+    return _destroyed;
 }
 
 void
@@ -284,7 +280,6 @@ ClientSessionFactory::createGlacier2Session(const string& sessionId, const optio
     auto session = createSessionServant(sessionId);
     auto proxy = session->_register(_servantManager, 0);
 
-    chrono::seconds timeout = 0s;
     if (ctl)
     {
         try
@@ -294,7 +289,6 @@ ClientSessionFactory::createGlacier2Session(const string& sessionId, const optio
                 Ice::Identity queryId = {"Query", _database->getInstanceName()};
                 _servantManager->setSessionControl(session, *ctl, {std::move(queryId)});
             }
-            timeout = chrono::seconds(ctl->getSessionTimeout());
         }
         catch (const Ice::LocalException& e)
         {
@@ -307,7 +301,7 @@ ClientSessionFactory::createGlacier2Session(const string& sessionId, const optio
         }
     }
 
-    _reaper->add(make_shared<SessionReapable<SessionI>>(_database->getTraceLevels()->logger, session), timeout);
+    _reaper->add(make_shared<SessionReapable<SessionI>>(_database->getTraceLevels()->logger, session));
     return Glacier2::SessionPrx(proxy);
 }
 

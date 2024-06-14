@@ -448,7 +448,6 @@ AdminSessionFactory::AdminSessionFactory(
     const shared_ptr<RegistryI>& registry)
     : _servantManager(servantManager),
       _database(database),
-      _timeout(registry->getSessionTimeout(Ice::emptyCurrent)),
       _reaper(reaper),
       _registry(registry),
       _filters(false)
@@ -490,7 +489,7 @@ AdminSessionFactory::createGlacier2Session(const string& sessionId, const option
         }
     }
 
-    _reaper->add(make_shared<SessionReapable<AdminSessionI>>(_database->getTraceLevels()->logger, session), timeout);
+    _reaper->add(make_shared<SessionReapable<AdminSessionI>>(_database->getTraceLevels()->logger, session));
     return Glacier2::SessionPrx{std::move(proxy)};
 }
 
