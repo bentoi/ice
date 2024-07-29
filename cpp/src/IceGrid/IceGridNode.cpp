@@ -3,13 +3,13 @@
 //
 
 #include "../Ice/ConsoleUtil.h"
+#include "../Ice/FileUtil.h"
 #include "Activator.h"
 #include "DescriptorParser.h"
 #include "FileUserAccountMapperI.h"
 #include "Ice/Ice.h"
-#include "IceUtil/FileUtil.h"
-#include "IceUtil/StringUtil.h"
-#include "IceUtil/Timer.h"
+#include "Ice/StringUtil.h"
+#include "Ice/Timer.h"
 #include "NodeAdminRouter.h"
 #include "NodeI.h"
 #include "NodeSessionManager.h"
@@ -61,7 +61,7 @@ namespace
         void usage(const std::string&);
 
         shared_ptr<Activator> _activator;
-        IceUtil::TimerPtr _timer;
+        Ice::TimerPtr _timer;
         shared_ptr<RegistryI> _registry;
         shared_ptr<NodeI> _node;
         unique_ptr<NodeSessionManager> _sessions;
@@ -321,7 +321,7 @@ NodeService::startImpl(int argc, char* argv[], int& status)
     }
     else
     {
-        if (!IceUtilInternal::directoryExists(dataPath))
+        if (!IceInternal::directoryExists(dataPath))
         {
             FileException ex(__FILE__, __LINE__, dataPath);
             ServiceError err(this);
@@ -403,8 +403,8 @@ NodeService::startImpl(int argc, char* argv[], int& status)
         {
             try
             {
-                mapper = UserAccountMapperPrx{
-                    _adapter->addWithUUID(make_shared<FileUserAccountMapperI>(userAccountFileProperty))};
+                mapper = _adapter->addWithUUID<UserAccountMapperPrx>(
+                    make_shared<FileUserAccountMapperI>(userAccountFileProperty));
             }
             catch (const exception& ex)
             {
@@ -417,7 +417,7 @@ NodeService::startImpl(int argc, char* argv[], int& status)
     //
     // Create a new timer to handle server activation/deactivation timeouts.
     //
-    _timer = make_shared<IceUtil::Timer>();
+    _timer = make_shared<Ice::Timer>();
 
     //
     // The IceGrid instance name.
@@ -440,7 +440,7 @@ NodeService::startImpl(int argc, char* argv[], int& status)
 
     // Create the server factory. The server factory creates persistent objects for the server and server adapter. It
     // also takes care of installing the evictors and object factories necessary to store these objects.
-    NodePrx nodeProxy{_adapter->createProxy(stringToIdentity(instanceName + "/Node-" + name))};
+    auto nodeProxy = _adapter->createProxy<NodePrx>(stringToIdentity(instanceName + "/Node-" + name));
     _node = make_shared<
         NodeI>(_adapter, *_sessions, _activator, _timer, traceLevels, nodeProxy, name, mapper, instanceName);
     _adapter->add(_node, nodeProxy->ice_getIdentity());
@@ -552,14 +552,14 @@ NodeService::startImpl(int argc, char* argv[], int& status)
                 {
                     consoleOut << "user id: " << flush;
                     getline(cin, username);
-                    username = IceUtilInternal::trim(username);
+                    username = IceInternal::trim(username);
                 }
 
                 if (password.empty())
                 {
                     consoleOut << "password: " << flush;
                     getline(cin, password);
-                    password = IceUtilInternal::trim(password);
+                    password = IceInternal::trim(password);
                 }
 
                 session = registry->createAdminSession(username, password);

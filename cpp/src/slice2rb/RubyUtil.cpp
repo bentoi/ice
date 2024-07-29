@@ -3,8 +3,8 @@
 //
 
 #include "RubyUtil.h"
+#include "../Ice/FileUtil.h"
 #include "../Slice/Util.h"
-#include "IceUtil/FileUtil.h"
 
 #include <algorithm>
 #include <cassert>
@@ -12,8 +12,7 @@
 
 using namespace std;
 using namespace Slice;
-using namespace IceUtil;
-using namespace IceUtilInternal;
+using namespace IceInternal;
 
 namespace
 {
@@ -42,7 +41,7 @@ namespace Slice
         class CodeVisitor final : public ParserVisitor
         {
         public:
-            CodeVisitor(IceUtilInternal::Output&);
+            CodeVisitor(IceInternal::Output&);
 
             bool visitModuleStart(const ModulePtr&) final;
             void visitModuleEnd(const ModulePtr&) final;
@@ -249,7 +248,7 @@ Slice::Ruby::CodeVisitor::visitInterfaceDecl(const InterfaceDeclPtr& p)
     if (_classHistory.count(scoped) == 0)
     {
         string name = "T_" + fixIdent(p->name(), IdentToUpper);
-        _out << sp << nl << "if not defined?(" << getAbsolute(p, IdentToUpper, "T_") << ')';
+        _out << sp << nl << "if not defined?(" << getAbsolute(p, IdentToUpper, "T_") << "Prx)";
         _out.inc();
         _out << nl << name << "Prx = ::Ice::__declareProxy('" << scoped << "')";
         _out.dec();
@@ -261,15 +260,8 @@ Slice::Ruby::CodeVisitor::visitInterfaceDecl(const InterfaceDeclPtr& p)
 bool
 Slice::Ruby::CodeVisitor::visitClassDefStart(const ClassDefPtr& p)
 {
-    _out << sp << nl << "if not defined?(" << getAbsolute(p, IdentToUpper) << "_Mixin)";
+    _out << sp << nl << "if not defined?(" << getAbsolute(p, IdentToUpper) << ')';
     _out.inc();
-
-    //
-    // Marker to avoid redefinitions, we don't use the actual class names at those might
-    // be defined by IceRuby for some internal classes
-    //
-    _out << sp << nl << "module " << getAbsolute(p, IdentToUpper) << "_Mixin";
-    _out << nl << "end";
 
     string scoped = p->scoped();
     string name = fixIdent(p->name(), IdentToUpper);
@@ -443,15 +435,8 @@ Slice::Ruby::CodeVisitor::visitClassDefStart(const ClassDefPtr& p)
 bool
 Slice::Ruby::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
 {
-    _out << sp << nl << "if not defined?(" << getAbsolute(p, IdentToUpper) << "_Mixin)";
+    _out << sp << nl << "if not defined?(" << getAbsolute(p, IdentToUpper) << "Prx)";
     _out.inc();
-
-    //
-    // Marker to avoid redefinitions, we don't use the actual class names at those might
-    // be defined by IceRuby for some internal classes
-    //
-    _out << sp << nl << "module " << getAbsolute(p, IdentToUpper) << "_Mixin";
-    _out << nl << "end";
 
     string scoped = p->scoped();
     string name = fixIdent(p->name(), IdentToUpper);
@@ -523,7 +508,6 @@ Slice::Ruby::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
     _out << "Prx";
     _out << ')';
     _out.inc();
-    _out << nl << "T_" << name << " = ::Ice::__declareClass('" << scoped << "')";
     _out << nl << "T_" << name << "Prx = ::Ice::__declareProxy('" << scoped << "')";
     _out.dec();
     _out << nl << "end";
@@ -691,58 +675,10 @@ Slice::Ruby::CodeVisitor::visitExceptionStart(const ExceptionPtr& p)
     }
     _out.inc();
 
-    DataMemberList members = p->dataMembers();
-
-    //
-    // initialize
-    //
-    _out << nl << "def initialize";
-    MemberInfoList allMembers;
-    collectExceptionMembers(p, allMembers, false);
-    bool inheritsMembers = false;
-    if (!allMembers.empty())
-    {
-        _out << '(';
-        writeConstructorParams(allMembers);
-        _out << ')';
-        for (MemberInfoList::iterator q = allMembers.begin(); q != allMembers.end(); ++q)
-        {
-            if (q->inherited)
-            {
-                inheritsMembers = true;
-            }
-        }
-    }
-    _out.inc();
-    if (!allMembers.empty())
-    {
-        if (inheritsMembers)
-        {
-            _out << nl << "super" << spar;
-            for (MemberInfoList::iterator q = allMembers.begin(); q != allMembers.end(); ++q)
-            {
-                if (q->inherited)
-                {
-                    _out << q->lowerName;
-                }
-            }
-            _out << epar;
-        }
-        for (MemberInfoList::iterator q = allMembers.begin(); q != allMembers.end(); ++q)
-        {
-            if (!q->inherited)
-            {
-                _out << nl << '@' << q->fixedName << " = " << q->lowerName;
-            }
-        }
-    }
-    _out.dec();
-    _out << nl << "end";
-
     //
     // to_s
     //
-    _out << sp << nl << "def to_s";
+    _out << nl << "def to_s";
     _out.inc();
     _out << nl << "'" << scoped << "'";
     _out.dec();
@@ -751,6 +687,7 @@ Slice::Ruby::CodeVisitor::visitExceptionStart(const ExceptionPtr& p)
     //
     // read/write accessors for data members.
     //
+    DataMemberList members = p->dataMembers();
     if (!members.empty())
     {
         _out << sp << nl << "attr_accessor ";
@@ -765,7 +702,7 @@ Slice::Ruby::CodeVisitor::visitExceptionStart(const ExceptionPtr& p)
     }
 
     _out.dec();
-    _out << nl << "end"; // End of class.
+    _out << nl << "end"; // End of exception class.
 
     //
     // Emit the type information.
@@ -1495,7 +1432,7 @@ Slice::Ruby::getAbsolute(const ContainedPtr& cont, IdentStyle style, const strin
 }
 
 void
-Slice::Ruby::printHeader(IceUtilInternal::Output& out)
+Slice::Ruby::printHeader(IceInternal::Output& out)
 {
     static const char* header = "#\n"
                                 "# Copyright (c) ZeroC, Inc. All rights reserved.\n"

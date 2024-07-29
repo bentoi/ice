@@ -172,10 +172,10 @@ allTestsWithController(Test::TestHelper* helper, const ControllerPrx& controller
                 connection->getInfo();
                 this_thread::sleep_for(chrono::milliseconds(10));
             }
-            catch (const Ice::ConnectionManuallyClosedException& ex)
+            catch (const Ice::ConnectionClosedException& ex)
             {
                 // Expected.
-                test(ex.graceful);
+                test(ex.closedByApplication());
                 break;
             }
         }
@@ -191,7 +191,7 @@ allTestsWithController(Test::TestHelper* helper, const ControllerPrx& controller
         Ice::ObjectAdapterPtr adapter = communicator->createObjectAdapter("TimeoutCollocated");
         adapter->activate();
 
-        timeout = TimeoutPrx(adapter->addWithUUID(std::make_shared<TimeoutI>()));
+        timeout = adapter->addWithUUID<TimeoutPrx>(std::make_shared<TimeoutI>());
         timeout = timeout->ice_invocationTimeout(100);
         try
         {

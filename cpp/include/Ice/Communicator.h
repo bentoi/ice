@@ -17,7 +17,7 @@
 #include "Proxy.h"
 #include "SSL/ServerAuthenticationOptions.h"
 
-#ifdef ICE_SWIFT
+#ifdef __APPLE__
 #    include <dispatch/dispatch.h>
 #endif
 
@@ -86,14 +86,26 @@ namespace Ice
          * Convert a stringified proxy into a proxy.
          * For example, <code>MyCategory/MyObject:tcp -h some_host -p 10000</code> creates a proxy that refers to the
          * Ice object having an identity with a name "MyObject" and a category "MyCategory", with the server running on
-         * host "some_host", port 10000. If the stringified proxy does not parse correctly, the operation throws one of
-         * ProxyParseException, EndpointParseException, or IdentityParseException. Refer to the Ice manual for a
-         * detailed description of the syntax supported by stringified proxies.
+         * host "some_host", port 10000. If the stringified proxy does not parse correctly, the operation throws
+         * ParseException. Refer to the Ice manual for a detailed description of the syntax supported by stringified
+         * proxies.
          * @param str The stringified proxy to convert into a proxy.
          * @return The proxy, or nullopt if <code>str</code> is an empty string.
          * @see #proxyToString
          */
-        std::optional<ObjectPrx> stringToProxy(const std::string& str) const;
+        template<typename Prx = ObjectPrx, std::enable_if_t<std::is_base_of<ObjectPrx, Prx>::value, bool> = true>
+        std::optional<Prx> stringToProxy(const std::string& str) const
+        {
+            auto reference = _stringToProxy(str);
+            if (reference)
+            {
+                return Prx::_fromReference(reference);
+            }
+            else
+            {
+                return std::nullopt;
+            }
+        }
 
         /**
          * Convert a proxy into a string.
@@ -116,7 +128,15 @@ namespace Ice
         template<typename Prx = ObjectPrx, std::enable_if_t<std::is_base_of<ObjectPrx, Prx>::value, bool> = true>
         std::optional<Prx> propertyToProxy(const std::string& property) const
         {
-            return std::optional<Prx>{_propertyToProxy(property)};
+            auto reference = _propertyToProxy(property);
+            if (reference)
+            {
+                return Prx::_fromReference(reference);
+            }
+            else
+            {
+                return std::nullopt;
+            }
         }
 
         /**
@@ -362,18 +382,20 @@ namespace Ice
          */
         FacetMap findAllAdminFacets();
 
-#ifdef ICE_SWIFT
+#ifdef __APPLE__
         /**
-         * Returns the client dispatch queue.
+         * Returns the client dispatch queue, if any.
          * @return The dispatch queue associated wih this Communicator's
-         * client thread pool.
+         * client thread pool, or nullptr if none is configured.
+         * @remarks This operation is only available on Apple platforms.
          */
         dispatch_queue_t getClientDispatchQueue() const;
 
         /**
-         * Returns the server dispatch queue.
+         * Returns the server dispatch queue
          * @return The dispatch queue associated wih the Communicator's
-         * server thread pool.
+         * server thread pool, or nullptr if none is configured.
+         * @remarks This operation is only available on Apple platforms.
          */
         dispatch_queue_t getServerDispatchQueue() const;
 #endif
@@ -389,13 +411,14 @@ namespace Ice
         //
         void finishSetup(int&, const char*[]);
 
-        std::optional<ObjectPrx> _propertyToProxy(const std::string& property) const;
+        IceInternal::ReferencePtr _stringToProxy(const std::string& str) const;
+        IceInternal::ReferencePtr _propertyToProxy(const std::string& property) const;
 
         friend ICE_API CommunicatorPtr initialize(int&, const char*[], const InitializationData&, std::int32_t);
         friend ICE_API CommunicatorPtr initialize(StringSeq&, const InitializationData&, std::int32_t);
         friend ICE_API CommunicatorPtr initialize(const InitializationData&, std::int32_t);
         friend ICE_API IceInternal::InstancePtr IceInternal::getInstance(const Ice::CommunicatorPtr&);
-        friend ICE_API ::IceUtil::TimerPtr IceInternal::getInstanceTimer(const Ice::CommunicatorPtr&);
+        friend ICE_API ::Ice::TimerPtr IceInternal::getInstanceTimer(const Ice::CommunicatorPtr&);
 
         const IceInternal::InstancePtr _instance;
     };

@@ -28,6 +28,9 @@ jobs:
       - name: Install doxygen and graphviz (a dependency of Doxygen for generating diagrams)
         run: brew install doxygen graphviz || true
 
+      - name: Install virtualenv for Python docs
+        run: pipx install virtualenv
+
       - name: Build C++
         working-directory: ./cpp
         run: make V=1 srcs
@@ -43,38 +46,30 @@ jobs:
           cd doxygen
           doxygen
 
-      - name: Generate Documentation for Swift
-        working-directory: ./swift
+      - name: Generate TypeDoc Documentation for JavaScript
+        working-directory: ./js
         run: |
-          make V=1 srcs
+          make doc
 
-          xcodebuild docbuild \
-            -project ice.xcodeproj \
-            -scheme 'Ice macOS' \
-            -derivedDataPath /tmp/docbuild \
-            -destination 'generic/platform=macOS'
+      - name: Generate Python Documentation
+        working-directory: ./python/docs
+        run: |
+          make -C ../../cpp slice2py Ice IceDiscovery IceLocatorDiscovery
+          make -C ../
+          virtualenv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt
+          make html
+          deactivate
 
-          mkdir docs
+      - name: Generate Documentation for Swift
+        run: |
+          mkdir ./swift/docs
 
-          $(xcrun --find docc) process-archive \
-            transform-for-static-hosting /tmp/docbuild/Build/Products/Debug/Ice.doccarchive \
-            --hosting-base-path /api/ice/main/swift/ice \
-            --output-path docs/ice;
-
-          $(xcrun --find docc) process-archive \
-            transform-for-static-hosting /tmp/docbuild/Build/Products/Debug/Glacier2.doccarchive \
-            --hosting-base-path /api/ice/main/swift/glacier2 \
-            --output-path docs/glacier2;
-
-          $(xcrun --find docc) process-archive \
-            transform-for-static-hosting /tmp/docbuild/Build/Products/Debug/IceGrid.doccarchive \
-            --hosting-base-path /api/ice/main/swift/icegrid \
-            --output-path docs/icegrid;
-
-          $(xcrun --find docc) process-archive \
-            transform-for-static-hosting /tmp/docbuild/Build/Products/Debug/IceStorm.doccarchive \
-            --hosting-base-path /api/ice/main/swift/icestorm \
-            --output-path docs/icestorm;
+          for target in Ice Glacier2 IceGrid IceStorm; do
+            swift package --allow-writing-to-directory ./swift/docs generate-documentation --output-path ./swift/docs/$target \
+              --target $target --transform-for-static-hosting --hosting-base-path  /api/ice/main/swift/$target
+          done
 
       # This will perform a full sync of the documentation to S3 every time the workflow is run since
       # the timestamps will always be different. Using --size-only is not sufficient since the
@@ -89,10 +84,13 @@ jobs:
           aws s3 sync ./cpp/doxygen/cpp s3://${AWS_S3_DOC_BUCKET}/api/ice/main/cpp --delete
           aws s3 cp ./cpp/doxygen/icecpp.tag s3://${AWS_S3_DOC_BUCKET}/api/ice/main/icecpp.tag
 
-          aws s3 sync ./swift/docs/ice s3://${AWS_S3_DOC_BUCKET}/api/ice/main/swift/ice --delete
-          aws s3 sync ./swift/docs/glacier2 s3://${AWS_S3_DOC_BUCKET}/api/ice/main/swift/glacier2 --delete
-          aws s3 sync ./swift/docs/icegrid s3://${AWS_S3_DOC_BUCKET}/api/ice/main/swift/icegrid --delete
-          aws s3 sync ./swift/docs/icestorm s3://${AWS_S3_DOC_BUCKET}/api/ice/main/swift/icestorm  --delete
+          aws s3 sync ./js/docs s3://${AWS_S3_DOC_BUCKET}/api/ice/main/js --delete
+
+          aws s3 sync ./python/docs/_build/html s3://${AWS_S3_DOC_BUCKET}/api/ice/main/python --delete
+
+          for target in Ice Glacier2 IceGrid IceStorm; do
+            aws s3 sync ./swift/docs/$target s3://${AWS_S3_DOC_BUCKET}/api/ice/main/swift/$target --delete
+          done
 
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}

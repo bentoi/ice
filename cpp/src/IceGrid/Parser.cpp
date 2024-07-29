@@ -3,13 +3,14 @@
 //
 
 #include "../IceXML/Parser.h"
+#include "../Ice/ConsoleUtil.h"
+#include "../Ice/DisableWarnings.h"
+#include "../Ice/Options.h"
 #include "../Ice/TimeUtil.h"
 #include "DescriptorHelper.h"
 #include "DescriptorParser.h"
 #include "Ice/Ice.h"
 #include "IceBox/IceBox.h"
-#include "IceUtil/DisableWarnings.h"
-#include "IceUtil/Options.h"
 #include "Parser.h"
 #include "Util.h"
 
@@ -29,9 +30,8 @@ extern int yydebug;
 int yyparse();
 
 using namespace std;
-using namespace IceUtil;
-using namespace IceUtilInternal;
 using namespace Ice;
+using namespace IceInternal;
 using namespace IceGrid;
 
 namespace
@@ -424,7 +424,7 @@ Parser::addApplication(const list<string>& origArgs)
     list<string> copyArgs = origArgs;
     copyArgs.push_front("icegridadmin");
 
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     vector<string> args;
     try
     {
@@ -434,9 +434,9 @@ Parser::addApplication(const list<string>& origArgs)
         }
         args = opts.parse(args);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        error(e.reason);
+        error(e.what());
         return;
     }
 
@@ -535,7 +535,7 @@ Parser::diffApplication(const list<string>& origArgs)
     list<string> copyArgs = origArgs;
     copyArgs.push_front("icegridadmin");
 
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("s", "servers");
     vector<string> args;
     try
@@ -546,9 +546,9 @@ Parser::diffApplication(const list<string>& origArgs)
         }
         args = opts.parse(args);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        error(e.reason);
+        error(e.what());
         return;
     }
 
@@ -652,7 +652,7 @@ Parser::updateApplication(const list<string>& origArgs)
     list<string> copyArgs = origArgs;
     copyArgs.push_front("icegridadmin");
 
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("n", "no-restart");
     vector<string> args;
     try
@@ -663,9 +663,9 @@ Parser::updateApplication(const list<string>& origArgs)
         }
         args = opts.parse(args);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        error(e.reason);
+        error(e.what());
         return;
     }
 
@@ -1276,7 +1276,7 @@ Parser::writeMessage(const list<string>& args, int fd)
         string server = *p++;
 
         auto serverAdmin = _admin->getServerAdmin(server);
-        ProcessPrx process{serverAdmin->ice_facet("Process")};
+        auto process = serverAdmin->ice_facet<ProcessPrx>("Process");
 
         process->writeMessage(*p, fd);
     }
@@ -1432,7 +1432,7 @@ Parser::propertiesServer(const list<string>& args, bool single)
     try
     {
         auto serverAdmin = _admin->getServerAdmin(args.front());
-        Ice::PropertiesAdminPrx propAdmin{serverAdmin->ice_facet("Properties")};
+        auto propAdmin = serverAdmin->ice_facet<Ice::PropertiesAdminPrx>("Properties");
 
         if (single)
         {
@@ -1523,7 +1523,7 @@ Parser::startService(const list<string>& args)
     try
     {
         auto admin = _admin->getServerAdmin(server);
-        IceBox::ServiceManagerPrx manager{admin->ice_facet("IceBox.ServiceManager")};
+        auto manager = admin->ice_facet<IceBox::ServiceManagerPrx>("IceBox.ServiceManager");
         manager->startService(service);
     }
     catch (const IceBox::AlreadyStartedException&)
@@ -1562,7 +1562,7 @@ Parser::stopService(const list<string>& args)
     try
     {
         auto admin = _admin->getServerAdmin(server);
-        IceBox::ServiceManagerPrx manager{admin->ice_facet("IceBox.ServiceManager")};
+        auto manager = admin->ice_facet<IceBox::ServiceManagerPrx>("IceBox.ServiceManager");
         manager->stopService(service);
     }
     catch (const IceBox::AlreadyStoppedException&)
@@ -1687,9 +1687,9 @@ Parser::propertiesService(const list<string>& args, bool single)
 
         const bool useSharedCommunicator =
             getPropertyAsInt(info.descriptor->propertySet.properties, "IceBox.UseSharedCommunicator." + service) > 0;
-        Ice::PropertiesAdminPrx propAdmin{
-            useSharedCommunicator ? admin->ice_facet("IceBox.SharedCommunicator.Properties")
-                                  : admin->ice_facet("IceBox.Service." + service + ".Properties")};
+        auto propAdmin = useSharedCommunicator
+                             ? admin->ice_facet<Ice::PropertiesAdminPrx>("IceBox.SharedCommunicator.Properties")
+                             : admin->ice_facet<Ice::PropertiesAdminPrx>("IceBox.Service." + service + ".Properties");
 
         if (single)
         {
@@ -1994,10 +1994,10 @@ Parser::show(const string& reader, const list<string>& origArgs)
     list<string> copyArgs = origArgs;
     copyArgs.push_front("icegridadmin");
 
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("f", "follow");
-    opts.addOpt("h", "head", IceUtilInternal::Options::NeedArg);
-    opts.addOpt("t", "tail", IceUtilInternal::Options::NeedArg);
+    opts.addOpt("h", "head", IceInternal::Options::NeedArg);
+    opts.addOpt("t", "tail", IceInternal::Options::NeedArg);
 
     vector<string> args;
     try
@@ -2008,9 +2008,9 @@ Parser::show(const string& reader, const list<string>& origArgs)
         }
         args = opts.parse(args);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        error(e.reason);
+        error(e.what());
         return;
     }
 
@@ -2262,7 +2262,7 @@ Parser::showLog(const string& id, const string& reader, bool tail, bool follow, 
         return;
     }
 
-    Ice::LoggerAdminPrx loggerAdmin{admin->ice_facet("Logger")};
+    auto loggerAdmin = admin->ice_facet<Ice::LoggerAdminPrx>("Logger");
     if (follow)
     {
         auto adminCallbackTemplate = _session->getAdminCallbackTemplate();
@@ -2299,7 +2299,7 @@ Parser::showLog(const string& id, const string& reader, bool tail, bool follow, 
         Ice::Identity ident = {os.str(), adminCallbackTemplate->ice_getIdentity().category};
 
         auto servant = make_shared<RemoteLoggerI>();
-        Ice::RemoteLoggerPrx prx{adapter->add(servant, ident)};
+        auto prx = adapter->add<Ice::RemoteLoggerPrx>(servant, ident);
         adapter->activate();
 
         loggerAdmin->attachRemoteLogger(prx, Ice::LogMessageTypeSeq(), Ice::StringSeq(), tail ? lineCount : -1);

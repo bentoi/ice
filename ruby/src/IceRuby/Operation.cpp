@@ -5,7 +5,7 @@
 #include "Operation.h"
 #include "Ice/Communicator.h"
 #include "Ice/Initialize.h"
-#include "Ice/LocalException.h"
+#include "Ice/LocalExceptions.h"
 #include "Ice/Logger.h"
 #include "Ice/Properties.h"
 #include "Ice/Proxy.h"
@@ -403,7 +403,7 @@ IceRuby::OperationI::prepareRequest(
         {
             ParamInfoPtr info = *p;
             volatile VALUE arg = RARRAY_AREF(args, info->pos);
-            if ((!info->optional || arg != Unset) && !info->type->validate(arg))
+            if ((!info->optional || arg != Qnil) && !info->type->validate(arg))
             {
                 string opName = fixIdent(_name, IdentNormal);
                 throw RubyException(
@@ -434,7 +434,7 @@ IceRuby::OperationI::prepareRequest(
         {
             ParamInfoPtr info = *p;
             volatile VALUE arg = RARRAY_AREF(args, info->pos);
-            if (arg != Unset && os->writeOptional(info->tag, info->type->optionalFormat()))
+            if (arg != Qnil && os->writeOptional(info->tag, info->type->optionalFormat()))
             {
                 info->type->marshal(arg, os, &valueMap, true);
             }
@@ -516,7 +516,7 @@ IceRuby::OperationI::unmarshalResults(const vector<byte>& bytes, const Ice::Comm
         }
         else
         {
-            RARRAY_ASET(results, info->pos, Unset);
+            RARRAY_ASET(results, info->pos, Qnil);
         }
     }
 
@@ -558,6 +558,7 @@ IceRuby::OperationI::unmarshalException(const vector<byte>& bytes, const Ice::Co
                     throw ExceptionReader(info);
                 }
             });
+        assert(false); // throwException always throws an exception
     }
     catch (const ExceptionReader& r)
     {
@@ -571,16 +572,17 @@ IceRuby::OperationI::unmarshalException(const vector<byte>& bytes, const Ice::Co
         }
         else
         {
-            volatile VALUE cls = CLASS_OF(ex);
-            volatile VALUE path = callRuby(rb_class_path, cls);
-            assert(TYPE(path) == T_STRING);
-            Ice::UnknownUserException e(__FILE__, __LINE__);
-            e.unknown = RSTRING_PTR(path);
-            throw e;
+            return convertException(
+                make_exception_ptr(Ice::UnknownUserException::fromTypeId(__FILE__, __LINE__, r.ice_id())));
         }
     }
+    catch (...)
+    {
+        return convertException(std::current_exception());
+    }
 
-    throw Ice::UnknownUserException(__FILE__, __LINE__, "unknown exception");
+    // Never reached.
+    return Qnil;
 }
 
 bool
@@ -602,9 +604,7 @@ IceRuby::OperationI::checkTwowayOnly(const Ice::ObjectPrx& proxy) const
 {
     if ((_returnType != 0 || !_outParams.empty()) && !proxy->ice_isTwoway())
     {
-        Ice::TwowayOnlyException ex(__FILE__, __LINE__);
-        ex.operation = _name;
-        throw ex;
+        throw Ice::TwowayOnlyException{__FILE__, __LINE__, _name};
     }
 }
 

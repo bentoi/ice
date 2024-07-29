@@ -29,9 +29,9 @@ allTests(Test::TestHelper* helper, const string& ref)
 {
     Ice::CommunicatorPtr communicator = helper->communicator();
     ServerManagerPrx manager(communicator, ref);
-    TestLocatorPrx locator(communicator->getDefaultLocator().value());
+    auto locator = uncheckedCast<TestLocatorPrx>(communicator->getDefaultLocator().value());
 
-    TestLocatorRegistryPrx registry(locator->getRegistry().value());
+    auto registry = uncheckedCast<TestLocatorRegistryPrx>(locator->getRegistry().value());
 
     cout << "testing stringToProxy... " << flush;
     ObjectPrx base(communicator, "test @ TestAdapter");
@@ -78,17 +78,17 @@ allTests(Test::TestHelper* helper, const string& ref)
     cout << "ok" << endl;
 
     cout << "testing checked cast... " << flush;
-    optional<TestIntfPrx> obj = Ice::checkedCast<TestIntfPrx>(base);
+    auto obj = Ice::checkedCast<TestIntfPrx>(base);
     test(obj);
-    optional<TestIntfPrx> obj2 = Ice::checkedCast<TestIntfPrx>(base2);
+    auto obj2 = Ice::checkedCast<TestIntfPrx>(base2);
     test(obj2);
-    optional<TestIntfPrx> obj3 = Ice::checkedCast<TestIntfPrx>(base3);
+    auto obj3 = Ice::checkedCast<TestIntfPrx>(base3);
     test(obj3);
-    optional<ServerManagerPrx> obj4 = Ice::checkedCast<ServerManagerPrx>(base4);
+    auto obj4 = Ice::checkedCast<ServerManagerPrx>(base4);
     test(obj4);
-    optional<TestIntfPrx> obj5 = Ice::checkedCast<TestIntfPrx>(base5);
+    auto obj5 = Ice::checkedCast<TestIntfPrx>(base5);
     test(obj5);
-    optional<TestIntfPrx> obj6 = Ice::checkedCast<TestIntfPrx>(base6);
+    auto obj6 = Ice::checkedCast<TestIntfPrx>(base6);
     test(obj6);
     cout << "ok" << endl;
 
@@ -218,8 +218,8 @@ allTests(Test::TestHelper* helper, const string& ref)
     }
     catch (const Ice::NotRegisteredException& ex)
     {
-        test(ex.kindOfObject == "object");
-        test(ex.id == "unknown/unknown");
+        test(ex.kindOfObject() == "object");
+        test(ex.id() == "unknown/unknown");
     }
     cout << "ok" << endl;
 
@@ -232,8 +232,8 @@ allTests(Test::TestHelper* helper, const string& ref)
     }
     catch (const Ice::NotRegisteredException& ex)
     {
-        test(ex.kindOfObject == "object adapter");
-        test(ex.id == "TestAdapterUnknown");
+        test(ex.kindOfObject() == "object adapter");
+        test(ex.id() == "TestAdapterUnknown");
     }
     cout << "ok" << endl;
 
@@ -353,8 +353,8 @@ allTests(Test::TestHelper* helper, const string& ref)
     }
     catch (const Ice::NotRegisteredException& ex)
     {
-        test(ex.kindOfObject == "object adapter");
-        test(ex.id == "TestAdapter3");
+        test(ex.kindOfObject() == "object adapter");
+        test(ex.id() == "TestAdapter3");
     }
     registry->setAdapterDirectProxy("TestAdapter3", locator->findAdapterById("TestAdapter"));
     try
@@ -407,8 +407,8 @@ allTests(Test::TestHelper* helper, const string& ref)
     }
     catch (const Ice::NotRegisteredException& ex)
     {
-        test(ex.kindOfObject == "object adapter");
-        test(ex.id == "TestUnknown");
+        test(ex.kindOfObject() == "object adapter");
+        test(ex.id() == "TestUnknown");
     }
     registry->addObject(ObjectPrx(communicator, "test3@TestAdapter4")); // Update
     registry->setAdapterDirectProxy("TestAdapter4", ObjectPrx(communicator, "dummy:" + helper->getTestEndpoint(99)));
@@ -617,11 +617,11 @@ allTests(Test::TestHelper* helper, const string& ref)
         test(!helloPrx->ice_getConnection());
 
         // Ensure that calls on the indirect proxy (with adapter ID) is collocated
-        helloPrx = HelloPrx(adapter->createIndirectProxy(id));
+        helloPrx = adapter->createIndirectProxy<HelloPrx>(id);
         test(!helloPrx->ice_getConnection());
 
         // Ensure that calls on the direct proxy is collocated
-        helloPrx = HelloPrx(adapter->createDirectProxy(id));
+        helloPrx = adapter->createDirectProxy<HelloPrx>(id);
         test(!helloPrx->ice_getConnection());
 
         cout << "ok" << endl;

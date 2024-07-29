@@ -8,7 +8,7 @@
 #include "Ice/Ice.h"
 #include "Ice/Logger.h"
 #include "Ice/Properties.h"
-#include "IceUtil/StringUtil.h"
+#include "Ice/StringUtil.h"
 
 using namespace std;
 using namespace Ice;
@@ -20,7 +20,7 @@ using namespace Ice;
 static void
 stringToSeq(const string& str, vector<string>& seq)
 {
-    IceUtilInternal::splitString(str, " \t", seq);
+    IceInternal::splitString(str, " \t", seq);
 
     //
     // TODO: do something about unmatched quotes
@@ -153,9 +153,9 @@ Glacier2::FilterManager::FilterManager(
         auto adapter = _instance->serverObjectAdapter();
         if (adapter)
         {
-            _categoriesPrx = Glacier2::StringSetPrx(adapter->addWithUUID(_categories));
-            _adapterIdsPrx = Glacier2::StringSetPrx(adapter->addWithUUID(_adapters));
-            _identitiesPrx = Glacier2::IdentitySetPrx(adapter->addWithUUID(_identities));
+            _categoriesPrx = adapter->addWithUUID<Glacier2::StringSetPrx>(_categories);
+            _adapterIdsPrx = adapter->addWithUUID<Glacier2::StringSetPrx>(_adapters);
+            _identitiesPrx = adapter->addWithUUID<Glacier2::IdentitySetPrx>(_identities);
         }
     }
     catch (...)

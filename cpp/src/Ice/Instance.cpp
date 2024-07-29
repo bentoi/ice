@@ -7,22 +7,21 @@
 #include "ConnectionFactory.h"
 #include "ConsoleUtil.h"
 #include "DefaultsAndOverrides.h"
+#include "DisableWarnings.h"
 #include "EndpointFactoryManager.h"
+#include "FileUtil.h"
 #include "IPEndpointI.h" // For EndpointHostResolver
 #include "Ice/Communicator.h"
-#include "Ice/Exception.h"
 #include "Ice/Initialize.h"
-#include "Ice/LocalException.h"
+#include "Ice/LocalExceptions.h"
 #include "Ice/Locator.h"
 #include "Ice/LoggerUtil.h"
 #include "Ice/ObserverHelper.h"
 #include "Ice/Properties.h"
 #include "Ice/ProxyFunctions.h"
 #include "Ice/Router.h"
+#include "Ice/StringUtil.h"
 #include "Ice/UUID.h"
-#include "IceUtil/DisableWarnings.h"
-#include "IceUtil/FileUtil.h"
-#include "IceUtil/StringUtil.h"
 #include "InstrumentationI.h"
 #include "LocatorInfo.h"
 #include "LoggerAdminI.h"
@@ -69,7 +68,7 @@
 #    include <syslog.h>
 #endif
 
-#if defined(__linux__) || defined(__sun) || defined(_AIX) || defined(__GLIBC__)
+#if defined(__linux__) || defined(__GLIBC__)
 #    include <grp.h> // for initgroups
 #endif
 
@@ -77,11 +76,9 @@ using namespace std;
 using namespace Ice;
 using namespace IceInternal;
 
-namespace IceUtilInternal
+namespace IceInternal
 {
-    extern bool nullHandleAbort;
     extern bool printStackTraces;
-
 };
 
 namespace
@@ -183,15 +180,15 @@ namespace IceInternal // Required because ObserverUpdaterI is a friend of Instan
     //
     // Timer specialization which supports the thread observer
     //
-    class Timer final : public IceUtil::Timer
+    class ThreadObserverTimer final : public Ice::Timer
     {
     public:
-        Timer() : _hasObserver(false) {}
+        ThreadObserverTimer() : _hasObserver(false) {}
 
         void updateObserver(const Ice::Instrumentation::CommunicatorObserverPtr&);
 
     private:
-        void runTimerTask(const IceUtil::TimerTaskPtr&) final;
+        void runTimerTask(const Ice::TimerTaskPtr&) final;
 
         std::mutex _mutex;
         std::atomic<bool> _hasObserver;
@@ -200,7 +197,7 @@ namespace IceInternal // Required because ObserverUpdaterI is a friend of Instan
 }
 
 void
-Timer::updateObserver(const Ice::Instrumentation::CommunicatorObserverPtr& obsv)
+ThreadObserverTimer::updateObserver(const Ice::Instrumentation::CommunicatorObserverPtr& obsv)
 {
     lock_guard lock(_mutex);
     assert(obsv);
@@ -213,7 +210,7 @@ Timer::updateObserver(const Ice::Instrumentation::CommunicatorObserverPtr& obsv)
 }
 
 void
-Timer::runTimerTask(const IceUtil::TimerTaskPtr& task)
+ThreadObserverTimer::runTimerTask(const Ice::TimerTaskPtr& task)
 {
     if (_hasObserver)
     {
@@ -446,7 +443,7 @@ IceInternal::Instance::retryQueue()
     return _retryQueue;
 }
 
-IceUtil::TimerPtr
+Ice::TimerPtr
 IceInternal::Instance::timer()
 {
     lock_guard lock(_mutex);
@@ -677,7 +674,7 @@ IceInternal::Instance::setServerProcessProxy(const ObjectAdapterPtr& adminAdapte
     const string serverId = _initData.properties->getIceProperty("Ice.Admin.ServerId");
     if (locator && serverId != "")
     {
-        ProcessPrx process{admin->ice_facet("Process")};
+        auto process = admin->ice_facet<ProcessPrx>("Process");
         try
         {
             //
@@ -935,7 +932,7 @@ IceInternal::Instance::initialize(const Ice::CommunicatorPtr& communicator)
 
                 if (stdOutFilename != "")
                 {
-                    FILE* file = IceUtilInternal::freopen(stdOutFilename, "a", stdout);
+                    FILE* file = IceInternal::freopen(stdOutFilename, "a", stdout);
                     if (file == 0)
                     {
                         throw FileException(__FILE__, __LINE__, stdOutFilename);
@@ -944,7 +941,7 @@ IceInternal::Instance::initialize(const Ice::CommunicatorPtr& communicator)
 
                 if (stdErrFilename != "")
                 {
-                    FILE* file = IceUtilInternal::freopen(stdErrFilename, "a", stderr);
+                    FILE* file = IceInternal::freopen(stdErrFilename, "a", stderr);
                     if (file == 0)
                     {
                         throw FileException(__FILE__, __LINE__, stdErrFilename);
@@ -954,12 +951,12 @@ IceInternal::Instance::initialize(const Ice::CommunicatorPtr& communicator)
 #ifdef NDEBUG
                 if (_initData.properties->getIcePropertyAsInt("Ice.PrintStackTraces") > 0)
                 {
-                    IceUtilInternal::printStackTraces = true;
+                    IceInternal::printStackTraces = true;
                 }
 #else
                 if (_initData.properties->getPropertyAsIntWithDefault("Ice.PrintStackTraces", 1) == 0)
                 {
-                    IceUtilInternal::printStackTraces = false;
+                    IceInternal::printStackTraces = false;
                 }
 #endif
 
@@ -978,26 +975,26 @@ IceInternal::Instance::initialize(const Ice::CommunicatorPtr& communicator)
                     }
                     if (err != 0)
                     {
-                        throw Ice::SyscallException(__FILE__, __LINE__, err);
+                        throw Ice::SyscallException{__FILE__, __LINE__, "getpwnam_r failed", err};
                     }
                     else if (pw == 0)
                     {
-                        throw InitializationException(__FILE__, __LINE__, "unknown user account `" + newUser + "'");
+                        throw InitializationException(__FILE__, __LINE__, "unknown user account '" + newUser + "'");
                     }
 
                     if (setgid(pw->pw_gid) == -1)
                     {
-                        throw SyscallException(__FILE__, __LINE__);
+                        throw SyscallException{__FILE__, __LINE__, "setgid failed", errno};
                     }
 
                     if (initgroups(pw->pw_name, static_cast<int>(pw->pw_gid)) == -1)
                     {
-                        throw SyscallException(__FILE__, __LINE__);
+                        throw SyscallException{__FILE__, __LINE__, "initgroups failed", errno};
                     }
 
                     if (setuid(pw->pw_uid) == -1)
                     {
-                        throw SyscallException(__FILE__, __LINE__);
+                        throw SyscallException{__FILE__, __LINE__, "setuid failed", errno};
                     }
                 }
 #endif
@@ -1055,7 +1052,7 @@ IceInternal::Instance::initialize(const Ice::CommunicatorPtr& communicator)
             else
 #endif
 
-#ifdef ICE_SWIFT
+#ifdef __APPLE__
                 if (!_initData.logger && _initData.properties->getIcePropertyAsInt("Ice.UseOSLog") > 0)
             {
                 _initData.logger = make_shared<OSLogLoggerI>(_initData.properties->getIceProperty("Ice.ProgramName"));
@@ -1495,9 +1492,9 @@ IceInternal::Instance::finishSetup(int& argc, const char* argv[], const Ice::Com
     //
     try
     {
-        _timer = make_shared<Timer>();
+        _timer = make_shared<ThreadObserverTimer>();
     }
-    catch (const IceUtil::Exception& ex)
+    catch (const Ice::Exception& ex)
     {
         Error out(_initData.logger);
         out << "cannot create thread for timer:\n" << ex;
@@ -1509,7 +1506,7 @@ IceInternal::Instance::finishSetup(int& argc, const char* argv[], const Ice::Com
         _endpointHostResolver = make_shared<EndpointHostResolver>(shared_from_this());
         _endpointHostResolverThread = std::thread([this] { _endpointHostResolver->run(); });
     }
-    catch (const IceUtil::Exception& ex)
+    catch (const Ice::Exception& ex)
     {
         Error out(_initData.logger);
         out << "cannot create thread for endpoint host resolver:\n" << ex;
@@ -1524,7 +1521,7 @@ IceInternal::Instance::finishSetup(int& argc, const char* argv[], const Ice::Com
     //
     if (!_referenceFactory->getDefaultRouter())
     {
-        optional<RouterPrx> router{communicator->propertyToProxy("Ice.Default.Router")};
+        auto router = communicator->propertyToProxy<RouterPrx>("Ice.Default.Router");
         if (router)
         {
             _referenceFactory = _referenceFactory->setDefaultRouter(router);
@@ -1533,7 +1530,7 @@ IceInternal::Instance::finishSetup(int& argc, const char* argv[], const Ice::Com
 
     if (!_referenceFactory->getDefaultLocator())
     {
-        optional<LocatorPrx> locator{communicator->propertyToProxy("Ice.Default.Locator")};
+        auto locator = communicator->propertyToProxy<LocatorPrx>("Ice.Default.Locator");
         if (locator)
         {
             _referenceFactory = _referenceFactory->setDefaultLocator(locator);

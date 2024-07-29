@@ -1,3 +1,4 @@
+
 //
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
@@ -20,9 +21,9 @@ testExceptions(const TestIntfPrx& obj)
     }
     catch (const ObjectNotExistException& ex)
     {
-        test(ex.id == obj->ice_getIdentity());
-        test(ex.facet == obj->ice_getFacet());
-        test(ex.operation == "requestFailedException");
+        test(ex.id() == obj->ice_getIdentity());
+        test(ex.facet() == obj->ice_getFacet());
+        test(ex.operation() == "requestFailedException");
     }
     catch (...)
     {
@@ -36,7 +37,7 @@ testExceptions(const TestIntfPrx& obj)
     }
     catch (const UnknownUserException& ex)
     {
-        test(ex.unknown == "reason");
+        test(string{ex.what()} == "reason");
     }
     catch (...)
     {
@@ -50,7 +51,7 @@ testExceptions(const TestIntfPrx& obj)
     }
     catch (const UnknownLocalException& ex)
     {
-        test(ex.unknown == "reason");
+        test(string{ex.what()} == "reason");
     }
     catch (...)
     {
@@ -64,7 +65,7 @@ testExceptions(const TestIntfPrx& obj)
     }
     catch (const UnknownException& ex)
     {
-        test(ex.unknown == "reason");
+        test(string{ex.what()} == "reason");
     }
     catch (...)
     {
@@ -78,7 +79,7 @@ testExceptions(const TestIntfPrx& obj)
     }
     catch (const UnknownUserException& ex)
     {
-        test(ex.unknown == "::Test::TestIntfUserException");
+        test(string{ex.what()}.find("::Test::TestIntfUserException") != string::npos);
     }
     catch (const OperationNotExistException&)
     {
@@ -96,8 +97,8 @@ testExceptions(const TestIntfPrx& obj)
     catch (const UnknownLocalException& ex)
     {
         test(
-            ex.unknown.find("SocketException") != string::npos ||
-            ex.unknown.find("Ice.SocketException") != string::npos);
+            string{ex.what()}.find("SocketException") != string::npos ||
+            string{ex.what()}.find("Ice.SocketException") != string::npos);
     }
     catch (...)
     {
@@ -114,7 +115,10 @@ testExceptions(const TestIntfPrx& obj)
     }
     catch (const UnknownException& ex)
     {
-        test(ex.unknown == "c++ exception: Hello");
+        string message{ex.what()};
+        test(
+            message == "dispatch failed with std::runtime_error: Hello" ||
+            message == "dispatch failed with class std::runtime_error: Hello");
     }
     catch (...)
     {
@@ -128,7 +132,7 @@ testExceptions(const TestIntfPrx& obj)
     }
     catch (const UnknownException& ex)
     {
-        test(ex.unknown == "c++ exception: unknown");
+        test(string{ex.what()} == "dispatch failed with unknown: c++ exception");
     }
     catch (const OperationNotExistException&)
     {
@@ -145,7 +149,7 @@ testExceptions(const TestIntfPrx& obj)
     }
     catch (const UnknownException& ex)
     {
-        test(ex.unknown == "reason");
+        test(string{ex.what()} == "reason");
     }
     catch (...)
     {
@@ -226,7 +230,7 @@ allTests(Test::TestHelper* helper)
     }
     catch (const UnknownUserException& ex)
     {
-        test(ex.unknown == "::Test::TestIntfUserException");
+        test(string{ex.what()}.find("::Test::TestIntfUserException") != string::npos);
     }
     catch (...)
     {
@@ -241,7 +245,7 @@ allTests(Test::TestHelper* helper)
     }
     catch (const UnknownUserException& ex)
     {
-        test(ex.unknown == "::Test::TestIntfUserException");
+        test(string{ex.what()}.find("::Test::TestIntfUserException") != string::npos);
     }
     catch (...)
     {

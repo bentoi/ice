@@ -7,6 +7,7 @@
 #include "TestHelper.h"
 
 #include <stdexcept>
+#include <thread>
 
 using namespace std;
 using namespace Ice;
@@ -105,7 +106,7 @@ allTests(Test::TestHelper* helper)
     {
         Ice::Identity routerId;
         routerId.name = "router";
-        auto router = Ice::RouterPrx(obj->ice_identity(routerId)->ice_connectionId("rc"));
+        auto router = obj->ice_identity<Ice::RouterPrx>(routerId)->ice_connectionId("rc");
         Ice::ObjectAdapterPtr adapter = communicator->createObjectAdapterWithRouter("", router);
         test(adapter->getPublishedEndpoints().size() == 1);
         test(adapter->getPublishedEndpoints()[0]->toString() == "tcp -h localhost -p 23456 -t 30000");
@@ -126,7 +127,7 @@ allTests(Test::TestHelper* helper)
         try
         {
             routerId.name = "test";
-            router = Ice::RouterPrx(obj->ice_identity(routerId));
+            router = obj->ice_identity<Ice::RouterPrx>(routerId);
             communicator->createObjectAdapterWithRouter("", router);
             test(false);
         }
@@ -185,20 +186,44 @@ allTests(Test::TestHelper* helper)
         cout << "ok" << endl;
     }
     cout << "testing server idle time..." << flush;
-    {
-        InitializationData idleInitData;
-        idleInitData.properties = communicator->getProperties()->clone();
-        idleInitData.properties->setProperty("Ice.ServerIdleTime", "1");
+    std::thread thread1(
+        []()
+        {
+            InitializationData idleInitData;
+            idleInitData.properties = make_shared<Ice::Properties>();
+            idleInitData.properties->setProperty("Ice.ServerIdleTime", "1");
 #ifdef _WIN32
-        // With our Windows implementation, the thread pool threads have to be idle first before server idle time is
-        // checked
-        idleInitData.properties->setProperty("Ice.ThreadPool.Server.ThreadIdleTime", "1");
+            // With our Windows implementation, the thread pool threads have to be idle first before server idle time is
+            // checked
+            idleInitData.properties->setProperty("Ice.ThreadPool.Server.ThreadIdleTime", "1");
 #endif
-        CommunicatorHolder idleCommunicator(idleInitData);
-        // The server thread pool is started lazily so we need to create an object adapter and activate it.
-        ObjectAdapterPtr idleOA = idleCommunicator->createObjectAdapterWithEndpoints("IdleOA", "tcp -h 127.0.0.1");
-        idleOA->activate();
-        idleCommunicator->waitForShutdown();
-    }
+            CommunicatorHolder idleCommunicator(idleInitData);
+            // The server thread pool is started lazily so we need to create an object adapter and activate it.
+            ObjectAdapterPtr idleOA = idleCommunicator->createObjectAdapterWithEndpoints("IdleOA", "tcp -h 127.0.0.1");
+            idleOA->activate();
+            idleCommunicator->waitForShutdown();
+            idleCommunicator->destroy();
+        });
+    std::thread thread2(
+        []()
+        {
+            InitializationData idleInitData;
+            idleInitData.properties = make_shared<Ice::Properties>();
+            idleInitData.properties->setProperty("Ice.ServerIdleTime", "0");
+#ifdef _WIN32
+            // With our Windows implementation, the thread pool threads have to be idle first before server idle time is
+            // checked
+            idleInitData.properties->setProperty("Ice.ThreadPool.Server.ThreadIdleTime", "1");
+#endif
+            CommunicatorHolder idleCommunicator(idleInitData);
+            // The server thread pool is started lazily so we need to create an object adapter and activate it.
+            ObjectAdapterPtr idleOA = idleCommunicator->createObjectAdapterWithEndpoints("IdleOA", "tcp -h 127.0.0.1");
+            idleOA->activate();
+            std::this_thread::sleep_for(1200ms);
+            test(!idleCommunicator->isShutdown());
+            idleCommunicator->destroy();
+        });
+    thread1.join();
+    thread2.join();
     cout << "ok" << endl;
 }

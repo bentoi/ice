@@ -9,9 +9,9 @@
 #include "Ice/FactoryTable.h"
 #include "Ice/InputStream.h"
 #include "Ice/OutputStream.h"
+#include "Ice/OutputUtil.h"
 #include "Ice/SlicedDataF.h"
 #include "Ice/Value.h"
-#include "IceUtil/OutputUtil.h"
 #include "Util.h"
 
 #include <memory>
@@ -161,7 +161,7 @@ namespace IcePy
             bool,
             const Ice::StringSeq* = 0) = 0;
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*) = 0;
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*) = 0;
     };
     using TypeInfoPtr = std::shared_ptr<TypeInfo>;
 
@@ -197,7 +197,7 @@ namespace IcePy
         virtual void
         unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         const Kind kind;
     };
@@ -225,7 +225,7 @@ namespace IcePy
         virtual void
         unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         virtual void destroy();
 
@@ -275,7 +275,7 @@ namespace IcePy
         virtual void
         unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         virtual void destroy();
 
@@ -314,7 +314,7 @@ namespace IcePy
         virtual void
         unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         virtual void destroy();
 
@@ -379,35 +379,6 @@ namespace IcePy
     using SequenceInfoPtr = std::shared_ptr<SequenceInfo>;
 
     //
-    // Custom information.
-    //
-    class CustomInfo : public TypeInfo
-    {
-    public:
-        CustomInfo(std::string, PyObject*);
-
-        virtual std::string getId() const;
-
-        virtual bool validate(PyObject*);
-
-        virtual bool variableLength() const;
-        virtual int wireSize() const;
-        virtual Ice::OptionalFormat optionalFormat() const;
-
-        virtual bool usesClasses() const;
-
-        virtual void marshal(PyObject*, Ice::OutputStream*, ObjectMap*, bool, const Ice::StringSeq* = 0);
-        virtual void
-        unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
-
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
-
-        const std::string id;
-        PyObject* pythonType; // Borrowed reference - the enclosing Python module owns the reference.
-    };
-    using CustomInfoPtr = std::shared_ptr<CustomInfo>;
-
-    //
     // Dictionary information.
     //
     class DictionaryInfo : public TypeInfo, public std::enable_shared_from_this<DictionaryInfo>
@@ -430,7 +401,7 @@ namespace IcePy
         unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
         virtual void unmarshaled(PyObject*, PyObject*, void*);
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         virtual void destroy();
 
@@ -476,7 +447,7 @@ namespace IcePy
         virtual void
         unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         virtual void destroy();
 
@@ -514,11 +485,11 @@ namespace IcePy
         virtual void
         unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         virtual void destroy();
 
-        void printMembers(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        void printMembers(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         const std::string id;
         const std::int32_t compactId;
@@ -554,7 +525,7 @@ namespace IcePy
         virtual void
         unmarshal(Ice::InputStream*, const UnmarshalCallbackPtr&, PyObject*, void*, bool, const Ice::StringSeq* = 0);
 
-        virtual void print(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        virtual void print(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         const std::string id;
         PyObject* pythonType; // Borrowed reference - the enclosing Python module owns the reference.
@@ -571,8 +542,8 @@ namespace IcePy
         void marshal(PyObject*, Ice::OutputStream*, ObjectMap*);
         PyObject* unmarshal(Ice::InputStream*);
 
-        void print(PyObject*, IceUtilInternal::Output&);
-        void printMembers(PyObject*, IceUtilInternal::Output&, PrintObjectHistory*);
+        void print(PyObject*, IceInternal::Output&);
+        void printMembers(PyObject*, IceInternal::Output&, PrintObjectHistory*);
 
         std::string id;
         ExceptionInfoPtr base;
@@ -592,8 +563,6 @@ namespace IcePy
     {
     public:
         ValueWriter(PyObject*, ObjectMap*, const ValueInfoPtr&);
-        ~ValueWriter();
-
         virtual void ice_preMarshal();
 
         virtual void _iceWrite(Ice::OutputStream*) const;
@@ -602,7 +571,7 @@ namespace IcePy
     private:
         void writeMembers(Ice::OutputStream*, const DataMemberList&) const;
 
-        PyObject* _object;
+        PyObjectHandle _object;
         ObjectMap* _map;
         ValueInfoPtr _info;
         ValueInfoPtr _formal;
@@ -615,7 +584,6 @@ namespace IcePy
     {
     public:
         ValueReader(PyObject*, const ValueInfoPtr&);
-        ~ValueReader();
 
         virtual void ice_postUnmarshal();
 
@@ -629,7 +597,7 @@ namespace IcePy
         Ice::SlicedDataPtr getSlicedData() const;
 
     private:
-        PyObject* _object;
+        PyObjectHandle _object;
         ValueInfoPtr _info;
         Ice::SlicedDataPtr _slicedData;
     };
@@ -641,11 +609,12 @@ namespace IcePy
     {
     public:
         ExceptionWriter(const PyObjectHandle&, const ExceptionInfoPtr& = 0) noexcept;
-        ~ExceptionWriter();
+        ExceptionWriter(const ExceptionWriter&);
+        ~ExceptionWriter() noexcept;
 
-        ExceptionWriter(const ExceptionWriter&) = default;
+        ExceptionWriter& operator=(const ExceptionWriter&) = delete;
 
-        std::string ice_id() const final;
+        const char* ice_id() const noexcept final;
         void ice_throw() const final;
 
         void _write(Ice::OutputStream*) const final;
@@ -670,11 +639,9 @@ namespace IcePy
     {
     public:
         ExceptionReader(const ExceptionInfoPtr&) noexcept;
-        ~ExceptionReader();
-
         ExceptionReader(const ExceptionReader&) = default;
 
-        std::string ice_id() const final;
+        const char* ice_id() const noexcept final;
         void ice_throw() const final;
 
         void _write(Ice::OutputStream*) const final;
@@ -699,8 +666,6 @@ namespace IcePy
     ValueInfoPtr lookupValueInfo(std::string_view);
     ExceptionInfoPtr lookupExceptionInfo(std::string_view);
 
-    extern PyObject* Unset;
-
     bool initTypes(PyObject*);
 
     PyObject* createType(const TypeInfoPtr&);
@@ -715,7 +680,6 @@ namespace IcePy
 extern "C" PyObject* IcePy_defineEnum(PyObject*, PyObject*);
 extern "C" PyObject* IcePy_defineStruct(PyObject*, PyObject*);
 extern "C" PyObject* IcePy_defineSequence(PyObject*, PyObject*);
-extern "C" PyObject* IcePy_defineCustom(PyObject*, PyObject*);
 extern "C" PyObject* IcePy_defineDictionary(PyObject*, PyObject*);
 extern "C" PyObject* IcePy_declareProxy(PyObject*, PyObject*);
 extern "C" PyObject* IcePy_defineProxy(PyObject*, PyObject*);

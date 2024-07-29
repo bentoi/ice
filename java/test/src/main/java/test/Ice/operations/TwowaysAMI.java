@@ -623,10 +623,10 @@ class TwowaysAMI {
                 test(result.p3[0][0][1].equals("de"));
                 test(result.p3[0][1][0].equals("xyz"));
                 test(result.p3[1][0][0].equals("hello"));
-                test(result.p3[2][0][0].equals(""));
-                test(result.p3[2][0][1].equals(""));
+                test(result.p3[2][0][0].isEmpty());
+                test(result.p3[2][0][1].isEmpty());
                 test(result.p3[2][1][0].equals("abcd"));
-                test(result.p3[3][0][0].equals(""));
+                test(result.p3[3][0][0].isEmpty());
 
                 test(result.returnValue.length == 3);
                 test(result.returnValue[0].length == 0);
@@ -635,9 +635,9 @@ class TwowaysAMI {
                 test(result.returnValue[2].length == 2);
                 test(result.returnValue[2][0].length == 2);
                 test(result.returnValue[2][1].length == 1);
-                test(result.returnValue[1][0][0].equals(""));
-                test(result.returnValue[2][0][0].equals(""));
-                test(result.returnValue[2][0][1].equals(""));
+                test(result.returnValue[1][0][0].isEmpty());
+                test(result.returnValue[2][0][0].isEmpty());
+                test(result.returnValue[2][0][1].isEmpty());
                 test(result.returnValue[2][1][0].equals("abcd"));
                 cb.called();
               });
@@ -1544,9 +1544,7 @@ class TwowaysAMI {
           ctx.put("two", "TWO");
           ctx.put("three", "THREE");
 
-          MyClassPrx p3 =
-              MyClassPrx.uncheckedCast(
-                  ic.stringToProxy("test:" + helper.getTestEndpoint(properties, 0)));
+          var p3 = MyClassPrx.createProxy(ic, "test:" + helper.getTestEndpoint(properties, 0));
 
           ic.getImplicitContext().setContext(ctx);
           test(ic.getImplicitContext().getContext().equals(ctx));
@@ -1731,7 +1729,7 @@ class TwowaysAMI {
           .whenComplete(
               (result, ex) -> {
                 test(ex == null);
-                test(result.size() == 0);
+                test(result.isEmpty());
                 cb.called();
               });
       cb.check();

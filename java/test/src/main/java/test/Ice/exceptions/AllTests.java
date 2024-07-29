@@ -70,7 +70,7 @@ public class AllTests {
         adapter.add(obj, com.zeroc.Ice.Util.stringToIdentity(""));
         test(false);
       } catch (com.zeroc.Ice.IllegalIdentityException ex) {
-        test(ex.id.name.equals(""));
+        test(ex.id.name.isEmpty());
       }
       try {
         adapter.add(null, com.zeroc.Ice.Util.stringToIdentity("x"));
@@ -331,16 +331,12 @@ public class AllTests {
       }
 
       try {
-        ThrowerPrx thrower2 =
-            ThrowerPrx.uncheckedCast(
-                communicator.stringToProxy("thrower:" + helper.getTestEndpoint(1)));
+        var thrower2 = ThrowerPrx.createProxy(communicator, "thrower:" + helper.getTestEndpoint(1));
         try {
           thrower2.throwMemoryLimitException(new byte[2 * 1024 * 1024]); // 2MB (no limits)
         } catch (com.zeroc.Ice.MemoryLimitException ex) {
         }
-        ThrowerPrx thrower3 =
-            ThrowerPrx.uncheckedCast(
-                communicator.stringToProxy("thrower:" + helper.getTestEndpoint(2)));
+        var thrower3 = ThrowerPrx.createProxy(communicator, "thrower:" + helper.getTestEndpoint(2));
         try {
           thrower3.throwMemoryLimitException(new byte[1024]); // 1KB limit
           test(false);

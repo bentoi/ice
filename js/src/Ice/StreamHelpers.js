@@ -12,7 +12,7 @@ export const StreamHelpers = {};
 
 StreamHelpers.FSizeOptHelper = function () {
     this.writeOptional = function (os, tag, v) {
-        if (v !== undefined && os.writeOptional(tag, OptionalFormat.FSize)) {
+        if (v !== undefined && v !== null && os.writeOptional(tag, OptionalFormat.FSize)) {
             const pos = os.startSize();
             this.write(os, v);
             os.endSize(pos);
@@ -31,7 +31,7 @@ StreamHelpers.FSizeOptHelper = function () {
 
 StreamHelpers.VSizeOptHelper = function () {
     this.writeOptional = function (os, tag, v) {
-        if (v !== undefined && os.writeOptional(tag, OptionalFormat.VSize)) {
+        if (v !== undefined && v !== null && os.writeOptional(tag, OptionalFormat.VSize)) {
             os.writeSize(this.minWireSize);
             this.write(os, v);
         }
@@ -49,7 +49,7 @@ StreamHelpers.VSizeOptHelper = function () {
 
 StreamHelpers.VSizeContainerOptHelper = function (elementSize) {
     this.writeOptional = function (os, tag, v) {
-        if (v !== undefined && os.writeOptional(tag, OptionalFormat.VSize)) {
+        if (v !== undefined && v !== null && os.writeOptional(tag, OptionalFormat.VSize)) {
             const sz = this.size(v);
             os.writeSize(sz > 254 ? sz * elementSize + 5 : sz * elementSize + 1);
             this.write(os, v);
@@ -68,7 +68,7 @@ StreamHelpers.VSizeContainerOptHelper = function (elementSize) {
 
 StreamHelpers.VSizeContainer1OptHelper = function () {
     this.writeOptional = function (os, tag, v) {
-        if (v !== undefined && os.writeOptional(tag, OptionalFormat.VSize)) {
+        if (v !== undefined && v !== null && os.writeOptional(tag, OptionalFormat.VSize)) {
             this.write(os, v);
         }
     };
@@ -121,7 +121,7 @@ class SequenceHelper {
 // Specialization optimized for ByteSeq
 const byteSeqHelper = new SequenceHelper();
 byteSeqHelper.write = (os, v) => os.writeByteSeq(v);
-byteSeqHelper.read = (is) => is.readByteSeq();
+byteSeqHelper.read = is => is.readByteSeq();
 
 defineProperty(byteSeqHelper, "elementHelper", { get: () => ByteHelper });
 StreamHelpers.VSizeContainer1OptHelper.call(byteSeqHelper);
@@ -133,7 +133,7 @@ const valueSequenceHelperRead = function (is) {
     v.length = sz;
     const elementType = this.elementType;
     const readValueAtIndex = function (idx) {
-        is.readValue((obj) => {
+        is.readValue(obj => {
             v[idx] = obj;
         }, elementType);
     };
@@ -219,7 +219,7 @@ function valueDictionaryHelperRead(is) {
     const valueType = this.valueType;
 
     const readValueForKey = function (key) {
-        is.readValue((obj) => v.set(key, obj), valueType);
+        is.readValue(obj => v.set(key, obj), valueType);
     };
 
     const keyHelper = this.keyHelper;

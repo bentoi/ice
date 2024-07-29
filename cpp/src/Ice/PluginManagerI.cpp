@@ -5,11 +5,11 @@
 #include "PluginManagerI.h"
 #include "DynamicLibrary.h"
 #include "Ice/Communicator.h"
-#include "Ice/LocalException.h"
+#include "Ice/LocalExceptions.h"
 #include "Ice/LoggerUtil.h"
 #include "Ice/Properties.h"
-#include "IceUtil/Options.h"
 #include "Instance.h"
+#include "Options.h"
 
 using namespace std;
 using namespace Ice;
@@ -380,14 +380,14 @@ Ice::PluginManagerI::loadPlugin(const string& name, const string& pluginSpec, St
         //
         try
         {
-            args = IceUtilInternal::Options::split(pluginSpec);
+            args = IceInternal::Options::split(pluginSpec);
         }
-        catch (const IceUtilInternal::BadOptException& ex)
+        catch (const IceInternal::BadOptException& ex)
         {
             throw PluginInitializationException(
                 __FILE__,
                 __LINE__,
-                "invalid arguments for plug-in `" + name + "':\n" + ex.reason);
+                "invalid arguments for plug-in '" + name + "':\n" + string{ex.what()});
         }
 
         assert(!args.empty());

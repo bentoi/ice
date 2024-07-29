@@ -18,17 +18,25 @@ def allTests(helper, communicator)
     print "testing value factory registration exception... "
     STDOUT.flush
     vf = ValueFactoryI.new
-    communicator.getValueFactoryManager().add(vf, "x")
+
+    vfm = communicator.getValueFactoryManager()
+    test(vfm.class == Ice::ValueFactoryManager) # created by the C++ code
+
+    vfm.add(vf, "x")
     begin
-        communicator.getValueFactoryManager().add(vf, "x")
+        vfm.add(vf, "x")
         test(false)
-    rescue Ice::AlreadyRegisteredException
+    rescue Ice::AlreadyRegisteredException => ex
+        test(ex.kindOfObject == "value factory")
+        test(ex.id == "x")
     end
-    communicator.getValueFactoryManager().add(vf, "")
+    vfm.add(vf, "")
     begin
-        communicator.getValueFactoryManager().add(vf, "")
+        vfm.add(vf, "")
         test(false)
-    rescue Ice::AlreadyRegisteredException
+    rescue Ice::AlreadyRegisteredException => ex
+        test(ex.kindOfObject == "value factory")
+        test(ex.id == "")
     end
     puts "ok"
 
@@ -41,7 +49,7 @@ def allTests(helper, communicator)
 
     print "testing checked cast... "
     STDOUT.flush
-    thrower = Test::ThrowerPrx::checkedCast(base)
+    thrower = Test::ThrowerPrx.checkedCast(base)
     test(thrower)
     test(thrower == base)
     puts "ok"
@@ -258,7 +266,7 @@ def allTests(helper, communicator)
     begin
         thrower.throwMemoryLimitException(Array.new(1, 0x00));
         test(false)
-    rescue Ice::MemoryLimitException
+    rescue Ice::MarshalException
         # Expected
     rescue
         test(false)
@@ -283,7 +291,7 @@ def allTests(helper, communicator)
 
     id = Ice::stringToIdentity("does not exist")
     begin
-        thrower2 = Test::ThrowerPrx::uncheckedCast(thrower.ice_identity(id))
+        thrower2 = thrower.ice_identity(id, Test::ThrowerPrx)
         thrower2.throwAasA(1)
 #       thrower2.ice_ping()
         test(false)
@@ -298,11 +306,10 @@ def allTests(helper, communicator)
 
     print "catching facet not exist exception... "
     STDOUT.flush
-
     begin
-        thrower2 = Test::ThrowerPrx::uncheckedCast(thrower, "no such facet")
+        thrower2 = thrower.ice_facet("no such facet", Test::ThrowerPrx)
         begin
-            thrower2.ice_ping()
+            thrower2.throwAasA(1)
             test(false)
         rescue Ice::FacetNotExistException => ex
             test(ex.facet == "no such facet")

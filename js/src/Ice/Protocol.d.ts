@@ -72,8 +72,6 @@ declare module "ice" {
 
             static currentEncoding: EncodingVersion;
 
-            static checkSupportedProtocol(v: ProtocolVersion): void;
-            static checkSupportedProtocolEncoding(v: EncodingVersion): void;
             static checkSupportedEncoding(version: EncodingVersion): void;
 
             //
@@ -122,7 +120,7 @@ declare module "ice" {
         /**
          * Converts a protocol version to a string.
          *
-         * @param v The protocol version to convert.
+         * @param version The protocol version to convert.
          *
          * @return The converted string.
          **/
@@ -131,7 +129,7 @@ declare module "ice" {
         /**
          * Converts an encoding version to a string.
          *
-         * @param v The encoding version to convert.
+         * @param version The encoding version to convert.
          *
          * @return The converted string.
          **/

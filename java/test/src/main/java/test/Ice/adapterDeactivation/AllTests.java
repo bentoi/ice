@@ -161,8 +161,7 @@ public class AllTests {
 
       try {
         router =
-            com.zeroc.Ice.RouterPrx.uncheckedCast(
-                communicator.stringToProxy("test:" + helper.getTestEndpoint(1)));
+            com.zeroc.Ice.RouterPrx.createProxy(communicator, "test:" + helper.getTestEndpoint(1));
         communicator.createObjectAdapterWithRouter("", router);
         test(false);
       } catch (com.zeroc.Ice.ConnectFailedException ex) {
@@ -193,7 +192,7 @@ public class AllTests {
     out.print("testing whether server is gone... ");
     out.flush();
     try {
-      obj.ice_timeout(100).ice_ping(); // Use timeout to speed up testing on Windows
+      obj.ice_invocationTimeout(100).ice_ping(); // Use timeout to speed up testing on Windows
       test(false);
     } catch (com.zeroc.Ice.LocalException ex) {
       out.println("ok");
@@ -202,16 +201,48 @@ public class AllTests {
 
     out.print("testing server idle time...");
     out.flush();
-    {
-      com.zeroc.Ice.InitializationData initData = new com.zeroc.Ice.InitializationData();
-      initData.properties = communicator.getProperties()._clone();
-      initData.properties.setProperty("Ice.ServerIdleTime", "1");
-      try (com.zeroc.Ice.Communicator idleCommunicator = com.zeroc.Ice.Util.initialize(initData)) {
-        com.zeroc.Ice.ObjectAdapter adapter =
-            idleCommunicator.createObjectAdapterWithEndpoints("IdleAdapter", "tcp -h 127.0.0.1");
-        adapter.activate();
-        idleCommunicator.waitForShutdown();
-      }
+    Thread thread1 =
+        new Thread(
+            () -> {
+              com.zeroc.Ice.InitializationData initData = new com.zeroc.Ice.InitializationData();
+              initData.properties = new com.zeroc.Ice.Properties();
+              initData.properties.setProperty("Ice.ServerIdleTime", "1");
+              try (com.zeroc.Ice.Communicator idleCommunicator =
+                  com.zeroc.Ice.Util.initialize(initData)) {
+                com.zeroc.Ice.ObjectAdapter adapter =
+                    idleCommunicator.createObjectAdapterWithEndpoints(
+                        "IdleAdapter", "tcp -h 127.0.0.1");
+                adapter.activate();
+                idleCommunicator.waitForShutdown();
+              }
+            });
+    Thread thread2 =
+        new Thread(
+            () -> {
+              com.zeroc.Ice.InitializationData initData = new com.zeroc.Ice.InitializationData();
+              initData.properties = new com.zeroc.Ice.Properties();
+              initData.properties.setProperty("Ice.ServerIdleTime", "1");
+              try (com.zeroc.Ice.Communicator idleCommunicator =
+                  com.zeroc.Ice.Util.initialize(initData)) {
+                com.zeroc.Ice.ObjectAdapter adapter =
+                    idleCommunicator.createObjectAdapterWithEndpoints(
+                        "IdleAdapter", "tcp -h 127.0.0.1");
+                adapter.activate();
+                try {
+                  Thread.sleep(1200);
+                } catch (InterruptedException ex) {
+                  test(false);
+                }
+                test(idleCommunicator.isShutdown());
+              }
+            });
+    thread1.start();
+    thread2.start();
+    try {
+      thread1.join();
+      thread2.join();
+    } catch (InterruptedException ex) {
+      test(false);
     }
     out.println("ok");
 

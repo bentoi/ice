@@ -4,7 +4,7 @@
 
 #include "Gen.h"
 #include "../Slice/Util.h"
-#include "IceUtil/StringUtil.h"
+#include "Ice/StringUtil.h"
 #include <cstring>
 
 #include <algorithm>
@@ -13,8 +13,7 @@
 
 using namespace std;
 using namespace Slice;
-using namespace IceUtil;
-using namespace IceUtilInternal;
+using namespace IceInternal;
 
 namespace
 {
@@ -1845,12 +1844,12 @@ Slice::JavaVisitor::writeDocCommentLines(Output& out, const string& text)
     }
     else
     {
-        string s = IceUtilInternal::trim(text.substr(start, pos - start));
+        string s = IceInternal::trim(text.substr(start, pos - start));
         out << s; // Emit the first line.
         start = pos + 1;
         while ((pos = text.find_first_of(ws, start)) != string::npos)
         {
-            string line = IceUtilInternal::trim(text.substr(start, pos - start));
+            string line = IceInternal::trim(text.substr(start, pos - start));
             if (line.empty())
             {
                 out << nl << " *";
@@ -1863,7 +1862,7 @@ Slice::JavaVisitor::writeDocCommentLines(Output& out, const string& text)
         }
         if (start < text.size())
         {
-            string line = IceUtilInternal::trim(text.substr(start));
+            string line = IceInternal::trim(text.substr(start));
             if (line.empty())
             {
                 out << nl << " *";
@@ -2579,49 +2578,7 @@ Slice::Gen::TypesVisitor::visitClassDefEnd(const ClassDefPtr& p)
 
     out << sp;
     writeHiddenDocComment(out);
-    out << nl << "public static final long serialVersionUID = ";
-    string serialVersionUID;
-    if (p->findMetaData("java:serialVersionUID", serialVersionUID))
-    {
-        const UnitPtr unt = p->unit();
-        const DefinitionContextPtr dc = unt->findDefinitionContext(p->file());
-        assert(dc);
-
-        string::size_type pos = serialVersionUID.rfind(":") + 1;
-        if (pos == string::npos)
-        {
-            ostringstream os;
-            os << "ignoring invalid serialVersionUID for class `" << p->scoped() << "'; generating default value";
-            dc->warning(InvalidMetaData, "", "", os.str());
-            out << computeSerialVersionUUID(p);
-        }
-        else
-        {
-            std::int64_t v = 0;
-            serialVersionUID = serialVersionUID.substr(pos);
-            if (serialVersionUID != "0")
-            {
-                try
-                {
-                    v = std::stoll(serialVersionUID, nullptr, 0);
-                }
-                catch (const std::exception&)
-                {
-                    ostringstream os;
-                    os << "ignoring invalid serialVersionUID for class `" << p->scoped()
-                       << "'; generating default value";
-                    dc->warning(InvalidMetaData, "", "", os.str());
-                    out << computeSerialVersionUUID(p);
-                }
-            }
-            out << v;
-        }
-    }
-    else
-    {
-        out << computeSerialVersionUUID(p);
-    }
-    out << "L;";
+    out << nl << getSerialVersionUID(p);
 
     writeMarshaling(out, p);
 
@@ -3097,49 +3054,7 @@ Slice::Gen::TypesVisitor::visitExceptionEnd(const ExceptionPtr& p)
 
     out << sp;
     writeHiddenDocComment(out);
-    out << nl << "public static final long serialVersionUID = ";
-    string serialVersionUID;
-    if (p->findMetaData("java:serialVersionUID", serialVersionUID))
-    {
-        const UnitPtr unt = p->unit();
-        const DefinitionContextPtr dc = unt->findDefinitionContext(p->file());
-        assert(dc);
-
-        string::size_type pos = serialVersionUID.rfind(":") + 1;
-        if (pos == string::npos)
-        {
-            ostringstream os;
-            os << "ignoring invalid serialVersionUID for exception `" << p->scoped() << "'; generating default value";
-            dc->warning(InvalidMetaData, "", "", os.str());
-            out << computeSerialVersionUUID(p);
-        }
-        else
-        {
-            std::int64_t v = 0;
-            serialVersionUID = serialVersionUID.substr(pos);
-            if (serialVersionUID != "0")
-            {
-                try
-                {
-                    v = std::stoll(serialVersionUID, nullptr, 0);
-                }
-                catch (const std::exception&)
-                {
-                    ostringstream os;
-                    os << "ignoring invalid serialVersionUID for exception `" << p->scoped()
-                       << "'; generating default value";
-                    dc->warning(InvalidMetaData, "", "", os.str());
-                    out << computeSerialVersionUUID(p);
-                }
-            }
-            out << v;
-        }
-    }
-    else
-    {
-        out << computeSerialVersionUUID(p);
-    }
-    out << "L;";
+    out << nl << getSerialVersionUID(p);
 
     out << eb;
     close();
@@ -3345,9 +3260,9 @@ Slice::Gen::TypesVisitor::visitStructEnd(const StructPtr& p)
     out << nl << "int h_ = 5381;";
     out << nl << "h_ = com.zeroc.IceInternal.HashUtil.hashAdd(h_, \"" << p->scoped() << "\");";
     iter = 0;
-    for (DataMemberList::const_iterator d = members.begin(); d != members.end(); ++d)
+    for (const auto& member : members)
     {
-        string memberName = fixKwd((*d)->name());
+        string memberName = fixKwd(member->name());
         out << nl << "h_ = com.zeroc.IceInternal.HashUtil.hashAdd(h_, " << memberName << ");";
     }
     out << nl << "return h_;";
@@ -3460,48 +3375,7 @@ Slice::Gen::TypesVisitor::visitStructEnd(const StructPtr& p)
 
     out << sp;
     writeHiddenDocComment(out);
-    out << nl << "public static final long serialVersionUID = ";
-    string serialVersionUID;
-    if (p->findMetaData("java:serialVersionUID", serialVersionUID))
-    {
-        const UnitPtr unt = p->unit();
-        const DefinitionContextPtr dc = unt->findDefinitionContext(p->file());
-        assert(dc);
-        string::size_type pos = serialVersionUID.rfind(":") + 1;
-        if (pos == string::npos)
-        {
-            ostringstream os;
-            os << "ignoring invalid serialVersionUID for struct `" << p->scoped() << "'; generating default value";
-            dc->warning(InvalidMetaData, "", "", os.str());
-            out << computeSerialVersionUUID(p);
-        }
-        else
-        {
-            std::int64_t v = 0;
-            serialVersionUID = serialVersionUID.substr(pos);
-            if (serialVersionUID != "0")
-            {
-                try
-                {
-                    v = std::stoll(serialVersionUID, nullptr, 0);
-                }
-                catch (const std::exception&)
-                {
-                    ostringstream os;
-                    os << "ignoring invalid serialVersionUID for struct `" << p->scoped()
-                       << "'; generating default value";
-                    dc->warning(InvalidMetaData, "", "", os.str());
-                    out << computeSerialVersionUUID(p);
-                }
-            }
-            out << v;
-        }
-    }
-    else
-    {
-        out << computeSerialVersionUUID(p);
-    }
-    out << "L;";
+    out << nl << getSerialVersionUID(p);
 
     out << eb;
     close();
@@ -3822,8 +3696,6 @@ Slice::Gen::TypesVisitor::visitEnum(const EnumPtr& p)
     }
 
     out << nl << "public enum " << name;
-    out << " implements java.io.Serializable";
-
     out << sb;
 
     for (EnumeratorList::const_iterator en = enumerators.begin(); en != enumerators.end(); ++en)
@@ -4355,6 +4227,22 @@ Slice::Gen::ProxyVisitor::visitInterfaceDefEnd(const InterfaceDefPtr& p)
 
     const string package = getPackage(p);
     const string contextParam = "java.util.Map<String, String> context";
+    const string prxName = p->name() + "Prx";
+    const string prxIName = "_" + prxName + "I";
+
+    out << sp;
+    writeDocComment(
+        out,
+        "Creates a new proxy that implements {@link " + prxName +
+            "}.\n"
+            "@param communicator The communicator of the new proxy.\n"
+            "@param proxyString The string representation of the proxy.\n"
+            "@return The new proxy.");
+    out << nl << "public static " << prxName
+        << " createProxy(com.zeroc.Ice.Communicator communicator, String proxyString)";
+    out << sb;
+    out << nl << "return new " << prxIName << "(com.zeroc.Ice.ObjectPrx.createProxy(communicator, proxyString));";
+    out << eb;
 
     out << sp;
     writeDocComment(
@@ -4363,10 +4251,9 @@ Slice::Gen::ProxyVisitor::visitInterfaceDefEnd(const InterfaceDefPtr& p)
         "Raises a local exception if a communication error occurs.\n"
         "@param obj The untyped proxy.\n"
         "@return A proxy for this type, or null if the object does not support this type.");
-    out << nl << "static " << p->name() << "Prx checkedCast(com.zeroc.Ice.ObjectPrx obj)";
+    out << nl << "static " << prxName << " checkedCast(com.zeroc.Ice.ObjectPrx obj)";
     out << sb;
-    out << nl << "return com.zeroc.Ice.ObjectPrx._checkedCast(obj, ice_staticId(), " << p->name() << "Prx.class, _"
-        << p->name() << "PrxI.class);";
+    out << nl << "return checkedCast(obj, noExplicitContext);";
     out << eb;
 
     out << sp;
@@ -4377,10 +4264,9 @@ Slice::Gen::ProxyVisitor::visitInterfaceDefEnd(const InterfaceDefPtr& p)
         "@param obj The untyped proxy.\n"
         "@param context The Context map to send with the invocation.\n"
         "@return A proxy for this type, or null if the object does not support this type.");
-    out << nl << "static " << p->name() << "Prx checkedCast(com.zeroc.Ice.ObjectPrx obj, " << contextParam << ')';
+    out << nl << "static " << prxName << " checkedCast(com.zeroc.Ice.ObjectPrx obj, " << contextParam << ')';
     out << sb;
-    out << nl << "return com.zeroc.Ice.ObjectPrx._checkedCast(obj, context, ice_staticId(), " << p->name()
-        << "Prx.class, _" << p->name() << "PrxI.class);";
+    out << nl << "return (obj != null && obj.ice_isA(ice_staticId(), context)) ? new " << prxIName << "(obj) : null;";
     out << eb;
 
     out << sp;
@@ -4391,10 +4277,9 @@ Slice::Gen::ProxyVisitor::visitInterfaceDefEnd(const InterfaceDefPtr& p)
         "@param obj The untyped proxy.\n"
         "@param facet The name of the desired facet.\n"
         "@return A proxy for this type, or null if the object does not support this type.");
-    out << nl << "static " << p->name() << "Prx checkedCast(com.zeroc.Ice.ObjectPrx obj, String facet)";
+    out << nl << "static " << prxName << " checkedCast(com.zeroc.Ice.ObjectPrx obj, String facet)";
     out << sb;
-    out << nl << "return com.zeroc.Ice.ObjectPrx._checkedCast(obj, facet, ice_staticId(), " << p->name()
-        << "Prx.class, _" << p->name() << "PrxI.class);";
+    out << nl << "return checkedCast(obj, facet, noExplicitContext);";
     out << eb;
 
     out << sp;
@@ -4406,11 +4291,10 @@ Slice::Gen::ProxyVisitor::visitInterfaceDefEnd(const InterfaceDefPtr& p)
         "@param facet The name of the desired facet.\n"
         "@param context The Context map to send with the invocation.\n"
         "@return A proxy for this type, or null if the object does not support this type.");
-    out << nl << "static " << p->name() << "Prx checkedCast(com.zeroc.Ice.ObjectPrx obj, String facet, " << contextParam
+    out << nl << "static " << prxName << " checkedCast(com.zeroc.Ice.ObjectPrx obj, String facet, " << contextParam
         << ')';
     out << sb;
-    out << nl << "return com.zeroc.Ice.ObjectPrx._checkedCast(obj, facet, context, ice_staticId(), " << p->name()
-        << "Prx.class, _" << p->name() << "PrxI.class);";
+    out << nl << "return (obj == null) ? null : checkedCast(obj.ice_facet(facet), context);";
     out << eb;
 
     out << sp;
@@ -4419,10 +4303,9 @@ Slice::Gen::ProxyVisitor::visitInterfaceDefEnd(const InterfaceDefPtr& p)
         "Downcasts the given proxy to this type without contacting the remote server.\n"
         "@param obj The untyped proxy.\n"
         "@return A proxy for this type.");
-    out << nl << "static " << p->name() << "Prx uncheckedCast(com.zeroc.Ice.ObjectPrx obj)";
+    out << nl << "static " << prxName << " uncheckedCast(com.zeroc.Ice.ObjectPrx obj)";
     out << sb;
-    out << nl << "return com.zeroc.Ice.ObjectPrx._uncheckedCast(obj, " << p->name() << "Prx.class, _" << p->name()
-        << "PrxI.class);";
+    out << nl << "return (obj == null) ? null : new " << prxIName << "(obj);";
     out << eb;
 
     out << sp;
@@ -4432,280 +4315,54 @@ Slice::Gen::ProxyVisitor::visitInterfaceDefEnd(const InterfaceDefPtr& p)
         "@param obj The untyped proxy.\n"
         "@param facet The name of the desired facet.\n"
         "@return A proxy for this type.");
-    out << nl << "static " << p->name() << "Prx uncheckedCast(com.zeroc.Ice.ObjectPrx obj, String facet)";
+    out << nl << "static " << prxName << " uncheckedCast(com.zeroc.Ice.ObjectPrx obj, String facet)";
     out << sb;
-    out << nl << "return com.zeroc.Ice.ObjectPrx._uncheckedCast(obj, facet, " << p->name() << "Prx.class, _"
-        << p->name() << "PrxI.class);";
+    out << nl << "return (obj == null) ? null : new " << prxIName << "(obj.ice_facet(facet));";
     out << eb;
 
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the per-proxy context.\n"
-        "@param newContext The context for the new proxy.\n"
-        "@return A proxy with the specified per-proxy context.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_context(java.util.Map<String, String> newContext)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_context(newContext);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the adapter ID.\n"
-        "@param newAdapterId The adapter ID for the new proxy.\n"
-        "@return A proxy with the specified adapter ID.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_adapterId(String newAdapterId)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_adapterId(newAdapterId);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the endpoints.\n"
-        "@param newEndpoints The endpoints for the new proxy.\n"
-        "@return A proxy with the specified endpoints.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_endpoints(com.zeroc.Ice.Endpoint[] newEndpoints)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_endpoints(newEndpoints);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the locator cache timeout.\n"
-        "@param newTimeout The new locator cache timeout (in seconds).\n"
-        "@return A proxy with the specified locator cache timeout.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_locatorCacheTimeout(int newTimeout)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_locatorCacheTimeout(newTimeout);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the invocation timeout.\n"
-        "@param newTimeout The new invocation timeout (in seconds).\n"
-        "@return A proxy with the specified invocation timeout.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_invocationTimeout(int newTimeout)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_invocationTimeout(newTimeout);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for connection caching.\n"
-        "@param newCache <code>true</code> if the new proxy should cache connections; <code>false</code> otherwise.\n"
-        "@return A proxy with the specified caching policy.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_connectionCached(boolean newCache)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_connectionCached(newCache);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the endpoint selection policy.\n"
-        "@param newType The new endpoint selection policy.\n"
-        "@return A proxy with the specified endpoint selection policy.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_endpointSelection(com.zeroc.Ice.EndpointSelectionType newType)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_endpointSelection(newType);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for how it selects endpoints.\n"
-        "@param b If <code>b</code> is <code>true</code>, only endpoints that use a secure transport are\n"
-        "used by the new proxy. If <code>b</code> is false, the returned proxy uses both secure and\n"
-        "insecure endpoints.\n"
-        "@return A proxy with the specified selection policy.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_secure(boolean b)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_secure(b);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the encoding used to marshal parameters.\n"
-        "@param e The encoding version to use to marshal request parameters.\n"
-        "@return A proxy with the specified encoding version.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_encodingVersion(com.zeroc.Ice.EncodingVersion e)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_encodingVersion(e);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for its endpoint selection policy.\n"
-        "@param b If <code>b</code> is <code>true</code>, the new proxy will use secure endpoints for invocations\n"
-        "and only use insecure endpoints if an invocation cannot be made via secure endpoints. If <code>b</code> is\n"
-        "<code>false</code>, the proxy prefers insecure endpoints to secure ones.\n"
-        "@return A proxy with the specified selection policy.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_preferSecure(boolean b)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_preferSecure(b);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the router.\n"
-        "@param router The router for the new proxy.\n"
-        "@return A proxy with the specified router.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_router(com.zeroc.Ice.RouterPrx router)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_router(router);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for the locator.\n"
-        "@param locator The locator for the new proxy.\n"
-        "@return A proxy with the specified locator.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_locator(com.zeroc.Ice.LocatorPrx locator)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_locator(locator);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for collocation optimization.\n"
-        "@param b <code>true</code> if the new proxy enables collocation optimization; <code>false</code> otherwise.\n"
-        "@return A proxy with the specified collocation optimization.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_collocationOptimized(boolean b)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_collocationOptimized(b);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, but uses twoway invocations.\n"
-        "@return A proxy that uses twoway invocations.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_twoway()";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_twoway();";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, but uses oneway invocations.\n"
-        "@return A proxy that uses oneway invocations.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_oneway()";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_oneway();";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, but uses batch oneway invocations.\n"
-        "@return A proxy that uses batch oneway invocations.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_batchOneway()";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_batchOneway();";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, but uses datagram invocations.\n"
-        "@return A proxy that uses datagram invocations.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_datagram()";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_datagram();";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, but uses batch datagram invocations.\n"
-        "@return A proxy that uses batch datagram invocations.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_batchDatagram()";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_batchDatagram();";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for compression.\n"
-        "@param co <code>true</code> enables compression for the new proxy; <code>false</code> disables compression.\n"
-        "@return A proxy with the specified compression setting.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_compress(boolean co)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_compress(co);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for its connection timeout setting.\n"
-        "@param t The connection timeout for the proxy in milliseconds.\n"
-        "@return A proxy with the specified timeout.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_timeout(int t)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_timeout(t);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except for its connection ID.\n"
-        "@param connectionId The connection ID for the new proxy. An empty string removes the connection ID.\n"
-        "@return A proxy with the specified connection ID.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_connectionId(String connectionId)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_connectionId(connectionId);";
-    out << eb;
-
-    out << sp;
-    writeDocComment(
-        out,
-        "Returns a proxy that is identical to this proxy, except it's a fixed proxy bound\n"
-        "the given connection."
-        "@param connection The fixed proxy connection.\n"
-        "@return A fixed proxy bound to the given connection.");
-    out << nl << "@Override";
-    out << nl << "default " << p->name() << "Prx ice_fixed(com.zeroc.Ice.Connection connection)";
-    out << sb;
-    out << nl << "return (" << p->name() << "Prx)_ice_fixed(connection);";
-    out << eb;
+    // Generate overrides for all the methods on `ObjectPrx` with covariant return types.
+    static constexpr string_view objectPrxMethods[] = {
+        "ice_context(java.util.Map<String, String> newContext)",
+        "ice_adapterId(String newAdapterId)",
+        "ice_endpoints(com.zeroc.Ice.Endpoint[] newEndpoints)",
+        "ice_locatorCacheTimeout(int newTimeout)",
+        "ice_invocationTimeout(int newTimeout)",
+        "ice_connectionCached(boolean newCache)",
+        "ice_endpointSelection(com.zeroc.Ice.EndpointSelectionType newType)",
+        "ice_secure(boolean b)",
+        "ice_encodingVersion(com.zeroc.Ice.EncodingVersion e)",
+        "ice_preferSecure(boolean b)",
+        "ice_router(com.zeroc.Ice.RouterPrx router)",
+        "ice_locator(com.zeroc.Ice.LocatorPrx locator)",
+        "ice_collocationOptimized(boolean b)",
+        "ice_twoway()",
+        "ice_oneway()",
+        "ice_batchOneway()",
+        "ice_datagram()",
+        "ice_batchDatagram()",
+        "ice_compress(boolean co)",
+        "ice_connectionId(String connectionId)",
+        "ice_fixed(com.zeroc.Ice.Connection connection)",
+    };
+    for (const auto& method : objectPrxMethods)
+    {
+        out << sp;
+        out << nl << "@Override";
+        out << nl << prxName << " " << method << ";";
+    }
 
     out << sp;
     out << nl << "static String ice_staticId()";
     out << sb;
     out << nl << "return \"" << p->scoped() << "\";";
+    out << eb;
+
+    out << sp;
+    writeDocComment(out, "@hidden");
+    out << nl << "@Override";
+    out << nl << "default " << prxName << " _newInstance(com.zeroc.IceInternal.Reference ref)";
+    out << sb;
+    out << nl << "return new " << prxIName << "(ref);";
     out << eb;
 
     out << eb;
@@ -4723,12 +4380,27 @@ Slice::Gen::ProxyVisitor::visitInterfaceDefEnd(const InterfaceDefPtr& p)
     {
         outi << nl << "@Deprecated";
     }
-    outi << nl << "public class _" << p->name() << "PrxI extends com.zeroc.Ice._ObjectPrxI implements " << p->name()
-         << "Prx";
+    outi << nl << "public class " << prxIName;
+    outi << " extends com.zeroc.Ice._ObjectPrxFactoryMethods<" << prxName << ">";
+    outi << " implements " << prxName;
     outi << sb;
+
+    // Constructor which directly takes a Reference.
     outi << sp;
-    writeHiddenDocComment(outi);
-    outi << nl << "public static final long serialVersionUID = 0L;";
+    outi << nl << prxIName << "(com.zeroc.IceInternal.Reference ref)";
+    outi << sb;
+    outi << nl << "super(ref);";
+    outi << eb;
+
+    // Copy constructor
+    outi << sp;
+    outi << nl << prxIName << "(com.zeroc.Ice.ObjectPrx obj)";
+    outi << sb;
+    outi << nl << "super(obj);";
+    outi << eb;
+
+    outi << sp;
+    outi << nl << "private static final long serialVersionUID = 0L;";
     outi << eb;
     close();
 }

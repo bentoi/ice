@@ -4,9 +4,9 @@
 
 #include "Engine.h"
 #include "DBus.h"
-#include "Ice/LocalException.h"
-#include "IceUtil/StringUtil.h"
-#include "IceUtil/UUID.h"
+#include "Ice/LocalExceptions.h"
+#include "Ice/StringUtil.h"
+#include "Ice/UUID.h"
 #include "Util.h"
 
 #include <thread>
@@ -218,7 +218,7 @@ namespace IceBT
                     assert(str);
                     addr = str->v;
                 }
-                return IceUtilInternal::toUpper(addr);
+                return IceInternal::toUpper(addr);
             }
 
             string getAdapter() const
@@ -253,7 +253,7 @@ namespace IceBT
                     assert(str);
                     addr = str->v;
                 }
-                return IceUtilInternal::toUpper(addr);
+                return IceInternal::toUpper(addr);
             }
 
             VariantMap properties;
@@ -279,7 +279,7 @@ namespace IceBT
             }
             catch (const DBus::Exception& ex)
             {
-                throw BluetoothException(__FILE__, __LINE__, ex.reason);
+                throw BluetoothException{__FILE__, __LINE__, ex.reason};
             }
         }
 
@@ -432,7 +432,7 @@ namespace IceBT
                 return _adapters.begin()->second.getAddress();
             }
 
-            throw BluetoothException(__FILE__, __LINE__, "no Bluetooth adapter found");
+            throw BluetoothException{__FILE__, __LINE__, "no Bluetooth adapter found"};
         }
 
         bool adapterExists(const string& addr) const
@@ -462,7 +462,7 @@ namespace IceBT
             //
             for (RemoteDeviceMap::const_iterator p = _remoteDevices.begin(); p != _remoteDevices.end(); ++p)
             {
-                if (p->second.getAddress() == IceUtilInternal::toUpper(addr))
+                if (p->second.getAddress() == IceInternal::toUpper(addr))
                 {
                     return true;
                 }
@@ -495,7 +495,7 @@ namespace IceBT
             }
             catch (const DBus::Exception& ex)
             {
-                throw BluetoothException(__FILE__, __LINE__, ex.reason);
+                throw BluetoothException{__FILE__, __LINE__, ex.reason};
             }
 
             return path;
@@ -519,7 +519,7 @@ namespace IceBT
             }
             catch (const DBus::Exception& ex)
             {
-                throw BluetoothException(__FILE__, __LINE__, ex.reason);
+                throw BluetoothException{__FILE__, __LINE__, ex.reason};
             }
         }
 
@@ -543,7 +543,7 @@ namespace IceBT
 
                 for (AdapterMap::iterator p = _adapters.begin(); p != _adapters.end(); ++p)
                 {
-                    if (p->second.getAddress() == IceUtilInternal::toUpper(addr))
+                    if (p->second.getAddress() == IceInternal::toUpper(addr))
                     {
                         path = p->first;
                         p->second.callbacks.push_back(move(cb));
@@ -553,7 +553,7 @@ namespace IceBT
 
             if (path.empty())
             {
-                throw BluetoothException(__FILE__, __LINE__, "no Bluetooth adapter found matching address " + addr);
+                throw BluetoothException{__FILE__, __LINE__, "no Bluetooth adapter found matching address " + addr};
             }
 
             //
@@ -572,7 +572,7 @@ namespace IceBT
             }
             catch (const DBus::Exception& ex)
             {
-                throw BluetoothException(__FILE__, __LINE__, ex.reason);
+                throw BluetoothException{__FILE__, __LINE__, ex.reason};
             }
         }
 
@@ -585,7 +585,7 @@ namespace IceBT
 
                 for (AdapterMap::iterator p = _adapters.begin(); p != _adapters.end(); ++p)
                 {
-                    if (p->second.getAddress() == IceUtilInternal::toUpper(addr))
+                    if (p->second.getAddress() == IceInternal::toUpper(addr))
                     {
                         path = p->first;
                         p->second.callbacks.clear();
@@ -595,7 +595,7 @@ namespace IceBT
 
             if (path.empty())
             {
-                throw BluetoothException(__FILE__, __LINE__, "no Bluetooth adapter found matching address " + addr);
+                throw BluetoothException{__FILE__, __LINE__, "no Bluetooth adapter found matching address " + addr};
             }
 
             //
@@ -614,7 +614,7 @@ namespace IceBT
             }
             catch (const DBus::Exception& ex)
             {
-                throw BluetoothException(__FILE__, __LINE__, ex.reason);
+                throw BluetoothException{__FILE__, __LINE__, ex.reason};
             }
         }
 
@@ -757,7 +757,7 @@ namespace IceBT
             }
             catch (const DBus::Exception& ex)
             {
-                throw BluetoothException(__FILE__, __LINE__, ex.reason);
+                throw BluetoothException{__FILE__, __LINE__, ex.reason};
             }
         }
 
@@ -830,7 +830,7 @@ namespace IceBT
             //
             // Generate a unique object path. Path elements can only contain "[A-Z][a-z][0-9]_".
             //
-            string path = "/com/zeroc/P" + IceUtil::generateUUID();
+            string path = "/com/zeroc/P" + Ice::generateUUID();
             for (string::iterator p = path.begin(); p != path.end(); ++p)
             {
                 if (*p == '-')
@@ -1109,7 +1109,7 @@ namespace IceBT
 
                     for (RemoteDeviceMap::iterator p = _remoteDevices.begin(); p != _remoteDevices.end(); ++p)
                     {
-                        if (p->second.getAddress() == IceUtilInternal::toUpper(addr))
+                        if (p->second.getAddress() == IceInternal::toUpper(addr))
                         {
                             devicePath = p->first;
                             break;
@@ -1122,7 +1122,7 @@ namespace IceBT
                 //
                 if (devicePath.empty())
                 {
-                    throw BluetoothException(__FILE__, __LINE__, "unknown address `" + addr + "'");
+                    throw BluetoothException{__FILE__, __LINE__, "unknown address '" + addr + "'"};
                 }
 
                 //
@@ -1166,19 +1166,19 @@ namespace IceBT
                     catch (const DBus::Exception& ex)
                     {
                         ostringstream ostr;
-                        ostr << "unable to establish connection to " << uuid << " at " << addr;
+                        ostr << "unable to establish Bluetooth connection to " << uuid << " at " << addr;
                         if (!ex.reason.empty())
                         {
                             ostr << ':' << endl << ex.reason;
                         }
-                        throw BluetoothException(__FILE__, __LINE__, ostr.str());
+                        throw BluetoothException{__FILE__, __LINE__, ostr.str()};
                     }
                 }
             }
             catch (const DBus::Exception& ex)
             {
                 ok = false;
-                cb->failed(make_exception_ptr(BluetoothException(__FILE__, __LINE__, ex.reason)));
+                cb->failed(make_exception_ptr(BluetoothException{__FILE__, __LINE__, ex.reason}));
             }
             catch (const Ice::LocalException&)
             {

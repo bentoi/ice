@@ -4,8 +4,10 @@
 
 #include "TestHelper.h"
 #include "Ice/Communicator.h"
+#include "Ice/CtrlCHandler.h"
 #include "Ice/RegisterPlugins.h"
-#include "IceUtil/CtrlCHandler.h"
+
+#include <sstream>
 
 using namespace std;
 using namespace Test;
@@ -131,7 +133,6 @@ Test::TestHelper::TestHelper(bool registerPlugins)
     if (registerPlugins)
     {
 #ifdef ICE_STATIC_LIBS
-        Ice::registerIceSSL(false);
         Ice::registerIceWS(true);
         Ice::registerIceUDP(true);
 #    ifdef ICE_HAS_BT
@@ -339,7 +340,7 @@ Test::TestHelper::shutdownOnInterrupt()
     assert(!_ctrlCHandler);
     if (_ctrlCHandler == 0)
     {
-        _ctrlCHandler = new IceUtil::CtrlCHandler();
+        _ctrlCHandler = new Ice::CtrlCHandler();
     }
     _ctrlCHandler->setCallback(shutdownOnInterruptCallback);
 }

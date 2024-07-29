@@ -9,8 +9,8 @@ import java.util.concurrent.ThreadFactory;
 public final class Util {
   static String createThreadName(final com.zeroc.Ice.Properties properties, final String name) {
     String threadName = properties.getProperty("Ice.ProgramName");
-    if (threadName.length() > 0) {
-      threadName += "-";
+    if (!threadName.isEmpty()) {
+      threadName += '-';
     }
 
     threadName = threadName + name;
@@ -31,11 +31,6 @@ public final class Util {
         return t;
       }
     };
-  }
-
-  public static Instance getInstance(com.zeroc.Ice.Communicator communicator) {
-    com.zeroc.Ice.CommunicatorI p = (com.zeroc.Ice.CommunicatorI) communicator;
-    return p.getInstance();
   }
 
   public static ProtocolPluginFacade getProtocolPluginFacade(

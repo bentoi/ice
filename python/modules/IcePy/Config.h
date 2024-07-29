@@ -15,15 +15,14 @@
 #    pragma warning(disable : 4100)
 #endif
 
+// PY_SSIZE_T_CLEAN is required for all # variants of formats (s#, y#, etc.).
+// See https://docs.python.org/3/c-api/arg.html
+#define PY_SSIZE_T_CLEAN
+
 #include <Python.h>
 
 #ifdef _WIN32
 #    pragma warning(default : 4100)
 #endif
-
-#ifdef STRCAST
-#    error "STRCAST already defined!"
-#endif
-#define STRCAST(s) const_cast<char*>(s)
 
 #endif

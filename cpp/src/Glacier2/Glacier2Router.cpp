@@ -3,10 +3,10 @@
 //
 
 #include "../Ice/ConsoleUtil.h"
+#include "../Ice/Options.h"
 #include "Glacier2/NullPermissionsVerifier.h"
 #include "Glacier2/Session.h"
 #include "Ice/Ice.h"
-#include "IceUtil/Options.h"
 #include "Instance.h"
 #include "RouterI.h"
 #include "SessionRouterI.h"
@@ -15,6 +15,7 @@ using namespace std;
 using namespace Ice;
 using namespace Glacier2;
 using namespace IceInternal;
+
 namespace
 {
     class ClientLocator final : public ServantLocator
@@ -90,7 +91,7 @@ RouterService::start(int argc, char* argv[], int& status)
 {
     bool nowarn;
 
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("h", "help");
     opts.addOpt("v", "version");
     opts.addOpt("", "nowarn");
@@ -100,9 +101,9 @@ RouterService::start(int argc, char* argv[], int& status)
     {
         args = opts.parse(argc, argv);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        error(e.reason);
+        error(e.what());
         usage(argv[0]);
         return false;
     }
@@ -306,7 +307,7 @@ RouterService::start(int argc, char* argv[], int& status)
     }
     catch (const Ice::InitializationException& ex)
     {
-        error("Glacier2 initialization failed:\n" + ex.reason);
+        error("Glacier2 initialization failed:\n" + string{ex.what()});
         return false;
     }
 
@@ -349,7 +350,7 @@ RouterService::start(int argc, char* argv[], int& status)
     // The session router is used directly as a servant for the main
     // Glacier2 router Ice object.
     //
-    Glacier2::RouterPrx routerPrx(clientAdapter->add(_sessionRouter, {"router", instanceName}));
+    auto routerPrx = clientAdapter->add<Glacier2::RouterPrx>(_sessionRouter, {"router", instanceName});
 
     //
     // Add the Ice router finder object to allow retrieving the router

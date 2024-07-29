@@ -3,7 +3,7 @@
 //
 
 #include "Ice/Ice.h"
-#include "IceUtil/Options.h"
+#include "../Ice/Options.h"
 #include "ServiceManagerI.h"
 
 using namespace std;
@@ -53,7 +53,7 @@ IceBox::IceBoxService::start(int argc, char* argv[], int& status)
         }
     }
 
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("h", "help");
     opts.addOpt("v", "version");
 
@@ -61,9 +61,9 @@ IceBox::IceBoxService::start(int argc, char* argv[], int& status)
     {
         args = opts.parse(args);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        error(e.reason);
+        error(e.what());
         usage(argv[0]);
         return false;
     }

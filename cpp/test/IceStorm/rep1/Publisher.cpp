@@ -2,9 +2,9 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
+#include "../../src/Ice/Options.h"
 #include "Ice/Ice.h"
 #include "IceStorm/IceStorm.h"
-#include "IceUtil/Options.h"
 #include "Single.h"
 #include "TestHelper.h"
 
@@ -26,17 +26,17 @@ Publisher::run(int argc, char** argv)
 {
     Ice::CommunicatorHolder ich = initialize(argc, argv);
     auto communicator = ich.communicator();
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("", "cycle");
 
     try
     {
         opts.parse(argc, (const char**)argv);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
         ostringstream os;
-        os << argv[0] << ": " << e.reason;
+        os << argv[0] << ": " << e.what();
         throw invalid_argument(os.str());
     }
 
@@ -78,7 +78,7 @@ Publisher::run(int argc, char** argv)
     //
     if (opts.isSet("cycle"))
     {
-        optional<SinglePrx> prx(topic->getPublisher()->ice_twoway());
+        auto prx = uncheckedCast<SinglePrx>(topic->getPublisher()->ice_twoway());
         vector<optional<SinglePrx>> single;
         auto endpoints = prx->ice_getEndpoints();
         for (const auto& p : endpoints)
@@ -105,7 +105,7 @@ Publisher::run(int argc, char** argv)
     }
     else
     {
-        SinglePrx single(topic->getPublisher()->ice_twoway());
+        auto single = uncheckedCast<SinglePrx>(topic->getPublisher()->ice_twoway());
         for (int i = 0; i < 1000; ++i)
         {
             single->event(i);

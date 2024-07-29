@@ -12,12 +12,12 @@ public class FixedReference extends Reference {
       String facet,
       int mode,
       boolean secure,
+      java.util.Optional<Boolean> compress,
       com.zeroc.Ice.ProtocolVersion protocol,
       com.zeroc.Ice.EncodingVersion encoding,
       com.zeroc.Ice.ConnectionI connection,
       int invocationTimeout,
-      java.util.Map<String, String> context,
-      java.util.Optional<Boolean> compress) {
+      java.util.Map<String, String> context) {
     super(
         instance,
         communicator,
@@ -25,15 +25,12 @@ public class FixedReference extends Reference {
         facet,
         mode,
         secure,
+        compress,
         protocol,
         encoding,
         invocationTimeout,
         context);
     _fixedConnection = connection;
-    if (compress.isPresent()) {
-      _overrideCompress = true;
-      _compress = compress.get();
-    }
   }
 
   @Override
@@ -84,11 +81,6 @@ public class FixedReference extends Reference {
   @Override
   public String getConnectionId() {
     return "";
-  }
-
-  @Override
-  public java.util.OptionalInt getTimeout() {
-    return java.util.OptionalInt.empty();
   }
 
   @Override
@@ -147,20 +139,12 @@ public class FixedReference extends Reference {
   }
 
   @Override
-  public Reference changeTimeout(int newTimeout) {
-    throw new com.zeroc.Ice.FixedProxyException();
-  }
-
-  @Override
   public Reference changeConnectionId(String connectionId) {
     throw new com.zeroc.Ice.FixedProxyException();
   }
 
   @Override
   public Reference changeConnection(com.zeroc.Ice.ConnectionI connection) {
-    if (_fixedConnection == connection) {
-      return this;
-    }
     FixedReference r = (FixedReference) getInstance().referenceFactory().copy(this);
     r._fixedConnection = connection;
     return r;
@@ -187,7 +171,10 @@ public class FixedReference extends Reference {
   }
 
   @Override
-  public RequestHandler getRequestHandler(com.zeroc.Ice._ObjectPrxI proxy) {
+  RequestHandler getRequestHandler() {
+    // We need to perform all these checks here and not in the constructor because
+    // `changeConnection()` clones then sets the connection.
+
     switch (getMode()) {
       case Reference.ModeTwoway:
       case Reference.ModeOneway:
@@ -215,8 +202,8 @@ public class FixedReference extends Reference {
     //
     boolean secure;
     DefaultsAndOverrides defaultsAndOverrides = getInstance().defaultsAndOverrides();
-    if (defaultsAndOverrides.overrideSecure) {
-      secure = defaultsAndOverrides.overrideSecureValue;
+    if (defaultsAndOverrides.overrideSecure.isPresent()) {
+      secure = defaultsAndOverrides.overrideSecure.get();
     } else {
       secure = getSecure();
     }
@@ -226,18 +213,15 @@ public class FixedReference extends Reference {
 
     _fixedConnection.throwException(); // Throw in case our connection is already destroyed.
 
-    boolean compress = false;
-    if (defaultsAndOverrides.overrideCompress) {
-      compress = defaultsAndOverrides.overrideCompressValue;
-    } else if (_overrideCompress) {
-      compress = _compress;
-    }
-
+    boolean compress =
+        defaultsAndOverrides.overrideCompress.isPresent()
+            ? defaultsAndOverrides.overrideCompress.get()
+            : getCompress().orElse(false);
     RequestHandler handler = new ConnectionRequestHandler(this, _fixedConnection, compress);
     if (getInstance().queueRequests()) {
       handler = new QueueRequestHandler(getInstance(), handler);
     }
-    return proxy._setRequestHandler(handler);
+    return handler;
   }
 
   @Override
@@ -258,11 +242,6 @@ public class FixedReference extends Reference {
       return false;
     }
     return _fixedConnection.equals(rhs._fixedConnection);
-  }
-
-  @Override
-  public int hashCode() {
-    return super.hashCode();
   }
 
   private com.zeroc.Ice.ConnectionI _fixedConnection;

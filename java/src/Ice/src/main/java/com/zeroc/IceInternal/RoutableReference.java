@@ -56,11 +56,6 @@ public class RoutableReference extends Reference {
   }
 
   @Override
-  public java.util.OptionalInt getTimeout() {
-    return _overrideTimeout ? java.util.OptionalInt.of(_timeout) : java.util.OptionalInt.empty();
-  }
-
-  @Override
   public final com.zeroc.IceInternal.ThreadPool getThreadPool() {
     return getInstance().clientThreadPool();
   }
@@ -68,6 +63,13 @@ public class RoutableReference extends Reference {
   @Override
   public final com.zeroc.Ice.ConnectionI getConnection() {
     return null;
+  }
+
+  @Override
+  public Reference changeMode(int newMode) {
+    var r = (RoutableReference) super.changeMode(newMode);
+    r.setBatchRequestQueue();
+    return r;
   }
 
   @Override
@@ -103,9 +105,6 @@ public class RoutableReference extends Reference {
 
   @Override
   public Reference changeEndpoints(EndpointI[] newEndpoints) {
-    if (java.util.Arrays.equals(newEndpoints, _endpoints)) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
     r._endpoints = newEndpoints;
     r._adapterId = "";
@@ -115,9 +114,6 @@ public class RoutableReference extends Reference {
 
   @Override
   public Reference changeAdapterId(String newAdapterId) {
-    if (_adapterId.equals(newAdapterId)) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
     r._adapterId = newAdapterId;
     r._endpoints = _emptyEndpoints;
@@ -126,31 +122,20 @@ public class RoutableReference extends Reference {
 
   @Override
   public Reference changeLocator(com.zeroc.Ice.LocatorPrx newLocator) {
-    LocatorInfo newLocatorInfo = getInstance().locatorManager().get(newLocator);
-    if (newLocatorInfo != null && _locatorInfo != null && newLocatorInfo.equals(_locatorInfo)) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
-    r._locatorInfo = newLocatorInfo;
+    r._locatorInfo = getInstance().locatorManager().get(newLocator);
     return r;
   }
 
   @Override
   public Reference changeRouter(com.zeroc.Ice.RouterPrx newRouter) {
-    RouterInfo newRouterInfo = getInstance().routerManager().get(newRouter);
-    if (newRouterInfo != null && _routerInfo != null && newRouterInfo.equals(_routerInfo)) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
-    r._routerInfo = newRouterInfo;
+    r._routerInfo = getInstance().routerManager().get(newRouter);
     return r;
   }
 
   @Override
   public Reference changeCollocationOptimized(boolean newCollocationOptimized) {
-    if (newCollocationOptimized == _collocationOptimized) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
     r._collocationOptimized = newCollocationOptimized;
     return r;
@@ -158,9 +143,6 @@ public class RoutableReference extends Reference {
 
   @Override
   public final Reference changeCacheConnection(boolean newCache) {
-    if (newCache == _cacheConnection) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
     r._cacheConnection = newCache;
     return r;
@@ -168,9 +150,6 @@ public class RoutableReference extends Reference {
 
   @Override
   public Reference changePreferSecure(boolean newPreferSecure) {
-    if (newPreferSecure == _preferSecure) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
     r._preferSecure = newPreferSecure;
     return r;
@@ -178,9 +157,6 @@ public class RoutableReference extends Reference {
 
   @Override
   public final Reference changeEndpointSelection(com.zeroc.Ice.EndpointSelectionType newType) {
-    if (newType == _endpointSelection) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
     r._endpointSelection = newType;
     return r;
@@ -188,37 +164,13 @@ public class RoutableReference extends Reference {
 
   @Override
   public Reference changeLocatorCacheTimeout(int newTimeout) {
-    if (_locatorCacheTimeout == newTimeout) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
     r._locatorCacheTimeout = newTimeout;
     return r;
   }
 
   @Override
-  public Reference changeTimeout(int newTimeout) {
-    if (_overrideTimeout && _timeout == newTimeout) {
-      return this;
-    }
-    RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
-    r._timeout = newTimeout;
-    r._overrideTimeout = true;
-    if (_endpoints.length > 0) {
-      EndpointI[] newEndpoints = new EndpointI[_endpoints.length];
-      for (int i = 0; i < _endpoints.length; i++) {
-        newEndpoints[i] = _endpoints[i].timeout(newTimeout);
-      }
-      r._endpoints = newEndpoints;
-    }
-    return r;
-  }
-
-  @Override
   public Reference changeConnectionId(String id) {
-    if (_connectionId.equals(id)) {
-      return this;
-    }
     RoutableReference r = (RoutableReference) getInstance().referenceFactory().copy(this);
     r._connectionId = id;
     if (_endpoints.length > 0) {
@@ -240,12 +192,12 @@ public class RoutableReference extends Reference {
         getFacet(),
         getMode(),
         getSecure(),
+        getCompress(),
         getProtocol(),
         getEncoding(),
         connection,
         getInvocationTimeout(),
-        getContext(),
-        getCompress());
+        getContext());
   }
 
   @Override
@@ -255,7 +207,7 @@ public class RoutableReference extends Reference {
 
   @Override
   public boolean isWellKnown() {
-    return _endpoints.length == 0 && _adapterId.length() == 0;
+    return _endpoints.length == 0 && _adapterId.isEmpty();
   }
 
   @Override
@@ -264,7 +216,7 @@ public class RoutableReference extends Reference {
 
     s.writeSize(_endpoints.length);
     if (_endpoints.length > 0) {
-      assert (_adapterId.length() == 0);
+      assert (_adapterId.isEmpty());
       for (EndpointI endpoint : _endpoints) {
         s.writeShort(endpoint.type());
         endpoint.streamWrite(s);
@@ -288,12 +240,12 @@ public class RoutableReference extends Reference {
     if (_endpoints.length > 0) {
       for (EndpointI endpoint : _endpoints) {
         String endp = endpoint.toString();
-        if (endp != null && endp.length() > 0) {
+        if (endp != null && !endp.isEmpty()) {
           s.append(':');
           s.append(endp);
         }
       }
-    } else if (_adapterId.length() > 0) {
+    } else if (!_adapterId.isEmpty()) {
       s.append(" @ ");
 
       //
@@ -361,12 +313,19 @@ public class RoutableReference extends Reference {
   }
 
   @Override
-  public synchronized int hashCode() {
-    if (!_hashInitialized) {
-      super.hashCode(); // Initializes _hashValue.
-      _hashValue = HashUtil.hashAdd(_hashValue, _adapterId);
-    }
-    return _hashValue;
+  public int hashCode() {
+    int h = super.hashCode();
+    h = HashUtil.hashAdd(h, _adapterId);
+    h = HashUtil.hashAdd(h, _endpoints);
+    return h;
+  }
+
+  @Override
+  public Reference clone() {
+    var r = (RoutableReference) super.clone();
+    // Each reference gets its own batch request queue.
+    r.setBatchRequestQueue();
+    return r;
   }
 
   @Override
@@ -406,12 +365,6 @@ public class RoutableReference extends Reference {
     if (!_connectionId.equals(rhs._connectionId)) {
       return false;
     }
-    if (_overrideTimeout != rhs._overrideTimeout) {
-      return false;
-    }
-    if (_overrideTimeout && _timeout != rhs._timeout) {
-      return false;
-    }
     if (!java.util.Arrays.equals(_endpoints, rhs._endpoints)) {
       return false;
     }
@@ -422,13 +375,34 @@ public class RoutableReference extends Reference {
   }
 
   @Override
-  public RequestHandler getRequestHandler(com.zeroc.Ice._ObjectPrxI proxy) {
-    return getInstance().requestHandlerFactory().getRequestHandler(this, proxy);
+  RequestHandler getRequestHandler() {
+    com.zeroc.IceInternal.Instance instance = getInstance();
+    if (_collocationOptimized) {
+      com.zeroc.Ice.ObjectAdapter adapter = instance.objectAdapterFactory().findObjectAdapter(this);
+      if (adapter != null) {
+        return new CollocatedRequestHandler(this, adapter);
+      }
+    }
+
+    var handler = new ConnectRequestHandler(this);
+    if (instance.queueRequests()) {
+      final ConnectRequestHandler h = handler;
+      instance
+          .getQueueExecutor()
+          .executeNoThrow(
+              () -> {
+                getConnection(h);
+                return null;
+              });
+    } else {
+      getConnection(handler);
+    }
+    return handler;
   }
 
   @Override
-  public BatchRequestQueue getBatchRequestQueue() {
-    return new BatchRequestQueue(getInstance(), getMode() == Reference.ModeBatchDatagram);
+  BatchRequestQueue getBatchRequestQueue() {
+    return _batchRequestQueue;
   }
 
   public void getConnection(final GetConnectionCallback callback) {
@@ -532,6 +506,7 @@ public class RoutableReference extends Reference {
       String facet,
       int mode,
       boolean secure,
+      java.util.Optional<Boolean> compress,
       com.zeroc.Ice.ProtocolVersion protocol,
       com.zeroc.Ice.EncodingVersion encoding,
       EndpointI[] endpoints,
@@ -540,7 +515,7 @@ public class RoutableReference extends Reference {
       RouterInfo routerInfo,
       boolean collocationOptimized,
       boolean cacheConnection,
-      boolean prefereSecure,
+      boolean preferSecure,
       com.zeroc.Ice.EndpointSelectionType endpointSelection,
       int locatorCacheTimeout,
       int invocationTimeout,
@@ -552,6 +527,7 @@ public class RoutableReference extends Reference {
         facet,
         mode,
         secure,
+        compress,
         protocol,
         encoding,
         invocationTimeout,
@@ -562,11 +538,9 @@ public class RoutableReference extends Reference {
     _routerInfo = routerInfo;
     _collocationOptimized = collocationOptimized;
     _cacheConnection = cacheConnection;
-    _preferSecure = prefereSecure;
+    _preferSecure = preferSecure;
     _endpointSelection = endpointSelection;
     _locatorCacheTimeout = locatorCacheTimeout;
-    _overrideTimeout = false;
-    _timeout = -1;
 
     if (_endpoints == null) {
       _endpoints = _emptyEndpoints;
@@ -574,7 +548,8 @@ public class RoutableReference extends Reference {
     if (_adapterId == null) {
       _adapterId = "";
     }
-    assert (_adapterId.length() == 0 || _endpoints.length == 0);
+    setBatchRequestQueue();
+    assert (_adapterId.isEmpty() || _endpoints.length == 0);
   }
 
   protected void applyOverrides(EndpointI[] endpts) {
@@ -583,11 +558,8 @@ public class RoutableReference extends Reference {
     //
     for (int i = 0; i < endpts.length; ++i) {
       endpts[i] = endpts[i].connectionId(_connectionId);
-      if (_overrideCompress) {
-        endpts[i] = endpts[i].compress(_compress);
-      }
-      if (_overrideTimeout) {
-        endpts[i] = endpts[i].timeout(_timeout);
+      if (getCompress().isPresent()) {
+        endpts[i] = endpts[i].compress(getCompress().get());
       }
     }
   }
@@ -666,11 +638,11 @@ public class RoutableReference extends Reference {
     //
     // If a secure connection is requested or secure overrides is
     // set, remove all non-secure endpoints. Otherwise if preferSecure is set
-    // make secure endpoints prefered. By default make non-secure
+    // make secure endpoints preferred. By default make non-secure
     // endpoints preferred over secure endpoints.
     //
     DefaultsAndOverrides overrides = getInstance().defaultsAndOverrides();
-    if (overrides.overrideSecure ? overrides.overrideSecureValue : getSecure()) {
+    if (overrides.overrideSecure.isPresent() ? overrides.overrideSecure.get() : getSecure()) {
       java.util.Iterator<EndpointI> i = endpoints.iterator();
       while (i.hasNext()) {
         EndpointI endpoint = i.next();
@@ -775,6 +747,16 @@ public class RoutableReference extends Reference {
     }
   }
 
+  // Sets or resets `_batchRequestQueue` based on `_mode`.
+  private void setBatchRequestQueue() {
+    if (isBatch()) {
+      boolean isDatagram = getMode() == Reference.ModeBatchDatagram;
+      _batchRequestQueue = new BatchRequestQueue(getInstance(), isDatagram);
+    } else {
+      _batchRequestQueue = null;
+    }
+  }
+
   static class EndpointComparator implements java.util.Comparator<EndpointI> {
     EndpointComparator(boolean preferSecure) {
       _preferSecure = preferSecure;
@@ -801,13 +783,15 @@ public class RoutableReference extends Reference {
       }
     }
 
-    private boolean _preferSecure;
+    private final boolean _preferSecure;
   }
 
   private static EndpointComparator _preferNonSecureEndpointComparator =
       new EndpointComparator(false);
   private static EndpointComparator _preferSecureEndpointComparator = new EndpointComparator(true);
   private static EndpointI[] _emptyEndpoints = new EndpointI[0];
+
+  private BatchRequestQueue _batchRequestQueue;
 
   private EndpointI[] _endpoints;
   private String _adapterId;
@@ -818,8 +802,5 @@ public class RoutableReference extends Reference {
   private boolean _preferSecure;
   private com.zeroc.Ice.EndpointSelectionType _endpointSelection;
   private int _locatorCacheTimeout;
-
-  private boolean _overrideTimeout;
-  private int _timeout; // Only used if _overrideTimeout == true
   private String _connectionId = "";
 }

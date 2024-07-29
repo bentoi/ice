@@ -18,7 +18,7 @@ void
 MyClassI::callCallbackAsync(function<void()> response, function<void(exception_ptr)> error, const Ice::Current& current)
 {
     checkConnection(current.con);
-    CallbackPrx prx(current.con->createProxy(callbackId));
+    auto prx = current.con->createProxy<CallbackPrx>(callbackId);
 
     prx->pingAsync(
         [response = std::move(response)]() { response(); },
@@ -32,7 +32,7 @@ MyClassI::getCallbackCountAsync(
     const Ice::Current& current)
 {
     checkConnection(current.con);
-    CallbackPrx prx(current.con->createProxy(callbackId));
+    auto prx = current.con->createProxy<CallbackPrx>(callbackId);
 
     prx->getCountAsync(
         [response = std::move(response)](int count) { response(count); },
@@ -113,7 +113,7 @@ MyClassI::callDatagramCallback(const Ice::Current& current)
 {
     checkConnection(current.con);
     test(current.con->getEndpoint()->getInfo()->datagram());
-    CallbackPrx(current.con->createProxy(callbackId))->datagram();
+    current.con->createProxy<CallbackPrx>(callbackId)->datagram();
 }
 
 void
@@ -123,20 +123,11 @@ MyClassI::getCallbackDatagramCountAsync(
     const Ice::Current& current)
 {
     checkConnection(current.con);
-    CallbackPrx prx(current.con->createProxy(callbackId));
+    auto prx = current.con->createProxy<CallbackPrx>(callbackId);
 
     prx->getDatagramCountAsync(
         [response = std::move(response)](int count) { response(count); },
         [error = std::move(error)](auto e) { error(e); });
-}
-
-int
-MyClassI::getHeartbeatCount(const Ice::Current& current)
-{
-    checkConnection(current.con);
-
-    lock_guard<mutex> lg(_lock);
-    return _connections[current.con];
 }
 
 void
@@ -154,18 +145,6 @@ MyClassI::removeConnection(const shared_ptr<Ice::Connection>& con)
 }
 
 void
-MyClassI::incHeartbeatCount(const shared_ptr<Ice::Connection>& con)
-{
-    lock_guard<mutex> lg(_lock);
-    auto p = _connections.find(con);
-    if (p == _connections.end())
-    {
-        return;
-    }
-    ++p->second;
-}
-
-void
 MyClassI::checkConnection(const shared_ptr<Ice::Connection>& con)
 {
     lock_guard<mutex> lg(_lock);
@@ -173,6 +152,5 @@ MyClassI::checkConnection(const shared_ptr<Ice::Connection>& con)
     {
         _connections.insert(make_pair(con, 0));
         con->setCloseCallback([self = shared_from_this()](const auto& c) { self->removeConnection(c); });
-        con->setHeartbeatCallback([self = shared_from_this()](const auto& c) { self->incHeartbeatCount(c); });
     }
 }

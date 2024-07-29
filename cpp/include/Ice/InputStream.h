@@ -7,9 +7,9 @@
 
 #include "Buffer.h"
 #include "CommunicatorF.h"
-#include "Exception.h"
 #include "Ice/Version.h"
 #include "InstanceF.h"
+#include "LocalException.h"
 #include "Logger.h"
 #include "ReferenceF.h"
 #include "SlicedDataF.h"
@@ -24,6 +24,13 @@
 #include <string>
 #include <string_view>
 
+namespace IceInternal::Ex
+{
+    ICE_API void throwUOE(const char* file, int line, const std::string&, const Ice::ValuePtr&);
+    ICE_API void throwMemoryLimitException(const char* file, int line, size_t, size_t);
+    ICE_API void throwMarshalException(const char* file, int line, std::string);
+}
+
 namespace Ice
 {
     class ObjectPrx;
@@ -35,7 +42,7 @@ namespace Ice
         *ptr = std::dynamic_pointer_cast<T>(v);
         if (v && !(*ptr))
         {
-            IceInternal::Ex::throwUOE(std::string{T::ice_staticId()}, v);
+            IceInternal::Ex::throwUOE(__FILE__, __LINE__, std::string{T::ice_staticId()}, v);
         }
     }
     /// \endcond
@@ -257,16 +264,6 @@ namespace Ice
          * @param r The compact ID resolver.
          */
         void setCompactIdResolver(std::function<std::string(int)> r);
-
-        /**
-         * Indicates whether to slice instances of Slice classes to a known Slice type when a more
-         * derived type is unknown. An instance is "sliced" when no static information is available
-         * for a Slice type ID and no factory can be found for that type, resulting in the creation
-         * of an instance of a less-derived type. If slicing is disabled in this situation, the
-         * stream raises the exception NoValueFactoryException. The default behavior is to allow slicing.
-         * @param b True to enable slicing, false otherwise.
-         */
-        void setSliceValues(bool b);
 
         /**
          * Indicates whether to log messages when instances of Slice classes are sliced. If the stream
@@ -576,6 +573,15 @@ namespace Ice
             }
         }
 
+#if defined(ICE_UNALIGNED) || (defined(_WIN32) && defined(ICE_API_EXPORTS))
+        // Optimization with unaligned reads
+        void read(std::pair<const std::int16_t*, const std::int16_t*>& v) { unalignedRead(v); }
+        void read(std::pair<const std::int32_t*, const std::int32_t*>& v) { unalignedRead(v); }
+        void read(std::pair<const std::int64_t*, const std::int64_t*>& v) { unalignedRead(v); }
+        void read(std::pair<const float*, const float*>& v) { unalignedRead(v); }
+        void read(std::pair<const double*, const double*>& v) { unalignedRead(v); }
+#endif
+
         /**
          * Reads a list of mandatory data values.
          */
@@ -707,13 +713,6 @@ namespace Ice
         void read(std::vector<std::int16_t>& v);
 
         /**
-         * Unmarshals a sequence of Slice shorts into a pair of int16_t pointers representing the start and end of the
-         * sequence elements.
-         * @param v A pair of pointers representing the start and end of the sequence elements.
-         */
-        void read(std::pair<const short*, const short*>& v);
-
-        /**
          * Reads an int from the stream.
          * @param v The extracted int.
          */
@@ -724,12 +723,6 @@ namespace Ice
          * @param v A vector to hold a copy of the int values.
          */
         void read(std::vector<std::int32_t>& v);
-
-        /**
-         * Reads a sequence of ints from the stream.
-         * @param v A pair of pointers representing the start and end of the sequence elements.
-         */
-        void read(std::pair<const int*, const int*>& v);
 
         /**
          * Reads a long from the stream.
@@ -744,12 +737,6 @@ namespace Ice
         void read(std::vector<std::int64_t>& v);
 
         /**
-         * Reads a sequence of longs from the stream.
-         * @param v A pair of pointers representing the start and end of the sequence elements.
-         */
-        void read(std::pair<const std::int64_t*, const std::int64_t*>& v);
-
-        /**
          * Unmarshals a Slice float into a float.
          * @param v The extracted float.
          */
@@ -762,13 +749,6 @@ namespace Ice
         void read(std::vector<float>& v);
 
         /**
-         * Unmarshals a sequence of Slice floats into a pair of float pointers representing the start and end of the
-         * sequence elements.
-         * @param v A pair of pointers representing the start and end of the sequence elements.
-         */
-        void read(std::pair<const float*, const float*>& v);
-
-        /**
          * Unmarshals a Slice double into a double.
          * @param v The extracted double.
          */
@@ -779,13 +759,6 @@ namespace Ice
          * @param v An output vector filled by this function.
          */
         void read(std::vector<double>& v);
-
-        /**
-         * Unmarshals a sequence of Slice doubles into a pair of double pointers representing the start and end of the
-         * sequence elements.
-         * @param v A pair of pointers representing the start and end of the sequence elements.
-         */
-        void read(std::pair<const double*, const double*>& v);
 
         /**
          * Reads a string from the stream.
@@ -937,24 +910,32 @@ namespace Ice
         /// \endcond
 
     private:
+#if defined(ICE_UNALIGNED) || (defined(_WIN32) && defined(ICE_API_EXPORTS))
+        template<typename T> void unalignedRead(std::pair<const T*, const T*>& v)
+        {
+            int sz = readAndCheckSeqSize(static_cast<int>(sizeof(T)));
+
+            if (sz > 0)
+            {
+                v.first = reinterpret_cast<T*>(i);
+                i += sz * static_cast<int>(sizeof(T));
+                v.second = reinterpret_cast<T*>(i);
+            }
+            else
+            {
+                v.first = v.second = nullptr;
+            }
+        }
+#endif
+
         void initialize(const EncodingVersion&);
 
         // Reads a reference from the stream; the return value can be null.
         IceInternal::ReferencePtr readReference();
 
-        //
-        // String
-        //
         bool readConverted(std::string&, std::int32_t);
 
-        //
-        // We can't throw these exception from inline functions from within
-        // this file, because we cannot include the header with the
-        // exceptions. Doing so would screw up the whole include file
-        // ordering.
-        //
         void throwUnmarshalOutOfBoundsException(const char*, int);
-        void throwEncapsulationException(const char*, int);
 
         std::string resolveCompactId(int) const;
 
@@ -1003,12 +984,10 @@ namespace Ice
             EncapsDecoder(
                 InputStream* stream,
                 Encaps* encaps,
-                bool sliceValues,
                 size_t classGraphDepthMax,
                 const Ice::ValueFactoryManagerPtr& f)
                 : _stream(stream),
                   _encaps(encaps),
-                  _sliceValues(sliceValues),
                   _classGraphDepthMax(classGraphDepthMax),
                   _classGraphDepth(0),
                   _valueFactoryManager(f),
@@ -1036,7 +1015,6 @@ namespace Ice
 
             InputStream* _stream;
             Encaps* _encaps;
-            const bool _sliceValues;
             const size_t _classGraphDepthMax;
             size_t _classGraphDepth;
             Ice::ValueFactoryManagerPtr _valueFactoryManager;
@@ -1058,10 +1036,9 @@ namespace Ice
             EncapsDecoder10(
                 InputStream* stream,
                 Encaps* encaps,
-                bool sliceValues,
                 size_t classGraphDepthMax,
                 const Ice::ValueFactoryManagerPtr& f)
-                : EncapsDecoder(stream, encaps, sliceValues, classGraphDepthMax, f),
+                : EncapsDecoder(stream, encaps, classGraphDepthMax, f),
                   _sliceType(NoSlice)
             {
             }
@@ -1095,10 +1072,9 @@ namespace Ice
             EncapsDecoder11(
                 InputStream* stream,
                 Encaps* encaps,
-                bool sliceValues,
                 size_t classGraphDepthMax,
                 const Ice::ValueFactoryManagerPtr& f)
-                : EncapsDecoder(stream, encaps, sliceValues, classGraphDepthMax, f),
+                : EncapsDecoder(stream, encaps, classGraphDepthMax, f),
                   _preAllocatedInstanceData(0),
                   _current(0),
                   _valueIdIndex(1)
@@ -1242,8 +1218,6 @@ namespace Ice
         size_t _classGraphDepthMax;
 
         void* _closure;
-
-        bool _sliceValues;
 
         int _startSeq;
         int _minSeqSize;

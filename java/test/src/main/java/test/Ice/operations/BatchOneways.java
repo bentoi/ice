@@ -124,7 +124,7 @@ class BatchOneways {
       BatchRequestInterceptorI interceptor = new BatchRequestInterceptorI();
       initData.batchRequestInterceptor = interceptor;
       try (com.zeroc.Ice.Communicator ic = helper.initialize(initData)) {
-        batch = MyClassPrx.uncheckedCast(ic.stringToProxy(p.toString())).ice_batchOneway();
+        batch = MyClassPrx.createProxy(ic, p.toString()).ice_batchOneway();
 
         test(interceptor.count() == 0);
         batch.ice_ping();
@@ -162,7 +162,7 @@ class BatchOneways {
     p.ice_ping();
     if (supportsCompress
         && p.ice_getConnection() != null
-        && properties.getProperty("Ice.Override.Compress").equals("")) {
+        && properties.getProperty("Ice.Override.Compress").isEmpty()) {
       com.zeroc.Ice.ObjectPrx prx =
           p.ice_getConnection().createProxy(p.ice_getIdentity()).ice_batchOneway();
 

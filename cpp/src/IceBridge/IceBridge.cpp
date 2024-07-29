@@ -2,12 +2,12 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
+#include "../Ice/Options.h"
 #include "Ice/Connection.h"
 #include "Ice/ObjectAdapter.h"
 #include "Ice/Router.h"
 #include "Ice/Service.h"
 #include "Ice/UUID.h"
-#include "IceUtil/Options.h"
 
 #include <iostream>
 
@@ -188,33 +188,6 @@ BridgeConnection::outgoingSuccess(ConnectionPtr outgoing)
     }
 
     _outgoing = std::move(outgoing);
-
-    //
-    // Register hearbeat callbacks on both connections.
-    //
-    _incoming->setHeartbeatCallback(
-        [con = _outgoing](const auto&)
-        {
-            try
-            {
-                con->heartbeatAsync(nullptr);
-            }
-            catch (...)
-            {
-            }
-        });
-
-    _outgoing->setHeartbeatCallback(
-        [con = _incoming](const auto&)
-        {
-            try
-            {
-                con->heartbeatAsync(nullptr);
-            }
-            catch (...)
-            {
-            }
-        });
 
     //
     // Configure the outgoing connection for bidirectional requests.
@@ -513,7 +486,7 @@ BridgeI::outgoingException(const shared_ptr<BridgeConnection>& bc, exception_ptr
 bool
 BridgeService::start(int argc, char* argv[], int& status)
 {
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("h", "help");
     opts.addOpt("v", "version");
 
@@ -522,9 +495,9 @@ BridgeService::start(int argc, char* argv[], int& status)
     {
         args = opts.parse(argc, const_cast<const char**>(argv));
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        error(e.reason);
+        error(e.what());
         usage(argv[0]);
         return false;
     }
@@ -584,7 +557,7 @@ BridgeService::start(int argc, char* argv[], int& status)
     }
 
     string instanceName = properties->getIceProperty("IceBridge.InstanceName");
-    RouterPrx router(adapter->add(make_shared<RouterI>(), stringToIdentity(instanceName + "/router")));
+    auto router = adapter->add<RouterPrx>(make_shared<RouterI>(), stringToIdentity(instanceName + "/router"));
     adapter->add(make_shared<FinderI>(router), stringToIdentity("Ice/RouterFinder"));
 
     try

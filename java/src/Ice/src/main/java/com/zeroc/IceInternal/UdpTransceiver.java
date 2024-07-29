@@ -185,6 +185,12 @@ final class UdpTransceiver implements Transceiver {
   }
 
   @Override
+  public boolean isWaitingToBeRead() {
+    assert false; // not implemented for UDP
+    return false;
+  }
+
+  @Override
   public String protocol() {
     return _instance.protocol();
   }
@@ -231,7 +237,7 @@ final class UdpTransceiver implements Transceiver {
     }
     if (!intfs.isEmpty()) {
       s.append("\nlocal interfaces = ");
-      s.append(com.zeroc.IceUtilInternal.StringUtil.joinString(intfs, ", "));
+      s.append(String.join(", ", intfs));
     }
     return s.toString();
   }
@@ -310,7 +316,7 @@ final class UdpTransceiver implements Transceiver {
       // connect is important for some OS such as macOS.
       //
       if (_addr.getAddress().isMulticastAddress()) {
-        if (mcastInterface.length() > 0) {
+        if (!mcastInterface.isEmpty()) {
           Network.setMcastInterface(_fd, mcastInterface);
         }
         if (mcastTtl != -1) {

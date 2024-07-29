@@ -4,10 +4,9 @@
 
 classdef (Abstract) EncapsDecoder < handle
     methods
-        function obj = EncapsDecoder(is, encaps, sliceValues, valueFactoryManager, classResolver, classGraphDepthMax)
+        function obj = EncapsDecoder(is, encaps, valueFactoryManager, classResolver, classGraphDepthMax)
             obj.is = is;
             obj.encaps = encaps;
-            obj.sliceValues = sliceValues;
             obj.valueFactoryManager = valueFactoryManager;
             obj.classResolver = classResolver;
             obj.classGraphDepthMax = classGraphDepthMax;
@@ -68,7 +67,7 @@ classdef (Abstract) EncapsDecoder < handle
             if typeIdIndex <= length(obj.typeIdMap)
                 r = obj.typeIdMap{typeIdIndex};
             else
-                throw(Ice.UnmarshalOutOfBoundsException());
+                throw(Ice.MarshalException('unknown type id index'));
             end
         end
         function [typeIdIndex, typeId] = readTypeId(obj)
@@ -91,7 +90,7 @@ classdef (Abstract) EncapsDecoder < handle
                     r = constructor(); % Invoke the constructor.
                 catch e
                     reason = sprintf('constructor failed for %s', typeId);
-                    ex = Ice.NoValueFactoryException('', reason, reason, typeId);
+                    ex = Ice.MarshalException('', reason, reason);
                     ex.addCause(e);
                     throw(ex);
                 end
@@ -235,7 +234,6 @@ classdef (Abstract) EncapsDecoder < handle
     properties(Access=protected)
         is
         encaps
-        sliceValues
         valueFactoryManager
         classResolver
         classGraphDepth

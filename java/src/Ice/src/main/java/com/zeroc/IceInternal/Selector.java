@@ -6,7 +6,7 @@ package com.zeroc.IceInternal;
 
 public final class Selector {
   static final class TimeoutException extends Exception {
-    public static final long serialVersionUID = 0L;
+    private static final long serialVersionUID = 7885765825975312023L;
   }
 
   Selector(Instance instance) {
@@ -208,7 +208,7 @@ public final class Selector {
         // for that special case here and ignore it.
         // Hopefully we're not masking something important!
         //
-        if (Network.interrupted(ex)) {
+        if (ex instanceof java.io.InterruptedIOException) {
           continue;
         }
 

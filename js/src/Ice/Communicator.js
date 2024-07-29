@@ -2,11 +2,12 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-import { CommunicatorDestroyedException } from "./LocalException.js";
+import { CommunicatorDestroyedException } from "./LocalExceptions.js";
 import { generateUUID } from "./UUID.js";
-import { identityToString } from "./IdentityUtil.js";
+import { identityToString } from "./IdentityToString.js";
 import { Promise } from "./Promise.js";
 import { Debug } from "./Debug.js";
+import { ObjectPrx } from "./ObjectPrx.js";
 
 //
 // Ice.Communicator
@@ -17,8 +18,7 @@ export class Communicator {
     }
 
     //
-    // Certain initialization tasks need to be completed after the
-    // constructor.
+    // Certain initialization tasks need to be completed after the constructor.
     //
     finishSetup(promise) {
         this._instance.finishSetup(this, promise);
@@ -57,20 +57,23 @@ export class Communicator {
         }
     }
 
-    stringToProxy(s) {
-        return this._instance.proxyFactory().stringToProxy(s);
+    stringToProxy(str) {
+        const reference = this._instance.referenceFactory().createFromString(str, "");
+        return reference == null ? null : new ObjectPrx(reference);
     }
 
     proxyToString(proxy) {
-        return this._instance.proxyFactory().proxyToString(proxy);
+        return proxy == null ? "" : proxy._reference.toString();
     }
 
-    propertyToProxy(s) {
-        return this._instance.proxyFactory().propertyToProxy(s);
+    propertyToProxy(property) {
+        const proxy = this._instance.initializationData().properties.getProperty(property);
+        const reference = this._instance.referenceFactory().createFromString(proxy, property);
+        return reference == null ? null : new ObjectPrx(reference);
     }
 
     proxyToProperty(proxy, prefix) {
-        return this._instance.proxyFactory().proxyToProperty(proxy, prefix);
+        return proxy._reference.toProperty(prefix);
     }
 
     identityToString(ident) {

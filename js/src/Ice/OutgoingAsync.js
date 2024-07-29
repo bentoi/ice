@@ -5,19 +5,30 @@
 import { OutputStream } from "./Stream.js";
 import { AsyncResult } from "./AsyncResult.js";
 import { AsyncStatus } from "./AsyncStatus.js";
-import { UserException } from "./Exception.js";
+import { UserException } from "./UserException.js";
 import { RetryException } from "./RetryException.js";
+import { ReferenceMode } from "./ReferenceMode.js";
+import { Ice as Ice_OperationMode } from "./OperationMode.js";
+const { OperationMode } = Ice_OperationMode;
 import {
+    CloseConnectionException,
+    ConnectionClosedException,
+    CommunicatorDestroyedException,
+    ConnectionAbortedException,
+    FacetNotExistException,
+    FeatureNotSupportedException,
+    InvocationCanceledException,
     InvocationTimeoutException,
     MarshalException,
+    ObjectAdapterDeactivatedException,
     ObjectNotExistException,
-    FacetNotExistException,
     OperationNotExistException,
+    RequestFailedException,
     UnknownException,
     UnknownLocalException,
     UnknownUserException,
-    UnknownReplyStatusException,
-} from "./LocalException.js";
+} from "./LocalExceptions.js";
+import { LocalException } from "./LocalException.js";
 import { Ice as Ice_Context } from "./Context.js";
 const { ContextHelper } = Ice_Context;
 import { Protocol } from "./Protocol.js";
@@ -43,8 +54,8 @@ export class OutgoingAsyncBase extends AsyncResult {
         this.markSent(true);
     }
 
-    completedEx(ex) {
-        this.markFinishedEx(ex);
+    exception(ex) {
+        return this.markFinishedEx(ex);
     }
 }
 
@@ -63,7 +74,8 @@ export class ProxyOutgoingAsyncBase extends OutgoingAsyncBase {
 
     completedEx(ex) {
         try {
-            this._instance.retryQueue().add(this, this.handleException(ex));
+            const interval = this.handleRetryAfterException(ex);
+            this._instance.retryQueue().add(this, interval);
         } catch (ex) {
             this.markFinishedEx(ex);
         }
@@ -71,7 +83,11 @@ export class ProxyOutgoingAsyncBase extends OutgoingAsyncBase {
 
     retryException(ex) {
         try {
-            this._proxy._updateRequestHandler(this._handler, null); // Clear request handler and always retry.
+            // It's important to let the retry queue do the retry. This is
+            // called from the connect request handler and the retry might
+            // require could end up waiting for the flush of the
+            // connection to be done.
+            this._proxy._requestHandlerCache.clearCachedRequestHandler(this._handler);
             this._instance.retryQueue().add(this, 0);
         } catch (ex) {
             this.completedEx(ex);
@@ -100,19 +116,17 @@ export class ProxyOutgoingAsyncBase extends OutgoingAsyncBase {
             while (true) {
                 try {
                     this._sent = false;
-                    this._handler = this._proxy._getRequestHandler();
-                    if ((this._handler.sendAsyncRequest(this) & AsyncStatus.Sent) > 0) {
-                        if (userThread) {
-                            this._sentSynchronously = true;
-                        }
+                    this._handler = this._proxy._requestHandlerCache.requestHandler;
+                    if ((this._handler.sendAsyncRequest(this) & AsyncStatus.Sent) > 0 && userThread) {
+                        this._sentSynchronously = true;
                     }
                     return; // We're done!
                 } catch (ex) {
                     if (ex instanceof RetryException) {
                         // Clear request handler and always retry
-                        this._proxy._updateRequestHandler(this._handler, null);
+                        this._proxy._requestHandlerCache.clearCachedRequestHandler(this._handler);
                     } else {
-                        const interval = this.handleException(ex);
+                        const interval = this.handleRetryAfterException(ex);
                         if (interval > 0) {
                             this._instance.retryQueue().add(this, interval);
                             return;
@@ -142,10 +156,150 @@ export class ProxyOutgoingAsyncBase extends OutgoingAsyncBase {
         super.markFinishedEx.call(this, ex);
     }
 
-    handleException(ex) {
-        const interval = { value: 0 };
-        this._cnt = this._proxy._handleException(ex, this._handler, this._mode, this._sent, interval, this._cnt);
-        return interval.value;
+    handleRetryAfterException(ex) {
+        // Clear the request handler
+        this._proxy._requestHandlerCache.clearCachedRequestHandler(this._handler);
+
+        // We only retry local exception.
+        //
+        // A CloseConnectionException indicates graceful server shutdown, and is therefore always repeatable without
+        // violating "at-most-once". That's because by sending a close connection message, the server guarantees that
+        // all outstanding requests can safely be repeated.
+        //
+        // An ObjectNotExistException can always be retried as well without violating "at-most-once" (see the
+        // implementation of the checkRetryAfterException method below for the reasons why it can be useful).
+        //
+        // If the request didn't get sent or if it's non-mutating or idempotent it can also always be retried if the
+        // retry count isn't reached.
+        if (
+            ex instanceof LocalException &&
+            (!this._sent ||
+                this._mode == OperationMode.Nonmutating ||
+                this._mode == OperationMode.Idempotent ||
+                ex instanceof CloseConnectionException ||
+                ex instanceof ObjectNotExistException)
+        ) {
+            try {
+                return this.checkRetryAfterException(ex);
+            } catch (e) {
+                if (e instanceof CommunicatorDestroyedException) {
+                    e = ex; // The communicator is already destroyed, so we cannot retry.
+                }
+                throw e;
+            }
+        } else {
+            throw ex; // Retry could break at-most-once semantics, don't retry.
+        }
+    }
+
+    checkRetryAfterException(ex) {
+        const ref = this._proxy._reference;
+        const instance = ref.getInstance();
+        const traceLevels = instance.traceLevels();
+        const logger = instance.initializationData().logger;
+
+        // We don't retry batch requests because the exception might have caused that all the requests batched with the
+        // connection to be aborted and we want the application to be notified.
+        if (ref.getMode() == ReferenceMode.ModeBatchOneway) {
+            throw ex;
+        }
+
+        // If it's a fixed proxy, retrying isn't useful as the proxy is tied to the connection and the request will
+        // fail with the exception.
+        if (ref.isFixed()) {
+            throw ex;
+        }
+
+        if (ex instanceof ObjectNotExistException) {
+            if (ref.getRouterInfo() != null && ex.operation == "ice_add_proxy") {
+                // If we have a router, an ObjectNotExistException with an operation name "ice_add_proxy" indicates to
+                // the client that the router isn't aware of the proxy (for example, because it was evicted by the
+                // router). In this case, we must *always* retry, so that the missing proxy is added to the router.
+                ref.getRouterInfo().clearCache(ref);
+
+                if (traceLevels.retry >= 1) {
+                    logger.trace(traceLevels.retryCat, "retrying operation call to add proxy to router\n" + ex);
+                }
+                // We must always retry, so we don't look at the retry count.
+                return 0;
+            } else if (ref.isIndirect()) {
+                // We retry ObjectNotExistException if the reference is indirect.
+                if (ref.isWellKnown()) {
+                    const li = ref.getLocatorInfo();
+                    if (li !== null) {
+                        li.clearCache(ref);
+                    }
+                }
+            } else {
+                // For all other cases, we don't retry ObjectNotExistException.
+                throw ex;
+            }
+        } else if (ex instanceof RequestFailedException) {
+            throw ex;
+        }
+
+        // There is no point in retrying an operation that resulted in a MarshalException. This must have been raised
+        // locally (because if it happened in a server it would result in an UnknownLocalException  instead), which
+        // means there was a problem in this process that will not change if we try again.
+        //
+        // The most likely cause for a MarshalException is exceeding the maximum message size, which is represented by
+        // the subclass MemoryLimitException. For example, a client can attempt to send a message that exceeds the
+        // maximum memory size, or accumulate enough batch requests without flushing before the maximum size is reached.
+        //
+        // This latter case is especially problematic, because if we were to retry a batch request after a
+        // MarshalException, we would in fact silently discard the accumulated requests and allow new batch requests to
+        // accumulate. If the subsequent batched requests do not exceed the maximum message size, it appears to the
+        // client that all of the batched requests were accepted, when in reality only the last few are actually sent.
+        if (ex instanceof MarshalException) {
+            throw ex;
+        }
+
+        // Don't retry if the communicator is destroyed, object adapter is deactivated, or connection is manually closed.
+        if (
+            ex instanceof CommunicatorDestroyedException ||
+            ex instanceof ObjectAdapterDeactivatedException ||
+            (ex instanceof ConnectionAbortedException && ex.closedByApplication) ||
+            (ex instanceof ConnectionClosedException && ex.closedByApplication)
+        ) {
+            throw ex;
+        }
+
+        // Don't retry invocation timeouts.
+        if (ex instanceof InvocationTimeoutException || ex instanceof InvocationCanceledException) {
+            throw ex;
+        }
+
+        ++this._cnt;
+        Debug.assert(this._cnt > 0);
+
+        var retryIntervals = instance._retryIntervals;
+
+        let interval = 0;
+        if (this._cnt == retryIntervals.length + 1 && ex instanceof CloseConnectionException) {
+            // A close connection exception is always retried at least once, even if the retry limit is reached.
+            interval = 0;
+        } else if (this._cnt > retryIntervals.length) {
+            if (traceLevels.retry >= 1) {
+                logger.trace(
+                    traceLevels.retryCat,
+                    "cannot retry operation call because retry limit has been exceeded\n" + ex,
+                );
+            }
+            throw ex;
+        } else {
+            interval = retryIntervals[this._cnt - 1];
+        }
+
+        if (traceLevels.retry >= 1) {
+            let s = "retrying operation call";
+            if (interval > 0) {
+                s += " in " + interval + "ms";
+            }
+            s += " because of exception\n" + ex;
+            logger.trace(traceLevels.retryCat, s);
+        }
+
+        return interval;
     }
 }
 
@@ -159,7 +313,12 @@ export class OutgoingAsync extends ProxyOutgoingAsyncBase {
     }
 
     prepare(op, mode, ctx) {
-        Protocol.checkSupportedProtocol(Protocol.getCompatibleProtocol(this._proxy._getReference().getProtocol()));
+        const protocol = this._proxy._getReference().getProtocol();
+        if (protocol.major != Protocol.currentProtocol.major) {
+            throw new FeatureNotSupportedException(
+                `Cannot send request using protocol version ${protocol.major}.${protocol.minor}`,
+            );
+        }
 
         this._mode = mode;
         if (ctx === null) {
@@ -167,7 +326,7 @@ export class OutgoingAsync extends ProxyOutgoingAsyncBase {
         }
 
         if (this._proxy.ice_isBatchOneway() || this._proxy.ice_isBatchDatagram()) {
-            this._proxy._getBatchRequestQueue().prepareBatchRequest(this._os);
+            this._proxy._reference.batchRequestQueue.prepareBatchRequest(this._os);
         } else {
             this._os.writeBlob(Protocol.requestHdr);
         }
@@ -224,7 +383,7 @@ export class OutgoingAsync extends ProxyOutgoingAsyncBase {
 
     abort(ex) {
         if (this._proxy.ice_isBatchOneway() || this._proxy.ice_isBatchDatagram()) {
-            this._proxy._getBatchRequestQueue().abortBatchRequest(this._os);
+            this._proxy._reference.batchRequestQueue.abortBatchRequest(this._os);
         }
         super.abort(ex);
     }
@@ -232,7 +391,7 @@ export class OutgoingAsync extends ProxyOutgoingAsyncBase {
     invoke() {
         if (this._proxy.ice_isBatchOneway() || this._proxy.ice_isBatchDatagram()) {
             this._sentSynchronously = true;
-            this._proxy._getBatchRequestQueue().finishBatchRequest(this._os, this._proxy, this._operation);
+            this._proxy._reference.batchRequestQueue.finishBatchRequest(this._os, this._proxy, this._operation);
             this.markFinished(true);
             return;
         }
@@ -270,13 +429,15 @@ export class OutgoingAsync extends ProxyOutgoingAsyncBase {
                     id._read(this._is);
 
                     //
-                    // For compatibility with the old FacetPath.
+                    // For compatibility with the old facet path.
                     //
                     const facetPath = StringSeqHelper.read(this._is);
                     let facet;
                     if (facetPath.length > 0) {
                         if (facetPath.length > 1) {
-                            throw new MarshalException();
+                            throw new MarshalException(
+                                `Received invalid facet path with ${facetPath.length} elements.`,
+                            );
                         }
                         facet = facetPath[0];
                     } else {
@@ -285,33 +446,19 @@ export class OutgoingAsync extends ProxyOutgoingAsyncBase {
 
                     const operation = this._is.readString();
 
-                    let rfe = null;
                     switch (replyStatus) {
                         case Protocol.replyObjectNotExist: {
-                            rfe = new ObjectNotExistException();
-                            break;
+                            throw new ObjectNotExistException(id, facet, operation);
                         }
 
                         case Protocol.replyFacetNotExist: {
-                            rfe = new FacetNotExistException();
-                            break;
+                            throw new FacetNotExistException(id, facet, operation);
                         }
 
                         case Protocol.replyOperationNotExist: {
-                            rfe = new OperationNotExistException();
-                            break;
-                        }
-
-                        default: {
-                            Debug.assert(false);
-                            break;
+                            throw new OperationNotExistException(id, facet, operation);
                         }
                     }
-
-                    rfe.id = id;
-                    rfe.facet = facet;
-                    rfe.operation = operation;
-                    throw rfe;
                 }
 
                 case Protocol.replyUnknownException:
@@ -322,17 +469,17 @@ export class OutgoingAsync extends ProxyOutgoingAsyncBase {
                     let ue = null;
                     switch (replyStatus) {
                         case Protocol.replyUnknownException: {
-                            ue = new UnknownException();
+                            ue = new UnknownException(unknown);
                             break;
                         }
 
                         case Protocol.replyUnknownLocalException: {
-                            ue = new UnknownLocalException();
+                            ue = new UnknownLocalException(unknown);
                             break;
                         }
 
                         case Protocol.replyUnknownUserException: {
-                            ue = new UnknownUserException();
+                            ue = new UnknownUserException(unknown);
                             break;
                         }
 
@@ -341,13 +488,11 @@ export class OutgoingAsync extends ProxyOutgoingAsyncBase {
                             break;
                         }
                     }
-
-                    ue.unknown = unknown;
                     throw ue;
                 }
 
                 default: {
-                    throw new UnknownReplyStatusException();
+                    throw new MarshalException(`Received reply message with unknown reply status ${replyStatus}.`);
                 }
             }
 
@@ -405,7 +550,7 @@ OutgoingAsync._emptyContext = new Map(); // Map<string, string>
 export class ProxyFlushBatch extends ProxyOutgoingAsyncBase {
     constructor(prx, operation) {
         super(prx, operation);
-        this._batchRequestNum = prx._getBatchRequestQueue().swap(this._os);
+        this._batchRequestNum = prx._reference.batchRequestQueue.swap(this._os);
     }
 
     invokeRemote(connection, response) {
@@ -417,14 +562,19 @@ export class ProxyFlushBatch extends ProxyOutgoingAsyncBase {
     }
 
     invoke() {
-        Protocol.checkSupportedProtocol(Protocol.getCompatibleProtocol(this._proxy._getReference().getProtocol()));
+        const protocol = this._proxy._getReference().getProtocol();
+        if (protocol.major != Protocol.currentProtocol.major) {
+            throw new FeatureNotSupportedException(
+                `Cannot send request using protocol version ${protocol.major}.${protocol.minor}`,
+            );
+        }
         this.invokeImpl(true); // userThread = true
     }
 }
 
 export class ProxyGetConnection extends ProxyOutgoingAsyncBase {
     invokeRemote(connection, response) {
-        this.markFinished(true, (r) => r.resolve(connection));
+        this.markFinished(true, r => r.resolve(connection));
         return AsyncStatus.Sent;
     }
 
@@ -449,30 +599,6 @@ export class ConnectionFlushBatch extends OutgoingAsyncBase {
                 status = this._connection.sendAsyncRequest(this, false, batchRequestNum);
             }
 
-            if ((status & AsyncStatus.Sent) > 0) {
-                this._sentSynchronously = true;
-            }
-        } catch (ex) {
-            this.completedEx(ex);
-        }
-    }
-}
-
-export class HeartbeatAsync extends OutgoingAsyncBase {
-    constructor(con, communicator) {
-        super(communicator, "heartbeat", con, null, null);
-    }
-
-    invoke() {
-        try {
-            this._os.writeBlob(Protocol.magic);
-            Protocol.currentProtocol._write(this._os);
-            Protocol.currentProtocolEncoding._write(this._os);
-            this._os.writeByte(Protocol.validateConnectionMsg);
-            this._os.writeByte(0);
-            this._os.writeInt(Protocol.headerSize); // Message size.
-
-            const status = this._connection.sendAsyncRequest(this, false, 0);
             if ((status & AsyncStatus.Sent) > 0) {
                 this._sentSynchronously = true;
             }

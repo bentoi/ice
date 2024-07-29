@@ -2,14 +2,14 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
+#include "../Ice/ConsoleUtil.h"
 #include "../Slice/Util.h"
-#include "IceUtil/ConsoleUtil.h"
 #include "PythonUtil.h"
 
 using namespace std;
 using namespace Slice;
 using namespace Slice::Python;
-using namespace IceUtilInternal;
+using namespace IceInternal;
 
 #ifdef _WIN32
 int
@@ -31,8 +31,7 @@ main(int argc, char* argv[])
     }
     catch (...)
     {
-        consoleErr << args[0] << ": error:"
-                   << "unknown exception" << endl;
+        consoleErr << args[0] << ": error:unknown exception" << endl;
         return EXIT_FAILURE;
     }
 }

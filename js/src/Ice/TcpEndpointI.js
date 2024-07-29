@@ -5,15 +5,17 @@
 import { HashUtil } from "./HashUtil.js";
 import { StringUtil } from "./StringUtil.js";
 import { TCPEndpointInfo } from "./Endpoint.js";
-import { EndpointParseException } from "./LocalException.js";
+import { ParseException } from "./LocalExceptions.js";
 import { IPEndpointI } from "./IPEndpointI.js";
 import { TcpTransceiver } from "./TcpTransceiver.js";
 import { Debug } from "./Debug.js";
+import { EndpointInfo as SSLEndpointInfo } from "./SSL/EndpointInfo.js";
 
 export class TcpEndpointI extends IPEndpointI {
     constructor(instance, ho, po, sif, ti, conId, co) {
         super(instance, ho, po, sif, conId);
-        this._timeout = ti === undefined ? (instance ? instance.defaultTimeout() : undefined) : ti;
+        // The default timeout is 60,000 milliseconds (1 minute). It's not used in Ice 3.8 or greater.
+        this._timeout = ti === undefined ? (instance ? 60000 : undefined) : ti;
         this._compress = co === undefined ? false : co;
     }
 
@@ -23,8 +25,7 @@ export class TcpEndpointI extends IPEndpointI {
     getInfo() {
         const info = new TCPEndpointInfo();
         this.fillEndpointInfo(info);
-        Debug.assert(!this.secure()); // Secure endpoints are not supported in NodeJS
-        return info;
+        return this.secure() ? new SSLEndpointInfo(info, info.timeout, info.compress) : info;
     }
 
     //
@@ -207,7 +208,7 @@ export class TcpEndpointI extends IPEndpointI {
 
         if (option === "-t") {
             if (argument === null) {
-                throw new EndpointParseException("no argument provided for -t option in endpoint " + endpoint);
+                throw new ParseException(`no argument provided for -t option in endpoint ${endpoint}`);
             }
 
             if (argument == "infinite") {
@@ -220,16 +221,12 @@ export class TcpEndpointI extends IPEndpointI {
                     invalid = true;
                 }
                 if (invalid || this._timeout < 1) {
-                    throw new EndpointParseException(
-                        "invalid timeout value `" + argument + "' in endpoint " + endpoint,
-                    );
+                    throw new ParseException(`invalid timeout value '${argument}' in endpoint ${endpoint}`);
                 }
             }
         } else if (option === "-z") {
             if (argument !== null) {
-                throw new EndpointParseException(
-                    "unexpected argument `" + argument + "' provided for -z option in " + endpoint,
-                );
+                throw new ParseException(`unexpected argument ${argument}' provided for -z option in ${endpoint}`);
             }
 
             this._compress = true;

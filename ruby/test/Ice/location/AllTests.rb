@@ -10,9 +10,8 @@ end
 
 def allTests(helper, communicator)
     ref =  "ServerManager:#{helper.getTestEndpoint()}"
-    manager = Test::ServerManagerPrx::checkedCast(communicator.stringToProxy(ref))
+    manager = Test::ServerManagerPrx.new(communicator, ref)
     locator = communicator.getDefaultLocator()
-    test(manager)
 
     print "testing stringToProxy... "
     STDOUT.flush
@@ -26,7 +25,7 @@ def allTests(helper, communicator)
     print "testing ice_locator and ice_getLocator... "
     STDOUT.flush
     test(Ice::proxyIdentityEqual(base.ice_getLocator(), communicator.getDefaultLocator()))
-    anotherLocator = Ice::LocatorPrx::uncheckedCast(communicator.stringToProxy("anotherLocator"))
+    anotherLocator = Ice::LocatorPrx.new(communicator, "anotherLocator")
     base = base.ice_locator(anotherLocator)
     test(Ice::proxyIdentityEqual(base.ice_getLocator(), anotherLocator))
     communicator.setDefaultLocator(nil)
@@ -43,10 +42,10 @@ def allTests(helper, communicator)
     # test/Ice/router test?)
     #
     test(!base.ice_getRouter())
-    anotherRouter = Ice::RouterPrx::uncheckedCast(communicator.stringToProxy("anotherRouter"))
+    anotherRouter = Ice::RouterPrx.new(communicator, "anotherRouter")
     base = base.ice_router(anotherRouter)
     test(Ice::proxyIdentityEqual(base.ice_getRouter(), anotherRouter))
-    router = Ice::RouterPrx::uncheckedCast(communicator.stringToProxy("dummyrouter"))
+    router = Ice::RouterPrx.new(communicator, "dummyrouter")
     communicator.setDefaultRouter(router)
     base = communicator.stringToProxy("test @ TestAdapter")
     test(Ice::proxyIdentityEqual(base.ice_getRouter(), communicator.getDefaultRouter()))
@@ -62,18 +61,18 @@ def allTests(helper, communicator)
 
     print "testing checked cast... "
     STDOUT.flush
-    obj = Test::TestIntfPrx::checkedCast(base)
-    obj = Test::TestIntfPrx::checkedCast(communicator.stringToProxy("test@TestAdapter"))
-    obj = Test::TestIntfPrx::checkedCast(communicator.stringToProxy("test   @TestAdapter"))
-    obj = Test::TestIntfPrx::checkedCast(communicator.stringToProxy("test@   TestAdapter"))
+    obj = Test::TestIntfPrx.checkedCast(base)
+    obj = Test::TestIntfPrx.checkedCast(communicator.stringToProxy("test@TestAdapter"))
+    obj = Test::TestIntfPrx.checkedCast(communicator.stringToProxy("test   @TestAdapter"))
+    obj = Test::TestIntfPrx.checkedCast(communicator.stringToProxy("test@   TestAdapter"))
     test(obj)
-    obj2 = Test::TestIntfPrx::checkedCast(base2)
+    obj2 = Test::TestIntfPrx.checkedCast(base2)
     test(obj2)
-    obj3 = Test::TestIntfPrx::checkedCast(base3)
+    obj3 = Test::TestIntfPrx.checkedCast(base3)
     test(obj3)
-    obj4 = Test::ServerManagerPrx::checkedCast(base4)
+    obj4 = Test::ServerManagerPrx.checkedCast(base4)
     test(obj4)
-    obj5 = Test::TestIntfPrx::checkedCast(base5)
+    obj5 = Test::TestIntfPrx.checkedCast(base5)
     test(obj5)
     puts "ok"
 
@@ -82,7 +81,7 @@ def allTests(helper, communicator)
     obj.shutdown()
     manager.startServer()
     begin
-        obj2 = Test::TestIntfPrx::checkedCast(base2)
+        obj2 = Test::TestIntfPrx.checkedCast(base2)
         obj2.ice_ping()
     rescue Ice::LocalException
         test(false)
@@ -94,13 +93,13 @@ def allTests(helper, communicator)
     obj.shutdown()
     manager.startServer()
     begin
-        obj3 = Test::TestIntfPrx::checkedCast(base3)
+        obj3 = Test::TestIntfPrx.checkedCast(base3)
         obj3.ice_ping()
     rescue Ice::LocalException
         test(false)
     end
     begin
-        obj2 = Test::TestIntfPrx::checkedCast(base2)
+        obj2 = Test::TestIntfPrx.checkedCast(base2)
         obj2.ice_ping()
     rescue Ice::LocalException
         test(false)
@@ -108,13 +107,13 @@ def allTests(helper, communicator)
     obj.shutdown()
     manager.startServer()
     begin
-        obj2 = Test::TestIntfPrx::checkedCast(base2)
+        obj2 = Test::TestIntfPrx.checkedCast(base2)
         obj2.ice_ping()
     rescue Ice::LocalException
         test(false)
     end
     begin
-        obj3 = Test::TestIntfPrx::checkedCast(base3)
+        obj3 = Test::TestIntfPrx.checkedCast(base3)
         obj3.ice_ping()
     rescue Ice::LocalException
         test(false)
@@ -123,7 +122,7 @@ def allTests(helper, communicator)
     manager.startServer()
 
     begin
-        obj2 = Test::TestIntfPrx::checkedCast(base2)
+        obj2 = Test::TestIntfPrx.checkedCast(base2)
         obj2.ice_ping()
     rescue Ice::LocalException
         test(false)
@@ -131,7 +130,7 @@ def allTests(helper, communicator)
     obj.shutdown()
     manager.startServer()
     begin
-        obj3 = Test::TestIntfPrx::checkedCast(base3)
+        obj3 = Test::TestIntfPrx.checkedCast(base3)
         obj3.ice_ping()
     rescue Ice::LocalException
         test(false)
@@ -139,7 +138,7 @@ def allTests(helper, communicator)
     obj.shutdown()
     manager.startServer()
     begin
-        obj2 = Test::TestIntfPrx::checkedCast(base2)
+        obj2 = Test::TestIntfPrx.checkedCast(base2)
         obj2.ice_ping()
     rescue Ice::LocalException
         test(false)
@@ -148,7 +147,7 @@ def allTests(helper, communicator)
     manager.startServer()
 
     begin
-        obj5 = Test::TestIntfPrx::checkedCast(base5)
+        obj5 = Test::TestIntfPrx.checkedCast(base5)
         obj5.ice_ping()
     rescue Ice::LocalException
         test(false)
@@ -194,7 +193,7 @@ def allTests(helper, communicator)
 
     print "testing object migration... "
     STDOUT.flush
-    hello = Test::HelloPrx::checkedCast(communicator.stringToProxy("hello"))
+    hello = Test::HelloPrx.checkedCast(communicator.stringToProxy("hello"))
     obj.migrateHello()
     hello.sayHello()
     obj.migrateHello()

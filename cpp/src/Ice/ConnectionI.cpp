@@ -6,14 +6,14 @@
 #include "BatchRequestQueue.h"
 #include "CheckIdentity.h"
 #include "DefaultsAndOverrides.h"
+#include "DisableWarnings.h"
 #include "Endian.h"
 #include "EndpointI.h"
 #include "Ice/IncomingRequest.h"
-#include "Ice/LocalException.h"
+#include "Ice/LocalExceptions.h"
 #include "Ice/LoggerUtil.h"
 #include "Ice/OutgoingResponse.h"
 #include "Ice/Properties.h"
-#include "IceUtil/DisableWarnings.h"
 #include "IdleTimeoutTransceiverDecorator.h"
 #include "Instance.h"
 #include "ObjectAdapterI.h"   // For getThreadPool()
@@ -24,6 +24,7 @@
 #include "TraceUtil.h"
 #include "Transceiver.h"
 
+#include <iomanip>
 #include <stdexcept>
 
 #ifdef ICE_HAS_BZIP2
@@ -37,7 +38,7 @@ using namespace IceInternal;
 
 namespace
 {
-    class ConnectTimerTask final : public IceUtil::TimerTask
+    class ConnectTimerTask final : public Ice::TimerTask
     {
     public:
         ConnectTimerTask(const Ice::ConnectionIPtr& connection) : _connection(connection) {}
@@ -54,7 +55,7 @@ namespace
         const weak_ptr<Ice::ConnectionI> _connection;
     };
 
-    class CloseTimerTask final : public IceUtil::TimerTask
+    class CloseTimerTask final : public Ice::TimerTask
     {
     public:
         CloseTimerTask(const Ice::ConnectionIPtr& connection) : _connection(connection) {}
@@ -71,7 +72,7 @@ namespace
         const weak_ptr<Ice::ConnectionI> _connection;
     };
 
-    class InactivityTimerTask final : public IceUtil::TimerTask
+    class InactivityTimerTask final : public Ice::TimerTask
     {
     public:
         InactivityTimerTask(const Ice::ConnectionIPtr& connection) : _connection(connection) {}
@@ -114,6 +115,28 @@ namespace
         ConnectionState::ConnectionStateClosed,     // StateClosed
         ConnectionState::ConnectionStateClosed,     // StateFinished
     };
+
+    string createBadMagicMessage(const byte m[])
+    {
+        ostringstream os;
+        os << "bag magic in message header: ";
+        for (size_t i = 0; i < sizeof(magic); ++i)
+        {
+            os << hex << setw(2) << setfill('0') << static_cast<int>(m[i]) << ' ';
+        }
+        return os.str();
+    }
+
+    bool initHasExecutor(const InitializationData& initData)
+    {
+#ifdef __APPLE__
+        if (initData.useDispatchQueueExecutor)
+        {
+            return true;
+        }
+#endif
+        return initData.executor != nullptr;
+    }
 }
 
 ConnectionFlushBatchAsync::ConnectionFlushBatchAsync(const ConnectionIPtr& connection, const InstancePtr& instance)
@@ -440,13 +463,16 @@ Ice::ConnectionI::destroy(DestructionReason reason)
     {
         case ObjectAdapterDeactivated:
         {
-            setState(StateClosing, make_exception_ptr(ObjectAdapterDeactivatedException(__FILE__, __LINE__)));
+            setState(
+                StateClosing,
+                make_exception_ptr(
+                    ObjectAdapterDeactivatedException{__FILE__, __LINE__, _adapter ? _adapter->getName() : ""}));
             break;
         }
 
         case CommunicatorDestroyed:
         {
-            setState(StateClosing, make_exception_ptr(CommunicatorDestroyedException(__FILE__, __LINE__)));
+            setState(StateClosing, make_exception_ptr(CommunicatorDestroyedException{__FILE__, __LINE__}));
             break;
         }
     }
@@ -459,11 +485,20 @@ Ice::ConnectionI::close(ConnectionClose mode) noexcept
 
     if (mode == ConnectionClose::Forcefully)
     {
-        setState(StateClosed, make_exception_ptr(ConnectionManuallyClosedException(__FILE__, __LINE__, false)));
+        setState(
+            StateClosed,
+            make_exception_ptr(
+                ConnectionAbortedException{__FILE__, __LINE__, "connection aborted by the application", true}));
     }
     else if (mode == ConnectionClose::Gracefully)
     {
-        setState(StateClosing, make_exception_ptr(ConnectionManuallyClosedException(__FILE__, __LINE__, true)));
+        setState(
+            StateClosing,
+            make_exception_ptr(ConnectionClosedException{
+                __FILE__,
+                __LINE__,
+                "connection closed gracefully by the application",
+                true}));
     }
     else
     {
@@ -474,7 +509,13 @@ Ice::ConnectionI::close(ConnectionClose mode) noexcept
         //
         _conditionVariable.wait(lock, [this] { return _asyncRequests.empty(); });
 
-        setState(StateClosing, make_exception_ptr(ConnectionManuallyClosedException(__FILE__, __LINE__, true)));
+        setState(
+            StateClosing,
+            make_exception_ptr(ConnectionClosedException{
+                __FILE__,
+                __LINE__,
+                "connection closed gracefully by the application",
+                true}));
     }
 }
 
@@ -643,15 +684,12 @@ Ice::ConnectionI::sendAsyncRequest(const OutgoingAsyncBasePtr& out, bool compres
 
     out->attachRemoteObserver(initConnectionInfo(), _endpoint, requestId);
 
+    // We're just about to send a request, so we are not inactive anymore.
+    cancelInactivityTimerTask();
+
     AsyncStatus status = AsyncStatusQueued;
     try
     {
-        if (isAtRest())
-        {
-            // If we were at rest, we're not anymore since we're sending a request.
-            cancelInactivityTimerTask();
-        }
-
         OutgoingMessage message(out, os, compress, requestId);
         status = sendMessage(message);
     }
@@ -666,11 +704,6 @@ Ice::ConnectionI::sendAsyncRequest(const OutgoingAsyncBasePtr& out, bool compres
     {
         _asyncRequestsHint =
             _asyncRequests.insert(_asyncRequests.end(), pair<const int32_t, OutgoingAsyncBasePtr>(requestId, out));
-    }
-    else if (isAtRest())
-    {
-        // A oneway invocation is considered completed as soon as sendMessage returns.
-        scheduleInactivityTimerTask();
     }
     return status;
 }
@@ -704,109 +737,6 @@ Ice::ConnectionI::flushBatchRequestsAsync(
     static constexpr string_view operationName = "flushBatchRequests";
     outAsync->invoke(operationName, compress);
     return [outAsync]() { outAsync->cancel(); };
-}
-
-namespace
-{
-    class HeartbeatAsync : public OutgoingAsyncBase
-    {
-    public:
-        HeartbeatAsync(
-            const ConnectionIPtr& connection,
-            const CommunicatorPtr& communicator,
-            const InstancePtr& instance)
-            : OutgoingAsyncBase(instance),
-              _communicator(communicator),
-              _connection(connection)
-        {
-        }
-
-        virtual CommunicatorPtr getCommunicator() const { return _communicator; }
-
-        virtual ConnectionPtr getConnection() const { return _connection; }
-
-        virtual string_view getOperation() const { return _operationName; }
-
-        void invoke()
-        {
-            _observer.attach(_instance.get(), _operationName);
-            try
-            {
-                _os.write(magic[0]);
-                _os.write(magic[1]);
-                _os.write(magic[2]);
-                _os.write(magic[3]);
-                _os.write(currentProtocol);
-                _os.write(currentProtocolEncoding);
-                _os.write(validateConnectionMsg);
-                _os.write(static_cast<uint8_t>(0)); // Compression status (always zero for validate connection).
-                _os.write(headerSize);              // Message size.
-                _os.i = _os.b.begin();
-
-                AsyncStatus status = _connection->sendAsyncRequest(shared_from_this(), false, false, 0);
-                if (status & AsyncStatusSent)
-                {
-                    _sentSynchronously = true;
-                    if (status & AsyncStatusInvokeSentCallback)
-                    {
-                        invokeSent();
-                    }
-                }
-            }
-            catch (const RetryException& ex)
-            {
-                if (exception(ex.get()))
-                {
-                    invokeExceptionAsync();
-                }
-            }
-            catch (const Exception&)
-            {
-                if (exception(current_exception()))
-                {
-                    invokeExceptionAsync();
-                }
-            }
-        }
-
-    private:
-        CommunicatorPtr _communicator;
-        ConnectionIPtr _connection;
-        static constexpr string_view _operationName = "heartbeat";
-    };
-}
-
-std::function<void()>
-Ice::ConnectionI::heartbeatAsync(::std::function<void(::std::exception_ptr)> ex, ::std::function<void(bool)> sent)
-{
-    class HeartbeatLambda : public HeartbeatAsync, public LambdaInvoke
-    {
-    public:
-        HeartbeatLambda(
-            std::shared_ptr<Ice::ConnectionI>&& connection,
-            Ice::CommunicatorPtr& communicator,
-            const InstancePtr& instance,
-            std::function<void(std::exception_ptr)> ex,
-            std::function<void(bool)> sent)
-            : HeartbeatAsync(connection, communicator, instance),
-              LambdaInvoke(std::move(ex), std::move(sent))
-        {
-        }
-    };
-    auto outAsync = make_shared<HeartbeatLambda>(shared_from_this(), _communicator, _instance, ex, sent);
-    outAsync->invoke();
-    return [outAsync]() { outAsync->cancel(); };
-}
-
-void
-Ice::ConnectionI::setHeartbeatCallback(HeartbeatCallback callback)
-{
-    std::lock_guard lock(_mutex);
-    if (_state >= StateClosed)
-    {
-        return;
-    }
-    _heartbeatCallback = std::move(callback);
 }
 
 void
@@ -865,22 +795,15 @@ Ice::ConnectionI::asyncRequestCanceled(const OutgoingAsyncBasePtr& outAsync, exc
         {
             if (o->requestId)
             {
-                bool removed = false;
                 if (_asyncRequestsHint != _asyncRequests.end() &&
                     _asyncRequestsHint->second == dynamic_pointer_cast<OutgoingAsync>(outAsync))
                 {
                     _asyncRequests.erase(_asyncRequestsHint);
                     _asyncRequestsHint = _asyncRequests.end();
-                    removed = true;
                 }
                 else
                 {
-                    removed = _asyncRequests.erase(o->requestId) == 1;
-                }
-
-                if (removed && isAtRest())
-                {
-                    scheduleInactivityTimerTask();
+                    _asyncRequests.erase(o->requestId);
                 }
             }
 
@@ -888,7 +811,7 @@ Ice::ConnectionI::asyncRequestCanceled(const OutgoingAsyncBasePtr& outAsync, exc
             {
                 rethrow_exception(ex);
             }
-            catch (const ConnectionIdleException&)
+            catch (const ConnectionAbortedException&)
             {
                 setState(StateClosed, ex);
             }
@@ -926,7 +849,7 @@ Ice::ConnectionI::asyncRequestCanceled(const OutgoingAsyncBasePtr& outAsync, exc
                 {
                     rethrow_exception(ex);
                 }
-                catch (const ConnectionIdleException&)
+                catch (const ConnectionAbortedException&)
                 {
                     setState(StateClosed, ex);
                 }
@@ -934,11 +857,6 @@ Ice::ConnectionI::asyncRequestCanceled(const OutgoingAsyncBasePtr& outAsync, exc
                 {
                     _asyncRequests.erase(_asyncRequestsHint);
                     _asyncRequestsHint = _asyncRequests.end();
-
-                    if (isAtRest())
-                    {
-                        scheduleInactivityTimerTask();
-                    }
 
                     if (outAsync->exception(ex))
                     {
@@ -957,7 +875,7 @@ Ice::ConnectionI::asyncRequestCanceled(const OutgoingAsyncBasePtr& outAsync, exc
                 {
                     rethrow_exception(ex);
                 }
-                catch (const ConnectionIdleException&)
+                catch (const ConnectionAbortedException&)
                 {
                     setState(StateClosed, ex);
                 }
@@ -965,11 +883,6 @@ Ice::ConnectionI::asyncRequestCanceled(const OutgoingAsyncBasePtr& outAsync, exc
                 {
                     assert(p != _asyncRequestsHint);
                     _asyncRequests.erase(p);
-
-                    if (isAtRest())
-                    {
-                        scheduleInactivityTimerTask();
-                    }
 
                     if (outAsync->exception(ex))
                     {
@@ -1008,12 +921,6 @@ Ice::ConnectionI::dispatchException(exception_ptr ex, int requestCount)
                     }
                 }
                 _conditionVariable.notify_all();
-            }
-
-            _dispatchCount -= requestCount;
-            if (isAtRest())
-            {
-                scheduleInactivityTimerTask();
             }
         }
     }
@@ -1075,7 +982,7 @@ Ice::ConnectionI::getEndpoint() const noexcept
 }
 
 ObjectPrx
-Ice::ConnectionI::createProxy(const Identity& ident) const
+Ice::ConnectionI::_createProxy(const Identity& ident) const
 {
     checkIdentity(ident, __FILE__, __LINE__);
     return ObjectPrx::_fromReference(
@@ -1294,7 +1201,10 @@ Ice::ConnectionI::message(ThreadPoolCurrent& current)
                             //
                             // This situation is possible for small UDP packets.
                             //
-                            throw IllegalMessageSizeException(__FILE__, __LINE__);
+                            throw MarshalException{
+                                __FILE__,
+                                __LINE__,
+                                "received Ice message with too few bytes in header"};
                         }
 
                         // Decode the header.
@@ -1303,15 +1213,27 @@ Ice::ConnectionI::message(ThreadPoolCurrent& current)
                         _readStream.readBlob(m, static_cast<int32_t>(sizeof(magic)));
                         if (m[0] != magic[0] || m[1] != magic[1] || m[2] != magic[2] || m[3] != magic[3])
                         {
-                            throw BadMagicException(__FILE__, __LINE__, "", Ice::ByteSeq(&m[0], &m[0] + sizeof(magic)));
+                            throw ProtocolException{__FILE__, __LINE__, createBadMagicMessage(m)};
                         }
                         ProtocolVersion pv;
                         _readStream.read(pv);
-                        checkSupportedProtocol(pv);
+                        if (pv != currentProtocol)
+                        {
+                            throw ProtocolException{
+                                __FILE__,
+                                __LINE__,
+                                "invalid protocol version in message header: " + Ice::protocolVersionToString(pv)};
+                        }
                         EncodingVersion ev;
                         _readStream.read(ev);
-                        checkSupportedProtocolEncoding(ev);
-
+                        if (ev != currentProtocolEncoding)
+                        {
+                            throw ProtocolException{
+                                __FILE__,
+                                __LINE__,
+                                "invalid protocol encoding version in message header: " +
+                                    Ice::encodingVersionToString(ev)};
+                        }
                         uint8_t messageType;
                         _readStream.read(messageType);
                         uint8_t compressByte;
@@ -1320,7 +1242,10 @@ Ice::ConnectionI::message(ThreadPoolCurrent& current)
                         _readStream.read(size);
                         if (size < headerSize)
                         {
-                            throw IllegalMessageSizeException(__FILE__, __LINE__);
+                            throw MarshalException{
+                                __FILE__,
+                                __LINE__,
+                                "received Ice message with unexpected size " + to_string(size)};
                         }
 
                         // Resize the read buffer to the message size.
@@ -1480,22 +1405,7 @@ Ice::ConnectionI::message(ThreadPoolCurrent& current)
         }
     }
 
-// executeFromThisThread dispatches to the correct DispatchQueue
-#ifdef ICE_SWIFT
-    auto stream = make_shared<InputStream>();
-    stream->swap(messageStream);
-
-    auto self = shared_from_this();
-    _threadPool->executeFromThisThread(
-        [self,
-         connectionStartCompleted = std::move(connectionStartCompleted),
-         sentCBs = std::move(sentCBs),
-         messageUpcall = std::move(messageUpcall),
-         stream]()
-        { self->upcall(std::move(connectionStartCompleted), std::move(sentCBs), std::move(messageUpcall), *stream); },
-        self);
-#else
-    if (!_hasExecutor) // Optimization, call dispatch() directly if there's no executor.
+    if (!_hasExecutor) // Optimization, call upcall() directly if there's no executor.
     {
         upcall(std::move(connectionStartCompleted), std::move(sentCBs), std::move(messageUpcall), messageStream);
     }
@@ -1519,7 +1429,6 @@ Ice::ConnectionI::message(ThreadPoolCurrent& current)
             },
             self);
     }
-#endif
 }
 
 void
@@ -1616,11 +1525,20 @@ ConnectionI::upcall(
 void
 Ice::ConnectionI::finished(ThreadPoolCurrent& current, bool close)
 {
+    // Lock the connection here to ensure setState() completes before the code below is executed. This method can be
+    // called by the thread pool as soon as setState() calls _threadPool->finish(...). There's no need to lock the mutex
+    // for the remainder of the code because the data members accessed by finish() are immutable once _state ==
+    // StateClosed (and we don't want to hold the mutex when calling upcalls).
+    {
+        std::lock_guard lock(_mutex);
+        assert(_state == StateClosed);
+    }
+
     // If there are no callbacks to call, we don't call ioCompleted() since we're not going to call code that will
     // potentially block (this avoids promoting a new leader and unecessary thread creation, especially if this is
     // called on shutdown).
     if (!_connectionStartCompleted && !_connectionStartFailed && _sendStreams.empty() && _asyncRequests.empty() &&
-        !_closeCallback && !_heartbeatCallback)
+        !_closeCallback)
     {
         finish(close);
         return;
@@ -1628,11 +1546,6 @@ Ice::ConnectionI::finished(ThreadPoolCurrent& current, bool close)
 
     current.ioCompleted();
 
-    // executeFromThisThread dispatches to the correct DispatchQueue
-#ifdef ICE_SWIFT
-    auto self = shared_from_this();
-    _threadPool->executeFromThisThread([self, close]() { self->finish(close); }, self);
-#else
     if (!_hasExecutor) // Optimization, call finish() directly if there's no executor.
     {
         finish(close);
@@ -1642,7 +1555,6 @@ Ice::ConnectionI::finished(ThreadPoolCurrent& current, bool close)
         auto self = shared_from_this();
         _threadPool->executeFromThisThread([self, close]() { self->finish(close); }, self);
     }
-#endif
 }
 
 void
@@ -1681,13 +1593,10 @@ Ice::ConnectionI::finish(bool close)
             catch (const CloseConnectionException&)
             {
             }
-            catch (const ConnectionManuallyClosedException&)
+            catch (const ConnectionAbortedException&)
             {
             }
             catch (const ConnectionClosedException&)
-            {
-            }
-            catch (const ConnectionIdleException&)
             {
             }
             catch (const CommunicatorDestroyedException&)
@@ -1765,10 +1674,7 @@ Ice::ConnectionI::finish(bool close)
             o->completed(_exception);
             if (o->requestId) // Make sure finished isn't called twice.
             {
-                if (_asyncRequests.erase(o->requestId) == 1 && isAtRest())
-                {
-                    scheduleInactivityTimerTask();
-                }
+                _asyncRequests.erase(o->requestId);
             }
         }
 
@@ -1798,8 +1704,6 @@ Ice::ConnectionI::finish(bool close)
         closeCallback(_closeCallback);
         _closeCallback = nullptr;
     }
-
-    _heartbeatCallback = nullptr;
 
     // This must be done last as this will cause waitUntilFinished() to return (and communicator
     // objects such as the timer might be destroyed too).
@@ -1888,14 +1792,15 @@ Ice::ConnectionI::ConnectionI(
       _connector(connector),
       _endpoint(endpoint),
       _adapter(adapter),
-      _hasExecutor(_instance->initializationData().executor), // Cached for better performance.
-      _logger(_instance->initializationData().logger),        // Cached for better performance.
-      _traceLevels(_instance->traceLevels()),                 // Cached for better performance.
-      _timer(_instance->timer()),                             // Cached for better performance.
+      _hasExecutor(initHasExecutor(_instance->initializationData())), // Cached for better performance.
+      _logger(_instance->initializationData().logger),                // Cached for better performance.
+      _traceLevels(_instance->traceLevels()),                         // Cached for better performance.
+      _timer(_instance->timer()),                                     // Cached for better performance.
       _connectTimeout(options.connectTimeout),
       _closeTimeout(options.closeTimeout), // not used for datagram connections
       // suppress inactivity timeout for datagram connections
       _inactivityTimeout(endpoint->datagram() ? chrono::seconds::zero() : options.inactivityTimeout),
+      _inactivityTimerTaskScheduled(false),
       _removeFromFactory(std::move(removeFromFactory)),
       _warn(_instance->initializationData().properties->getIcePropertyAsInt("Ice.Warn.Connections") > 0),
       _warnUdp(_instance->initializationData().properties->getIcePropertyAsInt("Ice.Warn.Datagrams") > 0),
@@ -1985,7 +1890,6 @@ Ice::ConnectionI::~ConnectionI()
     assert(!_connectionStartCompleted);
     assert(!_connectionStartFailed);
     assert(!_closeCallback);
-    assert(!_heartbeatCallback);
     assert(_state == StateFinished);
     assert(_upcallCount == 0);
     assert(_sendStreams.empty());
@@ -2028,13 +1932,10 @@ Ice::ConnectionI::setState(State state, exception_ptr ex)
             catch (const CloseConnectionException&)
             {
             }
-            catch (const ConnectionManuallyClosedException&)
+            catch (const ConnectionAbortedException&)
             {
             }
             catch (const ConnectionClosedException&)
-            {
-            }
-            catch (const ConnectionIdleException&)
             {
             }
             catch (const CommunicatorDestroyedException&)
@@ -2092,6 +1993,11 @@ Ice::ConnectionI::setState(State state)
         return;
     }
 
+    if (state > StateActive)
+    {
+        cancelInactivityTimerTask();
+    }
+
     try
     {
         switch (state)
@@ -2137,9 +2043,6 @@ Ice::ConnectionI::setState(State state)
                 {
                     return;
                 }
-
-                // We don't shut down the connection due to inactivity when it's in the Holding state.
-                cancelInactivityTimerTask();
 
                 if (_state == StateActive)
                 {
@@ -2214,13 +2117,10 @@ Ice::ConnectionI::setState(State state)
             catch (const CloseConnectionException&)
             {
             }
-            catch (const ConnectionManuallyClosedException&)
+            catch (const ConnectionAbortedException&)
             {
             }
             catch (const ConnectionClosedException&)
-            {
-            }
-            catch (const ConnectionIdleException&)
             {
             }
             catch (const CommunicatorDestroyedException&)
@@ -2259,13 +2159,6 @@ Ice::ConnectionI::setState(State state)
         {
             setState(StateClosed, current_exception());
         }
-    }
-
-    if (isAtRest())
-    {
-        // If the connection became active and there is no outstanding invocation or dispatch (very common case), we
-        // schedule the inactivity timer task.
-        scheduleInactivityTimerTask();
     }
 }
 
@@ -2319,18 +2212,16 @@ Ice::ConnectionI::initiateShutdown()
 }
 
 void
-Ice::ConnectionI::idleCheck(
-    const IceUtil::TimerTaskPtr& idleCheckTimerTask,
-    const chrono::seconds& idleTimeout) noexcept
+Ice::ConnectionI::idleCheck(const Ice::TimerTaskPtr& idleCheckTimerTask, const chrono::seconds& idleTimeout) noexcept
 {
     std::lock_guard lock(_mutex);
-    if (_state == StateActive || _state == StateHolding)
+    // When _timer->isScheduled(idleCheckTimerTask) returns true, it means a read rescheduled the
+    // timer task while we were waiting to lock _mutex. We don't do anything in this case.
+    if ((_state == StateActive || _state == StateHolding) && !_timer->isScheduled(idleCheckTimerTask))
     {
-        // _timer->cancel(task) returns true if a concurrent read rescheduled the timer task.
-        if (_transceiver->isWaitingToBeRead() || _timer->cancel(idleCheckTimerTask))
+        if (_transceiver->isWaitingToBeRead())
         {
-            // Schedule or reschedule timer task. Reschedule in the rare case where a concurrent read scheduled the task
-            // already.
+            // Schedule timer task.
             _timer->reschedule(idleCheckTimerTask, idleTimeout);
 
             if (_instance->traceLevels()->network >= 3)
@@ -2346,12 +2237,19 @@ Ice::ConnectionI::idleCheck(
             if (_instance->traceLevels()->network >= 1)
             {
                 Trace out(_instance->initializationData().logger, _instance->traceLevels()->networkCat);
-                out << "connection aborted by the idle check because it did not receive any byte for "
+                out << "connection aborted by the idle check because it did not receive any bytes for "
                     << idleTimeout.count() << "s\n";
                 out << _transceiver->toDetailedString();
             }
 
-            setState(StateClosed, make_exception_ptr(ConnectionIdleException(__FILE__, __LINE__)));
+            setState(
+                StateClosed,
+                make_exception_ptr(ConnectionAbortedException{
+                    __FILE__,
+                    __LINE__,
+                    "connection aborted by the idle check because it did not receive any bytes for " +
+                        to_string(idleTimeout.count()) + "s",
+                    false})); // closedByApplication: false
         }
     }
     // else, nothing to do
@@ -2362,14 +2260,23 @@ Ice::ConnectionI::inactivityCheck() noexcept
 {
     // Called by the InactivityTimerTask.
     std::lock_guard lock(_mutex);
-    if (isAtRest())
+
+    // Make sure this timer task was not rescheduled for later while we were waiting for _mutex.
+    if (_inactivityTimerTaskScheduled && !_timer->isScheduled(_inactivityTimerTask))
     {
-        setState(
-            StateClosing,
-            make_exception_ptr(ConnectionClosedException{
-                __FILE__,
-                __LINE__,
-                "connection closed because it remained inactive for longer than the inactivity timeout"}));
+        // Clear flag - the task is no longer scheduled.
+        _inactivityTimerTaskScheduled = false;
+
+        if (_state == StateActive)
+        {
+            setState(
+                StateClosing,
+                make_exception_ptr(ConnectionClosedException{
+                    __FILE__,
+                    __LINE__,
+                    "connection closed because it remained inactive for longer than the inactivity timeout",
+                    false}));
+        }
     }
 }
 
@@ -2403,25 +2310,55 @@ Ice::ConnectionI::sendHeartbeat() noexcept
     lock_guard lock(_mutex);
     if (_state == StateActive || _state == StateHolding)
     {
-        OutputStream os(_instance.get(), Ice::currentProtocolEncoding);
-        os.write(magic[0]);
-        os.write(magic[1]);
-        os.write(magic[2]);
-        os.write(magic[3]);
-        os.write(currentProtocol);
-        os.write(currentProtocolEncoding);
-        os.write(validateConnectionMsg);
-        os.write(static_cast<uint8_t>(0)); // Compression status (always zero for validate connection).
-        os.write(headerSize);              // Message size.
-        os.i = os.b.begin();
-        try
+        // We check if the connection has become inactive.
+        if (_inactivityTimerTask &&           // null when the inactivity timeout is infinite
+            !_inactivityTimerTaskScheduled && // we never reschedule this task
+            _state == StateActive &&          // only schedule the task if the connection is active
+            _dispatchCount == 0 &&            // no pending dispatch
+            _asyncRequests.empty() &&         // no pending invocation
+            _readHeader &&                    // we're not waiting for the remainder of an incoming message
+            _sendStreams.size() <= 1)         // there is at most one pending outgoing message
         {
-            OutgoingMessage message(&os, false);
-            sendMessage(message);
+            // We may become inactive while the peer is back-pressuring us. In this case, we only schedule the
+            // inactivity timer if there is no pending outgoing message or the pending outgoing message is a
+            // heartbeat.
+
+            // The stream of the first _sendStreams message is in _writeStream.
+            if (_sendStreams.empty() || static_cast<uint8_t>(_writeStream.b[8]) == validateConnectionMsg)
+            {
+                scheduleInactivityTimerTask();
+            }
         }
-        catch (...)
+
+        // We send a heartbeat to the peer to generate a "write" on the connection. This write in turns creates
+        // a read on the peer, and resets the peer's idle check timer. When _sendStream is not empty, there is
+        // already an outstanding write, so we don't need to send a heartbeat. It's possible the first message
+        // of _sendStreams was already sent but not yet removed from _sendStreams: it means the last write
+        // occurred very recently, which is good enough with respect to the idle check.
+        // As a result of this optimization, the only possible heartbeat in _sendStreams is the first
+        // _sendStreams message.
+        if (_sendStreams.empty())
         {
-            setState(StateClosed, current_exception());
+            OutputStream os(_instance.get(), Ice::currentProtocolEncoding);
+            os.write(magic[0]);
+            os.write(magic[1]);
+            os.write(magic[2]);
+            os.write(magic[3]);
+            os.write(currentProtocol);
+            os.write(currentProtocolEncoding);
+            os.write(validateConnectionMsg);
+            os.write(static_cast<uint8_t>(0)); // Compression status (always zero for validate connection).
+            os.write(headerSize);              // Message size.
+            os.i = os.b.begin();
+            try
+            {
+                OutgoingMessage message(&os, false);
+                sendMessage(message);
+            }
+            catch (...)
+            {
+                setState(StateClosed, current_exception());
+            }
         }
     }
     // else nothing to do
@@ -2474,15 +2411,11 @@ Ice::ConnectionI::sendResponse(OutgoingResponse response, uint8_t compress)
                 sendMessage(message);
             }
 
+            --_dispatchCount;
+
             if (_state == StateClosing && _upcallCount == 0)
             {
                 initiateShutdown();
-            }
-
-            --_dispatchCount;
-            if (isAtRest())
-            {
-                scheduleInactivityTimerTask();
             }
         }
         catch (const LocalException&)
@@ -2597,19 +2530,35 @@ Ice::ConnectionI::validate(SocketOperation operation)
             _readStream.read(m[3]);
             if (m[0] != magic[0] || m[1] != magic[1] || m[2] != magic[2] || m[3] != magic[3])
             {
-                throw BadMagicException(__FILE__, __LINE__, "", Ice::ByteSeq(&m[0], &m[0] + sizeof(magic)));
+                throw ProtocolException{__FILE__, __LINE__, createBadMagicMessage(m)};
             }
             ProtocolVersion pv;
             _readStream.read(pv);
-            checkSupportedProtocol(pv);
+            if (pv != currentProtocol)
+            {
+                throw ProtocolException{
+                    __FILE__,
+                    __LINE__,
+                    "invalid protocol version in message header: " + Ice::protocolVersionToString(pv)};
+            }
             EncodingVersion ev;
             _readStream.read(ev);
-            checkSupportedProtocolEncoding(ev);
+            if (ev != currentProtocolEncoding)
+            {
+                throw ProtocolException{
+                    __FILE__,
+                    __LINE__,
+                    "invalid protocol encoding version in message header: " + Ice::encodingVersionToString(ev)};
+            }
             uint8_t messageType;
             _readStream.read(messageType);
             if (messageType != validateConnectionMsg)
             {
-                throw ConnectionNotValidatedException(__FILE__, __LINE__);
+                throw ProtocolException{
+                    __FILE__,
+                    __LINE__,
+                    "received message of type " + to_string(messageType) +
+                        " over a connection that is not yet validated"};
             }
             uint8_t compress;
             _readStream.read(compress); // Ignore compression status for validate connection.
@@ -2617,7 +2566,10 @@ Ice::ConnectionI::validate(SocketOperation operation)
             _readStream.read(size);
             if (size != headerSize)
             {
-                throw IllegalMessageSizeException(__FILE__, __LINE__);
+                throw MarshalException{
+                    __FILE__,
+                    __LINE__,
+                    "received ValidateConnection message with unexpected size " + to_string(size)};
             }
             traceRecv(_readStream, _logger, _traceLevels);
         }
@@ -2653,6 +2605,8 @@ Ice::ConnectionI::sendNextMessages(vector<OutgoingMessage>& callbacks)
 {
     if (_sendStreams.empty())
     {
+        // This can occur if no message was being written and the socket write operation was registered with the
+        // thread pool (a transceiver read method can request writing data).
         return SocketOperationNone;
     }
     else if (_state == StateClosingPending && _writeStream.i == _writeStream.b.begin())
@@ -2663,13 +2617,16 @@ Ice::ConnectionI::sendNextMessages(vector<OutgoingMessage>& callbacks)
         return SocketOperationNone;
     }
 
+    // Assert that the message was fully written.
     assert(!_writeStream.b.empty() && _writeStream.i == _writeStream.b.end());
+
     try
     {
         while (true)
         {
             //
-            // Notify the message that it was sent.
+            // The message that was being sent is sent. We can swap back the write stream buffer to the outgoing message
+            // (required for retry) and queue its sent callback (if any).
             //
             OutgoingMessage* message = &_sendStreams.front();
             if (message->stream)
@@ -2691,11 +2648,9 @@ Ice::ConnectionI::sendNextMessages(vector<OutgoingMessage>& callbacks)
             }
 
             //
-            // If we are in the closed state or if the close is
-            // pending, don't continue sending.
+            // If we are in the closed state or if the close is pending, don't continue sending.
             //
-            // This can occur if parseMessage (called before
-            // sendNextMessages by message()) closes the connection.
+            // This can occur if parseMessage (called before sendNextMessages by message()) closes the connection.
             //
             if (_state >= StateClosingPending)
             {
@@ -2703,7 +2658,7 @@ Ice::ConnectionI::sendNextMessages(vector<OutgoingMessage>& callbacks)
             }
 
             //
-            // Otherwise, prepare the next message stream for writing.
+            // Otherwise, prepare the next message.
             //
             message = &_sendStreams.front();
             assert(!message->stream->i);
@@ -2756,11 +2711,11 @@ Ice::ConnectionI::sendNextMessages(vector<OutgoingMessage>& callbacks)
 #ifdef ICE_HAS_BZIP2
             }
 #endif
-            _writeStream.swap(*message->stream);
 
             //
             // Send the message.
             //
+            _writeStream.swap(*message->stream);
             if (_observer)
             {
                 _observer.startWrite(_writeStream);
@@ -2778,11 +2733,13 @@ Ice::ConnectionI::sendNextMessages(vector<OutgoingMessage>& callbacks)
             {
                 _observer.finishWrite(_writeStream);
             }
+
+            // If the message was sent right away, loop to send the next queued message.
         }
 
         //
-        // If all the messages were sent and we are in the closing state, we schedule
-        // the close timeout to wait for the peer to close the connection.
+        // If all the messages were sent and we are in the closing state, we schedule the close timeout to wait for the
+        // peer to close the connection.
         //
         if (_state == StateClosing && _shutdownInitiated)
         {
@@ -2809,6 +2766,8 @@ Ice::ConnectionI::sendMessage(OutgoingMessage& message)
 
     message.stream->i = 0; // Reset the message stream iterator before starting sending the message.
 
+    // Some messages are queued for sending. Just adds the message to the send queue and tell the caller that the
+    // message was queued.
     if (!_sendStreams.empty())
     {
         _sendStreams.push_back(message);
@@ -2816,11 +2775,7 @@ Ice::ConnectionI::sendMessage(OutgoingMessage& message)
         return AsyncStatusQueued;
     }
 
-    //
-    // Attempt to send the message without blocking. If the send blocks, we register
-    // the connection with the selector thread.
-    //
-
+    // Prepare and send the message.
     message.stream->i = message.stream->b.begin();
     SocketOperation op;
 #ifdef ICE_HAS_BZIP2
@@ -2840,9 +2795,6 @@ Ice::ConnectionI::sendMessage(OutgoingMessage& message)
 
         traceSend(*message.stream, _logger, _traceLevels);
 
-        //
-        // Send the message without blocking.
-        //
         if (_observer)
         {
             _observer.startWrite(stream);
@@ -2894,9 +2846,6 @@ Ice::ConnectionI::sendMessage(OutgoingMessage& message)
 
         traceSend(*message.stream, _logger, _traceLevels);
 
-        //
-        // Send the message without blocking.
-        //
         if (_observer)
         {
             _observer.startWrite(*message.stream);
@@ -2921,6 +2870,11 @@ Ice::ConnectionI::sendMessage(OutgoingMessage& message)
 #ifdef ICE_HAS_BZIP2
     }
 #endif
+
+    // The message couldn't be sent right away so we add it to the send stream queue (which is empty) and swap its
+    // stream with `_writeStream`. The socket operation returned by the transceiver write is registered with the thread
+    // pool. At this point the message() method will take care of sending the whole message (held by _writeStream) when
+    // the transceiver is ready to write more of the message buffer.
 
     _writeStream.swap(*_sendStreams.back().stream);
     _threadPool->_register(shared_from_this(), op);
@@ -3010,7 +2964,10 @@ Ice::ConnectionI::doCompress(OutputStream& uncompressed, OutputStream& compresse
         0);
     if (bzError != BZ_OK)
     {
-        throw CompressionException(__FILE__, __LINE__, "BZ2_bzBuffToBuffCompress failed" + getBZ2Error(bzError));
+        throw ProtocolException{
+            __FILE__,
+            __LINE__,
+            "cannot compress message - BZ2_bzBuffToBuffCompress failed" + getBZ2Error(bzError)};
     }
     compressed.b.resize(headerSize + sizeof(int32_t) + compressedLen);
 
@@ -3059,7 +3016,10 @@ Ice::ConnectionI::doUncompress(InputStream& compressed, InputStream& uncompresse
     compressed.read(uncompressedSize);
     if (uncompressedSize <= headerSize)
     {
-        throw IllegalMessageSizeException(__FILE__, __LINE__);
+        throw MarshalException{
+            __FILE__,
+            __LINE__,
+            "unexpected message size after uncompress: " + to_string(uncompressedSize)};
     }
 
     if (uncompressedSize > static_cast<int32_t>(_messageSizeMax))
@@ -3079,7 +3039,10 @@ Ice::ConnectionI::doUncompress(InputStream& compressed, InputStream& uncompresse
         0);
     if (bzError != BZ_OK)
     {
-        throw CompressionException(__FILE__, __LINE__, "BZ2_bzBuffToBuffCompress failed" + getBZ2Error(bzError));
+        throw ProtocolException{
+            __FILE__,
+            __LINE__,
+            "cannot decompress message - BZ2_bzBuffToBuffDecompress failed" + getBZ2Error(bzError)};
     }
 
     copy(compressed.b.begin(), compressed.b.begin() + headerSize, uncompressed.b.begin());
@@ -3185,10 +3148,7 @@ Ice::ConnectionI::parseMessage(int32_t& upcallCount, function<bool(InputStream&)
                     };
                     ++upcallCount;
 
-                    if (isAtRest())
-                    {
-                        cancelInactivityTimerTask();
-                    }
+                    cancelInactivityTimerTask();
                     ++_dispatchCount;
                 }
                 break;
@@ -3216,7 +3176,10 @@ Ice::ConnectionI::parseMessage(int32_t& upcallCount, function<bool(InputStream&)
                     if (requestCount < 0)
                     {
                         requestCount = 0;
-                        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+                        throw MarshalException{
+                            __FILE__,
+                            __LINE__,
+                            "received batch request with " + to_string(requestCount) + " batches"};
                     }
 
                     upcall = [self = shared_from_this(), requestCount, adapter, compress](InputStream& messageStream)
@@ -3226,10 +3189,7 @@ Ice::ConnectionI::parseMessage(int32_t& upcallCount, function<bool(InputStream&)
                     };
                     upcallCount += requestCount;
 
-                    if (isAtRest())
-                    {
-                        cancelInactivityTimerTask();
-                    }
+                    cancelInactivityTimerTask();
                     _dispatchCount += requestCount;
                 }
                 break;
@@ -3271,11 +3231,6 @@ Ice::ConnectionI::parseMessage(int32_t& upcallCount, function<bool(InputStream&)
                         _asyncRequests.erase(q);
                     }
 
-                    if (isAtRest())
-                    {
-                        scheduleInactivityTimerTask();
-                    }
-
                     // The message stream is adopted by the outgoing.
                     *outAsync->getIs() = std::move(stream);
 
@@ -3311,28 +3266,6 @@ Ice::ConnectionI::parseMessage(int32_t& upcallCount, function<bool(InputStream&)
             case validateConnectionMsg:
             {
                 traceRecv(stream, _logger, _traceLevels);
-                if (_heartbeatCallback)
-                {
-                    upcall = [self = shared_from_this(), heartbeatCallback = _heartbeatCallback](InputStream&)
-                    {
-                        try
-                        {
-                            heartbeatCallback(self);
-                        }
-                        catch (const std::exception& ex)
-                        {
-                            Error out(self->_instance->initializationData().logger);
-                            out << "connection callback exception:\n" << ex << '\n' << self->_desc;
-                        }
-                        catch (...)
-                        {
-                            Error out(self->_instance->initializationData().logger);
-                            out << "connection callback exception:\nunknown c++ exception" << '\n' << self->_desc;
-                        }
-                        return true; // upcall is done
-                    };
-                    ++upcallCount;
-                }
                 // a heartbeat has no effect on the dispatch count or the inactivity timer task.
                 break;
             }
@@ -3340,7 +3273,10 @@ Ice::ConnectionI::parseMessage(int32_t& upcallCount, function<bool(InputStream&)
             default:
             {
                 trace("received unknown message\n(invalid, closing connection)", stream, _logger, _traceLevels);
-                throw UnknownMessageException(__FILE__, __LINE__);
+                throw ProtocolException{
+                    __FILE__,
+                    __LINE__,
+                    "received Ice protocol message with unknown type: " + to_string(messageType)};
             }
         }
     }
@@ -3497,20 +3433,20 @@ void
 ConnectionI::scheduleInactivityTimerTask()
 {
     // Called with the ConnectionI mutex locked.
-    if (_inactivityTimeout > chrono::seconds::zero())
-    {
-        assert(_inactivityTimerTask);
-        _timer->schedule(_inactivityTimerTask, _inactivityTimeout);
-    }
+    assert(!_inactivityTimerTaskScheduled);
+    assert(_inactivityTimerTask);
+
+    _inactivityTimerTaskScheduled = true;
+    _timer->schedule(_inactivityTimerTask, _inactivityTimeout);
 }
 
 void
 ConnectionI::cancelInactivityTimerTask()
 {
     // Called with the ConnectionI mutex locked.
-    if (_inactivityTimeout > chrono::seconds::zero())
+    if (_inactivityTimerTaskScheduled && _inactivityTimerTask)
     {
-        assert(_inactivityTimerTask);
+        _inactivityTimerTaskScheduled = false;
         _timer->cancel(_inactivityTimerTask);
     }
 }

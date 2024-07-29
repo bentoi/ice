@@ -85,7 +85,7 @@ Observers::init(const set<GroupNodeInfo>& slaves, const LogUpdate& llu, const To
         {
             assert(slave.observer);
 
-            ReplicaObserverPrx observer(*slave.observer);
+            auto observer = Ice::uncheckedCast<ReplicaObserverPrx>(*slave.observer);
 
             auto future = observer->initAsync(llu, content);
 
@@ -197,6 +197,6 @@ Observers::wait(const string& op)
     {
         Ice::Trace out(_traceLevels->logger, _traceLevels->replicationCat);
         out << "number of observers `" << _observers.size() << "' is less than the majority '" << _majority << "'";
-        throw Ice::UnknownException(__FILE__, __LINE__);
+        throw Ice::UnknownException(__FILE__, __LINE__, "too few observers");
     }
 }

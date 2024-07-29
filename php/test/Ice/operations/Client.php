@@ -5,7 +5,7 @@
 
 require_once('Test.php');
 
-function twoways($communicator, $p, $bprx)
+function twoways($communicator, $p)
 {
     {
         $literals = $p->opStringLiterals();
@@ -284,9 +284,9 @@ function twoways($communicator, $p, $bprx)
 
     {
         $r = $p->opMyClass($p, $c1, $c2);
-        test(Ice_proxyIdentityAndFacetEqual($c1, $p));
-        test(!Ice_proxyIdentityAndFacetEqual($c2, $p));
-        test(Ice_proxyIdentityAndFacetEqual($r, $p));
+        test(Ice\proxyIdentityAndFacetEqual($c1, $p));
+        test(!Ice\proxyIdentityAndFacetEqual($c2, $p));
+        test(Ice\proxyIdentityAndFacetEqual($r, $p));
         test($c1->ice_getIdentity() == Ice\stringToIdentity("test"));
         test($c2->ice_getIdentity() == Ice\stringToIdentity("noSuchIdentity"));
         test($r->ice_getIdentity() == Ice\stringToIdentity("test"));
@@ -1008,16 +1008,13 @@ function allTests($helper)
 {
     $ref = sprintf("test:%s", $helper->getTestEndpoint());
     $communicator = $helper->communicator();
-    $base = $communicator->stringToProxy($ref);
-    $cl = $base->ice_checkedCast("::Test::MyClass");
-    $derived = $cl->ice_checkedCast("::Test::MyDerivedClass");
-
-    $bprx = $communicator->stringToProxy(sprintf("b:%s", $helper->getTestEndpoint()))->ice_checkedCast("::M::B");
+    $cl = Test\MyClassPrxHelper::createProxy($communicator, $ref);
+    $derived = Test\MyDerivedClassPrxHelper::checkedCast($cl);
 
     echo "testing twoway operations... ";
     flush();
-    twoways($communicator, $cl, $bprx);
-    twoways($communicator, $derived, $bprx);
+    twoways($communicator, $cl);
+    twoways($communicator, $derived);
     $derived->opDerived();
     echo "ok\n";
 

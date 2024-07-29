@@ -18,16 +18,15 @@ export class Instance {
 
         this._traceLevels = null;
         this._defaultsAndOverrides = null;
+        this._clientConnectionOptions = null;
         this._messageSizeMax = 0;
         this._batchAutoFlushSize = 0;
-        this._clientACM = null;
+        this._classGraphDepthMax = 0;
         this._toStringMode = ToStringMode.Unicode;
         this._implicitContext = null;
         this._routerManager = null;
         this._locatorManager = null;
         this._referenceFactory = null;
-        this._requestHandlerFactory = null;
-        this._proxyFactory = null;
         this._outgoingConnectionFactory = null;
         this._objectAdapterFactory = null;
         this._retryQueue = null;

@@ -5,11 +5,28 @@
 declare module "ice" {
     namespace Ice {
         class ObjectPrx {
+            /**
+             * Constructs a new ObjectPrx proxy.
+             * @param communicator - The communicator for the new proxy.
+             * @param proxyString - The string representation of the proxy.
+             * @returns The new proxy.
+             * @throws ProxyParseException - Thrown if the proxyString is not a valid proxy string.
+             */
+            constructor(communicator: Communicator, proxyString: string);
+
+            /**
+             * Constructs a new ObjectPrx proxy from another ObjectPrx. The new proxy is a clone of the
+             * provided proxy.
+             * @param prx - The proxy to clone.
+             * @returns The new proxy.
+             */
+            constructor(prx: ObjectPrx);
+
             static ice_staticId(): string;
 
             /**
              * Tests whether this object supports a specific Slice interface.
-             * @param typeId The type ID of the Slice interface to test against.
+             * @param id The type ID of the Slice interface to test against.
              * @param context The context map for the invocation.
              * @return The asynchronous result object for the invocation.
              */
@@ -105,7 +122,7 @@ declare module "ice" {
              * @param context The context for the new proxy.
              * @return A proxy with the new per-proxy context.
              */
-            ice_context(ctx: Map<string, string>): this;
+            ice_context(context: Map<string, string>): this;
 
             /**
              * Obtains the per-proxy context for this proxy.
@@ -203,10 +220,10 @@ declare module "ice" {
             /**
              * Obtains a proxy that is identical to this proxy, except for the encoding used to marshal
              * parameters.
-             * @param version The encoding version to use to marshal request parameters.
+             * @param encodingVersion The encoding version to use to marshal request parameters.
              * @return A proxy with the specified encoding version.
              */
-            ice_encodingVersion(encoding: EncodingVersion): this;
+            ice_encodingVersion(encodingVersion: EncodingVersion): this;
 
             /**
              * Determines whether this proxy uses only secure endpoints.
@@ -233,7 +250,7 @@ declare module "ice" {
             /**
              * Obtains a proxy that is identical to this proxy, except for its compression setting which
              * overrides the compression setting from the proxy endpoints.
-             * @param b True enables compression for the new proxy, false disables compression.
+             * @param compress True enables compression for the new proxy, false disables compression.
              * @return A proxy with the specified compression override setting.
              */
             ice_compress(compress: boolean): this;
@@ -244,21 +261,6 @@ declare module "ice" {
              * if compression is enabled, false otherwise.
              */
             ice_getCompress(): boolean;
-
-            /**
-             * Obtains a proxy that is identical to this proxy, except for its connection timeout setting
-             * which overrides the timeot setting from the proxy endpoints.
-             * @param timeout The connection timeout override for the proxy (in milliseconds).
-             * @return A proxy with the specified timeout override.
-             */
-            ice_timeout(timeout: number): this;
-
-            /**
-             * Obtains the timeout override of this proxy.
-             * @return The timeout override. If nullopt is returned, no override is set. Otherwise, returns
-             * the timeout override value.
-             */
-            ice_getTimeout(): number;
 
             /**
              * Obtains a proxy that is identical to this proxy, except for the router.
@@ -328,7 +330,7 @@ declare module "ice" {
 
             /**
              * Obtains a proxy that is identical to this proxy, except for its connection ID.
-             * @param id The connection ID for the new proxy. An empty string removes the
+             * @param connectionId The connection ID for the new proxy. An empty string removes the
              * connection ID.
              * @return A proxy with the specified connection ID.
              */
@@ -346,7 +348,7 @@ declare module "ice" {
              * @param connection The fixed proxy connection.
              * @return A fixed proxy bound to the given connection.
              */
-            ice_fixed(conn: Connection): this;
+            ice_fixed(connection: Connection): this;
 
             /**
              * Returns whether this proxy is a fixed proxy.
@@ -396,7 +398,7 @@ declare module "ice" {
              * @param inParams An encapsulation containing the encoded in-parameters for the operation.
              * @return The asynchronous result object for the invocation .
              */
-            ice_invoke(operation: string, mode: OperationMode, inEncaps: Uint8Array): AsyncResult<[]>;
+            ice_invoke(operation: string, mode: OperationMode, inParams: Uint8Array): AsyncResult<[]>;
 
             /**
              * Compare two proxies for equality
@@ -420,7 +422,7 @@ declare module "ice" {
              * @return A proxy with the requested type and facet, or nil if the target proxy is nil or the target
              * object does not support the requested type.
              */
-            static checkedCast(prx: ObjectPrx, facet?: string, contex?: Map<string, string>): AsyncResult<ObjectPrx>;
+            static checkedCast(prx: ObjectPrx, facet?: string, context?: Map<string, string>): AsyncResult<ObjectPrx>;
         }
     }
 }

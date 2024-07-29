@@ -9,9 +9,9 @@
 #include "Types.h"
 #include "Util.h"
 
-#include "IceUtil/Options.h"
-#include "IceUtil/StringUtil.h"
-#include "IceUtil/Timer.h"
+#include "Ice/Options.h"
+#include "Ice/StringUtil.h"
+#include "Ice/Timer.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -23,7 +23,7 @@
 #    undef getcwd
 #endif
 
-#include "IceUtil/FileUtil.h"
+#include "Ice/FileUtil.h"
 
 using namespace std;
 using namespace IcePHP;
@@ -316,6 +316,7 @@ ZEND_METHOD(Ice_Communicator, destroy)
 
 ZEND_BEGIN_ARG_INFO_EX(Ice_Communicator_stringToProxy_arginfo, 1, ZEND_RETURN_VALUE, static_cast<zend_ulong>(1))
 ZEND_ARG_INFO(0, str)
+ZEND_ARG_INFO(0, id)
 ZEND_END_ARG_INFO()
 
 ZEND_METHOD(Ice_Communicator, stringToProxy)
@@ -323,20 +324,47 @@ ZEND_METHOD(Ice_Communicator, stringToProxy)
     CommunicatorInfoIPtr _this = Wrapper<CommunicatorInfoIPtr>::value(getThis());
     assert(_this);
 
+    // The second argument (the Slice type ID) is optional.
+    if (ZEND_NUM_ARGS() < 1 || ZEND_NUM_ARGS() > 2)
+    {
+        WRONG_PARAM_COUNT;
+    }
+
     char* str;
     size_t strLen;
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), const_cast<char*>("s"), &str, &strLen) != SUCCESS)
+    char* id = nullptr; // the Slice type ID
+    size_t idLen = 0;
+
+    if (ZEND_NUM_ARGS() == 2)
+    {
+        if (zend_parse_parameters(ZEND_NUM_ARGS(), const_cast<char*>("s|s"), &str, &strLen, &id, &idLen) != SUCCESS)
+        {
+            RETURN_NULL();
+        }
+    }
+    else if (zend_parse_parameters(ZEND_NUM_ARGS(), const_cast<char*>("s"), &str, &strLen) != SUCCESS)
     {
         RETURN_NULL();
     }
-    string s(str, strLen);
+
+    string s{str, strLen};
+    ProxyInfoPtr proxyInfo;
+    if (id)
+    {
+        proxyInfo = getProxyInfo(id);
+        if (!proxyInfo)
+        {
+            invalidArgument(("unknown Slice interface type: " + string{id, idLen}).c_str());
+            RETURN_NULL();
+        }
+    }
 
     try
     {
         auto prx = _this->getCommunicator()->stringToProxy(s);
         if (prx)
         {
-            if (!createProxy(return_value, prx.value(), _this))
+            if (!createProxy(return_value, prx.value(), std::move(proxyInfo), _this))
             {
                 RETURN_NULL();
             }
@@ -1513,7 +1541,7 @@ createProfile(const string& name, const string& config, const string& options)
         {
             properties->load(config);
         }
-        catch (const IceUtil::Exception& ex)
+        catch (const Ice::Exception& ex)
         {
             ostringstream ostr;
             ex.ice_print(ostr);
@@ -1532,9 +1560,9 @@ createProfile(const string& name, const string& config, const string& options)
         vector<string> args;
         try
         {
-            args = IceUtilInternal::Options::split(options);
+            args = IceInternal::Options::split(options);
         }
-        catch (const IceUtil::Exception& ex)
+        catch (const Ice::Exception& ex)
         {
             ostringstream ostr;
             ex.ice_print(ostr);
@@ -1562,7 +1590,7 @@ parseProfiles(const string& file)
     // [profile-name]
     // ice.config = config-file
     // ice.options = args
-    ifstream in(IceUtilInternal::streamFilename(file).c_str());
+    ifstream in(IceInternal::streamFilename(file).c_str());
     if (!in)
     {
         php_error_docref(0, E_WARNING, "unable to open Ice profiles in %s", file.c_str());
@@ -1636,7 +1664,7 @@ parseProfiles(const string& file)
                 value = s.substr(beg, end - beg);
 
                 // Check for quotes and remove them if present
-                string::size_type qpos = IceUtilInternal::checkQuote(value);
+                string::size_type qpos = IceInternal::checkQuote(value);
                 if (qpos != string::npos)
                 {
                     value = value.substr(1, qpos - 1);

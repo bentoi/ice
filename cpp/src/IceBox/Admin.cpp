@@ -3,9 +3,9 @@
 //
 
 #include "../Ice/ConsoleUtil.h"
+#include "../Ice/Options.h"
 #include "Ice/Ice.h"
 #include "IceBox/IceBox.h"
-#include "IceUtil/Options.h"
 
 using namespace std;
 using namespace IceInternal;
@@ -65,7 +65,7 @@ usage(const string& name)
 int
 run(const Ice::StringSeq& args)
 {
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("h", "help");
     opts.addOpt("v", "version");
 
@@ -74,9 +74,9 @@ run(const Ice::StringSeq& args)
     {
         commands = opts.parse(args);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        consoleErr << e.reason << endl;
+        consoleErr << e.what() << endl;
         usage(args[0]);
         return 1;
     }
@@ -98,9 +98,9 @@ run(const Ice::StringSeq& args)
         return 1;
     }
 
-    optional<Ice::ObjectPrx> base = communicator->propertyToProxy("IceBoxAdmin.ServiceManager.Proxy");
+    auto manager = communicator->propertyToProxy<IceBox::ServiceManagerPrx>("IceBoxAdmin.ServiceManager.Proxy");
 
-    if (!base)
+    if (!manager)
     {
         //
         // The old deprecated way to retrieve the service manager proxy
@@ -136,11 +136,9 @@ run(const Ice::StringSeq& args)
             managerProxy = "\"" + communicator->identityToString(managerIdentity) + "\" @" + managerAdapterId;
         }
 
-        base = Ice::ObjectPrx(communicator, managerProxy);
+        manager = IceBox::ServiceManagerPrx{communicator, managerProxy};
     }
-    assert(base);
-
-    IceBox::ServiceManagerPrx manager{*base};
+    assert(manager);
 
     for (vector<string>::const_iterator r = commands.begin(); r != commands.end(); ++r)
     {

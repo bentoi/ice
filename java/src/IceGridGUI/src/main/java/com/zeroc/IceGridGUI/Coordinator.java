@@ -1505,9 +1505,7 @@ public class Coordinator {
           .submit(
               () -> {
                 try {
-                  com.zeroc.Ice.RouterFinderPrx finder =
-                      com.zeroc.Ice.RouterFinderPrx.uncheckedCast(
-                          _communicator.stringToProxy(finderStr));
+                  var finder = com.zeroc.Ice.RouterFinderPrx.createProxy(_communicator, finderStr);
                   info.setInstanceName(finder.getRouter().ice_getIdentity().category);
                   info.save();
                   com.zeroc.Glacier2.RouterPrx router =
@@ -1574,7 +1572,7 @@ public class Coordinator {
                   SwingUtilities.invokeLater(
                       () -> {
                         String msg = e.reason;
-                        if (msg.length() == 0) {
+                        if (msg.isEmpty()) {
                           msg =
                               info.getAuth() == SessionKeeper.AuthType.X509CertificateAuthType
                                   ? "Invalid credentials"
@@ -1659,7 +1657,7 @@ public class Coordinator {
 
       final RegistryCallback cb = new RegistryCallback();
 
-      if (info.getCustomEndpoint() && info.getEndpoint().equals("")) {
+      if (info.getCustomEndpoint() && info.getEndpoint().isEmpty()) {
         JOptionPane.showMessageDialog(
             parent,
             "You need to provide one or more endpoints for the Registry",
@@ -1674,8 +1672,7 @@ public class Coordinator {
               () -> {
                 synchronized (Coordinator.this) {
                   try {
-                    LocatorFinderPrx finder =
-                        LocatorFinderPrx.uncheckedCast(_communicator.stringToProxy(finderStr));
+                    var finder = LocatorFinderPrx.createProxy(_communicator, finderStr);
 
                     info.setInstanceName(finder.getLocator().ice_getIdentity().category);
                     info.save();
@@ -1734,9 +1731,9 @@ public class Coordinator {
                     masterRegistryId.name = "Registry";
 
                     cb.setRegistry(
-                        RegistryPrx.uncheckedCast(
-                            _communicator.stringToProxy(
-                                "\"" + _communicator.identityToString(masterRegistryId) + "\"")));
+                        RegistryPrx.createProxy(
+                            _communicator,
+                            "\"" + _communicator.identityToString(masterRegistryId) + "\""));
                   }
 
                   //
@@ -1793,7 +1790,7 @@ public class Coordinator {
                       SwingUtilities.invokeLater(
                           () -> {
                             String msg = e.reason;
-                            if (msg.length() == 0) {
+                            if (msg.isEmpty()) {
                               msg =
                                   info.getAuth() == SessionKeeper.AuthType.X509CertificateAuthType
                                       ? "Invalid credentials"
@@ -1977,7 +1974,7 @@ public class Coordinator {
         String str = reader.readLine();
         reader.close();
 
-        if (str == null || str.length() == 0) {
+        if (str == null || str.isEmpty()) {
           JOptionPane.showMessageDialog(
               _mainFrame,
               "The icegridadmin subprocess failed",
@@ -2231,7 +2228,7 @@ public class Coordinator {
         new AbstractAction("Logout") {
           @Override
           public void actionPerformed(ActionEvent e) {
-            if (_graphViews.size() > 0) {
+            if (!_graphViews.isEmpty()) {
               if (JOptionPane.YES_OPTION
                   != JOptionPane.showConfirmDialog(
                       getMainFrame(),
@@ -2705,7 +2702,7 @@ public class Coordinator {
     } else {
       StringBuilder title = new StringBuilder();
       title.append("Metrics Graph");
-      if (_graphViews.size() > 0) {
+      if (!_graphViews.isEmpty()) {
         title.append(" - ");
         title.append(Integer.toString(_graphViews.size()));
       }
@@ -2839,7 +2836,7 @@ public class Coordinator {
   }
 
   void exit(int status) {
-    if (_graphViews.size() > 0) {
+    if (!_graphViews.isEmpty()) {
       if (JOptionPane.YES_OPTION
           != JOptionPane.showConfirmDialog(
               getMainFrame(),

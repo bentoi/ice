@@ -34,7 +34,6 @@ final class EndpointI extends com.zeroc.IceInternal.EndpointI {
     _timeout = timeout;
     _connectionId = connectionId;
     _compress = compress;
-    hashInit();
   }
 
   public EndpointI(Instance instance) {
@@ -43,7 +42,8 @@ final class EndpointI extends com.zeroc.IceInternal.EndpointI {
     _uuid = "";
     _name = "";
     _channel = 0;
-    _timeout = instance.defaultTimeout();
+    // The default timeout is 60,000 milliseconds (1 minute). It's not used in Ice 3.8 or greater.
+    _timeout = 60_000;
     _connectionId = "";
     _compress = false;
   }
@@ -61,7 +61,6 @@ final class EndpointI extends com.zeroc.IceInternal.EndpointI {
     _uuid = s.readString();
     _timeout = s.readInt();
     _compress = s.readBool();
-    hashInit();
   }
 
   @Override
@@ -280,8 +279,6 @@ final class EndpointI extends com.zeroc.IceInternal.EndpointI {
         throw new EndpointParseException("a UUID must be specified using the -u option");
       }
     }
-
-    hashInit();
   }
 
   @Override
@@ -309,8 +306,7 @@ final class EndpointI extends com.zeroc.IceInternal.EndpointI {
   }
 
   @Override
-  public int compareTo(com.zeroc.IceInternal.EndpointI obj) // From java.lang.Comparable
-      {
+  public int compareTo(com.zeroc.IceInternal.EndpointI obj) {
     if (!(obj instanceof EndpointI)) {
       return type() < obj.type() ? -1 : 1;
     }
@@ -358,7 +354,13 @@ final class EndpointI extends com.zeroc.IceInternal.EndpointI {
 
   @Override
   public int hashCode() {
-    return _hashValue;
+    int h = 5381;
+    h = HashUtil.hashAdd(h, _addr);
+    h = HashUtil.hashAdd(h, _uuid);
+    h = HashUtil.hashAdd(h, _timeout);
+    h = HashUtil.hashAdd(h, _connectionId);
+    h = HashUtil.hashAdd(h, _compress);
+    return h;
   }
 
   @Override
@@ -448,17 +450,7 @@ final class EndpointI extends com.zeroc.IceInternal.EndpointI {
     return true;
   }
 
-  private void hashInit() {
-    int h = 5381;
-    h = HashUtil.hashAdd(h, _addr);
-    h = HashUtil.hashAdd(h, _uuid);
-    h = HashUtil.hashAdd(h, _timeout);
-    h = HashUtil.hashAdd(h, _connectionId);
-    h = HashUtil.hashAdd(h, _compress);
-    _hashValue = h;
-  }
-
-  private Instance _instance;
+  private final Instance _instance;
   private String _addr;
   private String _uuid;
   private String _name;
@@ -466,5 +458,4 @@ final class EndpointI extends com.zeroc.IceInternal.EndpointI {
   private int _timeout;
   private String _connectionId;
   private boolean _compress;
-  private int _hashValue;
 }

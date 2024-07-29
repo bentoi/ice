@@ -142,7 +142,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
             {
                 case ObjectAdapterDeactivated:
                 {
-                    setState(StateClosing, new ObjectAdapterDeactivatedException());
+                    setState(StateClosing, new ObjectAdapterDeactivatedException(_adapter?.getName() ?? ""));
                     break;
                 }
 
@@ -161,11 +161,18 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         {
             if (mode == ConnectionClose.Forcefully)
             {
-                setState(StateClosed, new ConnectionManuallyClosedException(false));
+                setState(StateClosed,
+                    new ConnectionAbortedException(
+                        "The connection was aborted by the application.",
+                        closedByApplication: true));
             }
             else if (mode == ConnectionClose.Gracefully)
             {
-                setState(StateClosing, new ConnectionManuallyClosedException(true));
+                setState(
+                    StateClosing,
+                    new ConnectionClosedException(
+                        "The connection was closed gracefully by the application.",
+                        closedByApplication: true));
             }
             else
             {
@@ -179,7 +186,11 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                     Monitor.Wait(this);
                 }
 
-                setState(StateClosing, new ConnectionManuallyClosedException(true));
+                setState(
+                    StateClosing,
+                    new ConnectionClosedException(
+                        "Connection close gracefully by the application.",
+                        closedByApplication: true));
             }
         }
     }
@@ -351,6 +362,9 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
 
             og.attachRemoteObserver(initConnectionInfo(), _endpoint, requestId);
 
+            // We're just about to send a request, so we are not inactive anymore.
+            cancelInactivityTimer();
+
             int status = OutgoingAsyncBase.AsyncStatusQueued;
             try
             {
@@ -435,103 +449,6 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         }
     }
 
-    public void setHeartbeatCallback(HeartbeatCallback callback)
-    {
-        lock (this)
-        {
-            if (_state >= StateClosed)
-            {
-                return;
-            }
-            _heartbeatCallback = callback;
-        }
-    }
-
-    public void heartbeat()
-    {
-        heartbeatAsync().Wait();
-    }
-
-    private class HeartbeatTaskCompletionCallback : TaskCompletionCallback<object>
-    {
-        public HeartbeatTaskCompletionCallback(System.IProgress<bool> progress,
-                                               CancellationToken cancellationToken) :
-            base(progress, cancellationToken)
-        {
-        }
-
-        public override void handleInvokeResponse(bool ok, OutgoingAsyncBase og)
-        {
-            SetResult(null);
-        }
-    }
-
-    private class HeartbeatAsync : OutgoingAsyncBase
-    {
-        public HeartbeatAsync(Ice.ConnectionI connection,
-                              Instance instance,
-                              OutgoingAsyncCompletionCallback completionCallback) :
-            base(instance, completionCallback)
-        {
-            _connection = connection;
-        }
-
-        public void invoke()
-        {
-            try
-            {
-                os_.writeBlob(Ice.Internal.Protocol.magic);
-                ProtocolVersion.ice_write(os_, Ice.Util.currentProtocol);
-                EncodingVersion.ice_write(os_, Ice.Util.currentProtocolEncoding);
-                os_.writeByte(Ice.Internal.Protocol.validateConnectionMsg);
-                os_.writeByte((byte)0);
-                os_.writeInt(Ice.Internal.Protocol.headerSize); // Message size.
-
-                int status = _connection.sendAsyncRequest(this, false, false, 0);
-
-                if ((status & AsyncStatusSent) != 0)
-                {
-                    sentSynchronously_ = true;
-                    if ((status & AsyncStatusInvokeSentCallback) != 0)
-                    {
-                        invokeSent();
-                    }
-                }
-            }
-            catch (RetryException ex)
-            {
-                try
-                {
-                    throw ex.get();
-                }
-                catch (Ice.LocalException ee)
-                {
-                    if (exception(ee))
-                    {
-                        invokeExceptionAsync();
-                    }
-                }
-            }
-            catch (Ice.Exception ex)
-            {
-                if (exception(ex))
-                {
-                    invokeExceptionAsync();
-                }
-            }
-        }
-
-        private readonly Ice.ConnectionI _connection;
-    }
-
-    public Task heartbeatAsync(IProgress<bool> progress = null, CancellationToken cancel = default)
-    {
-        var completed = new HeartbeatTaskCompletionCallback(progress, cancel);
-        var outgoing = new HeartbeatAsync(this, _instance, completed);
-        outgoing.invoke();
-        return completed.Task;
-    }
-
     public void asyncRequestCanceled(OutgoingAsyncBase outAsync, LocalException ex)
     {
         //
@@ -553,7 +470,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                     _asyncRequests.Remove(o.requestId);
                 }
 
-                if (ex is ConnectionIdleException)
+                if (ex is ConnectionAbortedException)
                 {
                     setState(StateClosed, ex);
                 }
@@ -586,7 +503,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 {
                     if (kvp.Value == outAsync)
                     {
-                        if (ex is ConnectionIdleException)
+                        if (ex is ConnectionAbortedException)
                         {
                             setState(StateClosed, ex);
                         }
@@ -676,50 +593,78 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
     //
     // Operations from EventHandler
     //
-    public override bool startAsync(int operation, Ice.Internal.AsyncCallback cb, ref bool completedSynchronously)
+    public override bool startAsync(int operation, Ice.Internal.AsyncCallback completedCallback)
     {
         if (_state >= StateClosed)
         {
             return false;
         }
 
-        try
+        // Run the IO operation on a .NET thread pool thread to ensure the IO operation won't be interrupted if the
+        // Ice thread pool thread is terminated (.NET Socket read/write fail with a SocketError.OperationAborted
+        // error if started from a thread which is later terminated).
+        Task.Run(() =>
         {
-            if ((operation & SocketOperation.Write) != 0)
+            lock (this)
             {
-                if (_observer is not null)
+                if (_state >= StateClosed)
                 {
-                    observerStartWrite(_writeStream.getBuffer());
+                    completedCallback(this);
+                    return;
                 }
 
-                bool completed;
-                completedSynchronously = _transceiver.startWrite(_writeStream.getBuffer(), cb, this, out completed);
-                if (completed && _sendStreams.Count > 0)
+                try
                 {
-                    // The whole message is written, assume it's sent now for at-most-once semantics.
-                    _sendStreams.First.Value.isSent = true;
-                }
-            }
-            else if ((operation & SocketOperation.Read) != 0)
-            {
-                if (_observer is not null && !_readHeader)
-                {
-                    observerStartRead(_readStream.getBuffer());
-                }
+                    if ((operation & SocketOperation.Write) != 0)
+                    {
+                        if (_observer != null)
+                        {
+                            observerStartWrite(_writeStream.getBuffer());
+                        }
 
-                completedSynchronously = _transceiver.startRead(_readStream.getBuffer(), cb, this);
+                        bool completed;
+                        if (_transceiver.startWrite(_writeStream.getBuffer(), completedCallback, this, out completed))
+                        {
+                            // If the write completed immediately and the buffer
+                            if (completed && _sendStreams.Count > 0)
+                            {
+                                // The whole message is written, assume it's sent now for at-most-once semantics.
+                                _sendStreams.First.Value.isSent = true;
+                            }
+                            completedCallback(this);
+                        }
+                    }
+                    else if ((operation & SocketOperation.Read) != 0)
+                    {
+                        if (_observer != null && !_readHeader)
+                        {
+                            observerStartRead(_readStream.getBuffer());
+                        }
+
+                        if (_transceiver.startRead(_readStream.getBuffer(), completedCallback, this))
+                        {
+                            completedCallback(this);
+                        }
+                    }
+                }
+                catch (LocalException ex)
+                {
+                    setState(StateClosed, ex);
+                    completedCallback(this);
+                }
             }
-        }
-        catch (LocalException ex)
-        {
-            setState(StateClosed, ex);
-            return false;
-        }
+        });
+
         return true;
     }
 
     public override bool finishAsync(int operation)
     {
+        if (_state >= StateClosed)
+        {
+            return false;
+        }
+
         try
         {
             if ((operation & SocketOperation.Write) != 0)
@@ -786,19 +731,19 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         return _state < StateClosed;
     }
 
-    public override void message(ref ThreadPoolCurrent current)
+    public override void message(ThreadPoolCurrent current)
     {
         StartCallback startCB = null;
         Queue<OutgoingMessage> sentCBs = null;
         MessageInfo info = new MessageInfo();
         int upcallCount = 0;
 
-        ThreadPoolMessage msg = new ThreadPoolMessage(this);
-        try
+        using ThreadPoolMessage msg = new ThreadPoolMessage(current, this);
+        lock (this)
         {
-            lock (this)
+            try
             {
-                if (!msg.startIOScope(ref current))
+                if (!msg.startIOScope())
                 {
                     return;
                 }
@@ -884,7 +829,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                                     //
                                     // This situation is possible for small UDP packets.
                                     //
-                                    throw new IllegalMessageSizeException();
+                                    throw new MarshalException("Received Ice message with too few bytes in header.");
                                 }
 
                                 // Decode the header.
@@ -897,22 +842,29 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                                 if (m[0] != Protocol.magic[0] || m[1] != Protocol.magic[1] ||
                                 m[2] != Protocol.magic[2] || m[3] != Protocol.magic[3])
                                 {
-                                    BadMagicException ex = new BadMagicException();
-                                    ex.badMagic = m;
-                                    throw ex;
+                                    throw new ProtocolException(
+                                        $"Bad magic in message header: {m[0]:X2} {m[1]:X2} {m[2]:X2} {m[3]:X2}");
                                 }
 
-                                ProtocolVersion pv = new ProtocolVersion(_readStream);
-                                Protocol.checkSupportedProtocol(pv);
-                                EncodingVersion ev = new EncodingVersion(_readStream);
-                                Protocol.checkSupportedProtocolEncoding(ev);
+                                var pv = new ProtocolVersion(_readStream);
+                                if (pv != Util.currentProtocol)
+                                {
+                                    throw new MarshalException(
+                                        $"Invalid protocol version in message header: {pv.major}.{pv.minor}");
+                                }
+                                var ev = new EncodingVersion(_readStream);
+                                if (ev != Util.currentProtocolEncoding)
+                                {
+                                    throw new MarshalException(
+                                        $"Invalid protocol encoding version in message header: {ev.major}.{ev.minor}");
+                                }
 
                                 _readStream.readByte(); // messageType
                                 _readStream.readByte(); // compress
                                 int size = _readStream.readInt();
                                 if (size < Protocol.headerSize)
                                 {
-                                    throw new IllegalMessageSizeException();
+                                    throw new MarshalException($"Received Ice message with unexpected size {size}.");
                                 }
 
                                 // Resize the read buffer to the message size.
@@ -1034,7 +986,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
 
                     // There's something to dispatch so we mark IO as completed to elect a new leader thread and let IO
                     // be performed on this new leader thread while this thread continues with dispatching the up-calls.
-                    msg.completed(ref current);
+                    msg.ioCompleted();
                 }
                 catch (DatagramLimitException) // Expected.
                 {
@@ -1070,20 +1022,14 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                     }
                     return;
                 }
-
-                ThreadPoolCurrent c = current;
-                _threadPool.execute(() =>
-                {
-                    upcall(startCB, sentCBs, info);
-                    msg.destroy(ref c);
-                }, this);
+            }
+            finally
+            {
+                msg.finishIOScope();
             }
         }
-        finally
-        {
-            msg.finishIOScope(ref current);
-        }
 
+        _threadPool.executeFromThisThread(() => upcall(startCB, sentCBs, info), this);
     }
 
     private void upcall(StartCallback startCB, Queue<OutgoingMessage> sentCBs, MessageInfo info)
@@ -1130,19 +1076,6 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         if (info.outAsync is not null)
         {
             info.outAsync.invokeResponse();
-            ++completedUpcallCount;
-        }
-
-        if (info.heartbeatCallback is not null)
-        {
-            try
-            {
-                info.heartbeatCallback(this);
-            }
-            catch (System.Exception ex)
-            {
-                _logger.error("connection callback exception:\n" + ex + '\n' + _desc);
-            }
             ++completedUpcallCount;
         }
 
@@ -1196,27 +1129,30 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         }
     }
 
-    public override void finished(ref ThreadPoolCurrent current)
+    public override void finished(ThreadPoolCurrent current)
     {
+        // Lock the connection here to ensure setState() completes before the code below is executed. This method can
+        // be called by the thread pool as soon as setState() calls _threadPool->finish(...). There's no need to lock
+        // the mutex for the remainder of the code because the data members accessed by finish() are immutable once
+        // _state == StateClosed (and we don't want to hold the mutex when calling upcalls).
+        lock (this)
+        {
+            Debug.Assert(_state == StateClosed);
+        }
+
         //
         // If there are no callbacks to call, we don't call ioCompleted() since we're not going
         // to call code that will potentially block (this avoids promoting a new leader and
         // unnecessary thread creation, especially if this is called on shutdown).
         //
-        if (_startCallback is null && _sendStreams.Count == 0 && _asyncRequests.Count == 0 &&
-           _closeCallback is null && _heartbeatCallback is null)
+        if (_startCallback is null && _sendStreams.Count == 0 && _asyncRequests.Count == 0 && _closeCallback is null)
         {
             finish();
             return;
         }
 
-        //
-        // Unlike C++/Java, this method is called from an IO thread of the .NET thread
-        // pool of from the communicator async IO thread. While it's fine to handle the
-        // non-blocking activity of the connection from these threads, the dispatching
-        // of the message must be taken care of by the Ice thread pool.
-        //
-        _threadPool.execute(finish, this);
+        current.ioCompleted();
+        _threadPool.executeFromThisThread(finish, this);
     }
 
     private void finish()
@@ -1249,8 +1185,8 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 // Trace the cause of unexpected connection closures
                 //
                 if (!(_exception is CloseConnectionException ||
-                     _exception is ConnectionManuallyClosedException ||
-                     _exception is ConnectionIdleException ||
+                     _exception is ConnectionAbortedException ||
+                     _exception is ConnectionClosedException ||
                      _exception is CommunicatorDestroyedException ||
                      _exception is ObjectAdapterDeactivatedException))
                 {
@@ -1343,8 +1279,6 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
             _closeCallback = null;
         }
 
-        _heartbeatCallback = null;
-
         //
         // This must be done last as this will cause waitUntilFinished() to return (and communicator
         // objects such as the timer might be destroyed too).
@@ -1430,7 +1364,6 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         ConnectionOptions options)
     {
         _instance = instance;
-        _transceiver = transceiver;
         _desc = transceiver.ToString();
         _type = transceiver.protocol();
         _connector = connector;
@@ -1469,12 +1402,13 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
 
         if (options.idleTimeout > TimeSpan.Zero && !endpoint.datagram())
         {
-            _transceiver = new IdleTimeoutTransceiverDecorator(
-                _transceiver,
+            transceiver = new IdleTimeoutTransceiverDecorator(
+                transceiver,
                 this,
                 options.idleTimeout,
                 options.enableIdleCheck);
         }
+        _transceiver = transceiver;
 
         try
         {
@@ -1498,7 +1432,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         }
     }
 
-    /// <summary>Aborts the connection with a <see cref="ConnectionIdleException" /> if the connection is active or
+    /// <summary>Aborts the connection with a <see cref="ConnectionAbortedException" /> if the connection is active or
     /// holding.</summary>
     internal void idleCheck(TimeSpan idleTimeout)
     {
@@ -1506,16 +1440,20 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         {
             if (_state == StateActive || _state == StateHolding)
             {
+                int idleTimeoutInSeconds = (int)idleTimeout.TotalSeconds;
+
                 if (_instance.traceLevels().network >= 1)
                 {
-                    int idleTimeoutInSeconds = (int)idleTimeout.TotalSeconds;
-
                     _instance.initializationData().logger.trace(
                         _instance.traceLevels().networkCat,
-                        $"connection aborted by the idle check because it did not receive any byte for {idleTimeoutInSeconds}s\n{_transceiver.toDetailedString()}");
+                        $"connection aborted by the idle check because it did not receive any bytes for {idleTimeoutInSeconds}s\n{_transceiver.toDetailedString()}");
                 }
 
-                setState(StateClosed, new ConnectionIdleException());
+                setState(
+                    StateClosed,
+                    new ConnectionAbortedException(
+                        $"Connection aborted by the idle check because it did not receive any bytes for {idleTimeoutInSeconds}s.",
+                        closedByApplication: false));
             }
             // else nothing to do
         }
@@ -1529,24 +1467,58 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         {
             if (_state == StateActive || _state == StateHolding)
             {
-                OutputStream os = new OutputStream(_instance, Util.currentProtocolEncoding);
-                os.writeBlob(Protocol.magic);
-                Util.currentProtocol.ice_writeMembers(os);
-                Util.currentProtocolEncoding.ice_writeMembers(os);
-                os.writeByte(Protocol.validateConnectionMsg);
-                os.writeByte(0);
-                os.writeInt(Protocol.headerSize); // Message size.
-                try
+                // We check if the connection has become inactive.
+                if (
+                    _inactivityTimer is null &&           // timer not already scheduled
+                    _inactivityTimeout > TimeSpan.Zero && // inactivity timeout is enabled
+                    _state == StateActive &&              // only schedule the timer if the connection is active
+                    _dispatchCount == 0 &&                // no pending dispatch
+                    _asyncRequests.Count == 0 &&          // no pending invocation
+                    _readHeader &&                        // we're not waiting for the remainder of an incoming message
+                    _sendStreams.Count <= 1)              // there is at most one pending outgoing message
                 {
-                    sendMessage(new OutgoingMessage(os, false, false));
+                    // We may become inactive while the peer is back-pressuring us. In this case, we only schedule the
+                    // inactivity timer if there is no pending outgoing message or the pending outgoing message is a
+                    // heartbeat.
+
+                    // The stream of the first _sendStreams message is in _writeStream.
+                    if (_sendStreams.Count == 0 || isHeartbeat(_writeStream))
+                    {
+                        scheduleInactivityTimer();
+                    }
                 }
-                catch (LocalException ex)
+
+                // We send a heartbeat to the peer to generate a "write" on the connection. This write in turns creates
+                // a read on the peer, and resets the peer's idle check timer. When _sendStream is not empty, there is
+                // already an outstanding write, so we don't need to send a heartbeat. It's possible the first message
+                // of _sendStreams was already sent but not yet removed from _sendStreams: it means the last write
+                // occurred very recently, which is good enough with respect to the idle check.
+                // As a result of this optimization, the only possible heartbeat in _sendStreams is the first
+                // _sendStreams message.
+                if (_sendStreams.Count == 0)
                 {
-                    setState(StateClosed, ex);
+                    OutputStream os = new OutputStream(_instance, Util.currentProtocolEncoding);
+                    os.writeBlob(Protocol.magic);
+                    Util.currentProtocol.ice_writeMembers(os);
+                    Util.currentProtocolEncoding.ice_writeMembers(os);
+                    os.writeByte(Protocol.validateConnectionMsg);
+                    os.writeByte(0);
+                    os.writeInt(Protocol.headerSize); // Message size.
+                    try
+                    {
+                        _ = sendMessage(new OutgoingMessage(os, false, false));
+                    }
+                    catch (LocalException ex)
+                    {
+                        setState(StateClosed, ex);
+                    }
                 }
             }
             // else nothing to do
         }
+
+        static bool isHeartbeat(OutputStream stream) =>
+            stream.getBuffer().b.get(8) == Protocol.validateConnectionMsg;
     }
 
     private const int StateNotInitialized = 0;
@@ -1589,8 +1561,8 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 // Don't warn about certain expected exceptions.
                 //
                 if (!(_exception is CloseConnectionException ||
-                     _exception is ConnectionManuallyClosedException ||
-                     _exception is ConnectionIdleException ||
+                     _exception is ConnectionAbortedException ||
+                     _exception is ConnectionClosedException ||
                      _exception is CommunicatorDestroyedException ||
                      _exception is ObjectAdapterDeactivatedException ||
                      (_exception is ConnectionLostException && _state >= StateClosing)))
@@ -1630,6 +1602,12 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         if (_state == state) // Don't switch twice.
         {
             return;
+        }
+
+        if (state > StateActive)
+        {
+            // Dispose the inactivity timer, if not null.
+            cancelInactivityTimer();
         }
 
         try
@@ -1745,8 +1723,8 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
             if (_observer is not null && state == StateClosed && _exception is not null)
             {
                 if (!(_exception is CloseConnectionException ||
-                     _exception is ConnectionManuallyClosedException ||
-                     _exception is ConnectionIdleException ||
+                     _exception is ConnectionAbortedException ||
+                     _exception is ConnectionClosedException ||
                      _exception is CommunicatorDestroyedException ||
                      _exception is ObjectAdapterDeactivatedException ||
                      (_exception is ConnectionLostException && _state >= StateClosing)))
@@ -1912,27 +1890,34 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 if (m[0] != Protocol.magic[0] || m[1] != Protocol.magic[1] ||
                    m[2] != Protocol.magic[2] || m[3] != Protocol.magic[3])
                 {
-                    BadMagicException ex = new BadMagicException();
-                    ex.badMagic = m;
-                    throw ex;
+                    throw new ProtocolException(
+                        $"Bad magic in message header: {m[0]:X2} {m[1]:X2} {m[2]:X2} {m[3]:X2}");
                 }
 
-                ProtocolVersion pv = new ProtocolVersion(_readStream);
-                Protocol.checkSupportedProtocol(pv);
-
-                EncodingVersion ev = new EncodingVersion(_readStream);
-                Protocol.checkSupportedProtocolEncoding(ev);
+                var pv = new ProtocolVersion(_readStream);
+                if (pv != Util.currentProtocol)
+                {
+                    throw new MarshalException(
+                        $"Invalid protocol version in message header: {pv.major}.{pv.minor}");
+                }
+                var ev = new EncodingVersion(_readStream);
+                if (ev != Util.currentProtocolEncoding)
+                {
+                    throw new MarshalException(
+                        $"Invalid protocol encoding version in message header: {ev.major}.{ev.minor}");
+                }
 
                 byte messageType = _readStream.readByte();
                 if (messageType != Protocol.validateConnectionMsg)
                 {
-                    throw new ConnectionNotValidatedException();
+                    throw new ProtocolException(
+                        $"Received message of type {messageType} over a connection that is not yet validated.");
                 }
                 _readStream.readByte(); // Ignore compression status for validate connection.
                 int size = _readStream.readInt();
                 if (size != Protocol.headerSize)
                 {
-                    throw new IllegalMessageSizeException();
+                    throw new MarshalException($"Received ValidateConnection message with unexpected size {size}.");
                 }
                 TraceUtil.traceRecv(_readStream, _logger, _traceLevels);
             }
@@ -1971,29 +1956,43 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         return true;
     }
 
+    /// <summary>
+    /// Sends the next queued messages. This method is called by message() once the message which is being sent
+    /// (_sendStreams.First) is fully sent. Before sending the next message, this message is removed from _sendsStream
+    /// If any, its sent callback is also queued in given callback queue.
+    /// </summary>
+    /// <param name="callbacks">The sent callbacks to call for the messages that were sent.</param>
+    /// <returns>The socket operation to register with the thread pool's selector to send the remainder of the pending
+    /// message being sent (_sendStreams.First).</returns>
     private int sendNextMessage(out Queue<OutgoingMessage> callbacks)
     {
         callbacks = null;
 
         if (_sendStreams.Count == 0)
         {
+            // This can occur if no message was being written and the socket write operation was registered with the
+            // thread pool (a transceiver read method can request writing data).
             return SocketOperation.None;
         }
         else if (_state == StateClosingPending && _writeStream.pos() == 0)
         {
-            // Message wasn't sent, empty the _writeStream, we're not going to send more data.
+            // Message wasn't sent, empty the _writeStream, we're not going to send more data because the connection
+            // is being closed.
             OutgoingMessage message = _sendStreams.First.Value;
             _writeStream.swap(message.stream);
             return SocketOperation.None;
         }
 
+        // Assert that the message was fully written.
         Debug.Assert(!_writeStream.isEmpty() && _writeStream.pos() == _writeStream.size());
+
         try
         {
             while (true)
             {
                 //
-                // Notify the message that it was sent.
+                // The message that was being sent is sent. We can swap back the write stream buffer to the
+                // outgoing message (required for retry) and queue its sent callback (if any).
                 //
                 OutgoingMessage message = _sendStreams.First.Value;
                 _writeStream.swap(message.stream);
@@ -2016,11 +2015,8 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 }
 
                 //
-                // If we are in the closed state or if the close is
-                // pending, don't continue sending.
-                //
-                // This can occur if parseMessage (called before
-                // sendNextMessage by message()) closes the connection.
+                // If we are in the closed state or if the close is pending, don't continue sending. This can occur if
+                // parseMessage (called before sendNextMessage by message()) closes the connection.
                 //
                 if (_state >= StateClosingPending)
                 {
@@ -2028,7 +2024,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 }
 
                 //
-                // Otherwise, prepare the next message stream for writing.
+                // Otherwise, prepare the next message.
                 //
                 message = _sendStreams.First.Value;
                 Debug.Assert(!message.prepared);
@@ -2039,11 +2035,11 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 message.prepared = true;
 
                 TraceUtil.traceSend(stream, _logger, _traceLevels);
-                _writeStream.swap(message.stream);
 
                 //
                 // Send the message.
                 //
+                _writeStream.swap(message.stream);
                 if (_observer is not null)
                 {
                     observerStartWrite(_writeStream.getBuffer());
@@ -2060,11 +2056,13 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 {
                     observerFinishWrite(_writeStream.getBuffer());
                 }
+
+                // If the message was sent right away, loop to send the next queued message.
             }
 
             //
-            // If all the messages were sent and we are in the closing state, we schedule
-            // the close timeout to wait for the peer to close the connection.
+            // If all the messages were sent and we are in the closing state, we schedule the close timeout to wait for
+            // the peer to close the connection.
             //
             if (_state == StateClosing && _shutdownInitiated)
             {
@@ -2083,10 +2081,18 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         return SocketOperation.None;
     }
 
+    /// <summary>
+    /// Sends or queues the given message.
+    /// </summary>
+    /// <param name="message">The message to send.</param>
+    /// <returns>The send status.</returns>
     private int sendMessage(OutgoingMessage message)
     {
+        Debug.Assert(_state >= StateActive);
         Debug.Assert(_state < StateClosed);
 
+        // Some messages are queued for sending. Just adds the message to the send queue and tell the caller that
+        // the message was queued.
         if (_sendStreams.Count > 0)
         {
             message.adopt();
@@ -2094,12 +2100,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
             return OutgoingAsyncBase.AsyncStatusQueued;
         }
 
-        //
-        // Attempt to send the message without blocking. If the send blocks, we use
-        // asynchronous I/O or we request the caller to call finishSendMessage() outside
-        // the synchronization.
-        //
-
+        // Prepare the message for sending.
         Debug.Assert(!message.prepared);
 
         OutputStream stream = message.stream;
@@ -2110,9 +2111,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
 
         TraceUtil.traceSend(stream, _logger, _traceLevels);
 
-        //
         // Send the message without blocking.
-        //
         if (_observer is not null)
         {
             observerStartWrite(message.stream.getBuffer());
@@ -2120,6 +2119,8 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         int op = write(message.stream.getBuffer());
         if (op == 0)
         {
+            // The message was sent so we're done.
+
             if (_observer is not null)
             {
                 observerFinishWrite(message.stream.getBuffer());
@@ -2128,11 +2129,17 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
             int status = OutgoingAsyncBase.AsyncStatusSent;
             if (message.sent())
             {
+                // If there's a sent callback, indicate the caller that it should invoke the sent callback.
                 status = status | OutgoingAsyncBase.AsyncStatusInvokeSentCallback;
             }
 
             return status;
         }
+
+        // The message couldn't be sent right away so we add it to the send stream queue (which is empty) and swap its
+        // stream with `_writeStream`. The socket operation returned by the transceiver write is registered with the
+        // thread pool. At this point the message() method will take care of sending the whole message (held by
+        // _writeStream) when the transceiver is ready to write more of the message buffer.
 
         message.adopt();
 
@@ -2203,7 +2210,6 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         public byte compress;
         public ObjectAdapter adapter;
         public OutgoingAsyncBase outAsync;
-        public HeartbeatCallback heartbeatCallback;
         public int upcallCount;
     }
 
@@ -2238,9 +2244,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 else
                 {
                     string lib = AssemblyUtil.isWindows ? "bzip2.dll" : "libbz2.so.1";
-                    FeatureNotSupportedException ex = new FeatureNotSupportedException();
-                    ex.unsupportedFeature = "Cannot uncompress compressed message: " + lib + " not found";
-                    throw ex;
+                    throw new FeatureNotSupportedException($"Cannot uncompress compressed message: {lib} not found");
                 }
             }
             info.stream.pos(Protocol.headerSize);
@@ -2296,6 +2300,9 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                         info.requestCount = 1;
                         info.adapter = _adapter;
                         ++info.upcallCount;
+
+                        cancelInactivityTimer();
+                        ++_dispatchCount;
                     }
                     break;
                 }
@@ -2311,14 +2318,17 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                     else
                     {
                         TraceUtil.traceRecv(info.stream, _logger, _traceLevels);
-                        info.requestCount = info.stream.readInt();
-                        if (info.requestCount < 0)
+                        int requestCount = info.stream.readInt();
+                        if (requestCount < 0)
                         {
-                            info.requestCount = 0;
-                            throw new UnmarshalOutOfBoundsException();
+                            throw new MarshalException($"Received batch request with {requestCount} batches.");
                         }
+                        info.requestCount = requestCount;
                         info.adapter = _adapter;
                         info.upcallCount += info.requestCount;
+
+                        cancelInactivityTimer();
+                        _dispatchCount += info.requestCount;
                     }
                     break;
                 }
@@ -2359,11 +2369,6 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 case Protocol.validateConnectionMsg:
                 {
                     TraceUtil.traceRecv(info.stream, _logger, _traceLevels);
-                    if (_heartbeatCallback is not null)
-                    {
-                        info.heartbeatCallback = _heartbeatCallback;
-                        ++info.upcallCount;
-                    }
                     break;
                 }
 
@@ -2371,7 +2376,8 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                 {
                     TraceUtil.trace("received unknown message\n(invalid, closing connection)",
                                     info.stream, _logger, _traceLevels);
-                    throw new UnknownMessageException();
+
+                    throw new ProtocolException($"Received Ice protocol message with unknown type: {messageType}");
                 }
             }
         }
@@ -2496,6 +2502,8 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
                         sendMessage(new OutgoingMessage(response.outputStream, compress > 0, adopt: true));
                     }
 
+                    --_dispatchCount;
+
                     if (_state == StateClosing && _upcallCount == 0)
                     {
                         initiateShutdown();
@@ -2545,6 +2553,29 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         if (finished && _removeFromFactory is not null)
         {
             _removeFromFactory(this);
+        }
+    }
+
+    private void inactivityCheck(System.Threading.Timer inactivityTimer)
+    {
+        lock (this)
+        {
+            // If the timers are different, it means this inactivityTimer is no longer current.
+            if (inactivityTimer == _inactivityTimer)
+            {
+                _inactivityTimer = null;
+                inactivityTimer.Dispose(); // non-blocking
+
+                if (_state == StateActive)
+                {
+                    setState(
+                        StateClosing,
+                        new ConnectionClosedException(
+                            "Connection closed because it remained inactive for longer than the inactivity timeout.",
+                            closedByApplication: false));
+                }
+            }
+            // Else this timer was already canceled and disposed. Nothing to do.
         }
     }
 
@@ -2700,6 +2731,28 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
         return op;
     }
 
+    private void scheduleInactivityTimer()
+    {
+        // Called with the ConnectionI mutex locked.
+        Debug.Assert(_inactivityTimer is null);
+        Debug.Assert(_inactivityTimeout > TimeSpan.Zero);
+
+        _inactivityTimer = new System.Threading.Timer(
+            inactivityTimer => inactivityCheck((System.Threading.Timer)inactivityTimer));
+        _inactivityTimer.Change(_inactivityTimeout, Timeout.InfiniteTimeSpan);
+    }
+
+    private void cancelInactivityTimer()
+    {
+        // Called with the ConnectionI mutex locked.
+        if (_inactivityTimer is not null)
+        {
+            _inactivityTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            _inactivityTimer.Dispose();
+            _inactivityTimer = null;
+        }
+    }
+
     private class OutgoingMessage
     {
         internal OutgoingMessage(OutputStream stream, bool compress, bool adopt)
@@ -2769,7 +2822,7 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
     }
 
     private Instance _instance;
-    private Transceiver _transceiver;
+    private readonly Transceiver _transceiver;
     private string _desc;
     private string _type;
     private Connector _connector;
@@ -2784,6 +2837,8 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
     private readonly TimeSpan _connectTimeout;
     private readonly TimeSpan _closeTimeout;
     private readonly TimeSpan _inactivityTimeout;
+
+    private System.Threading.Timer _inactivityTimer; // can be null
 
     private StartCallback _startCallback;
 
@@ -2806,15 +2861,27 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
 
     private LinkedList<OutgoingMessage> _sendStreams = new LinkedList<OutgoingMessage>();
 
+    // Contains the message which is being received. If the connection is waiting to receive a message (_readHeader ==
+    // true), its size is Protocol.headerSize. Otherwise, its size is the message size specified in the received message
+    // header.
     private InputStream _readStream;
+
+    // When _readHeader is true, the next bytes we'll read are the header of a new message. When false, we're reading
+    // next the remainder of a message that was already partially received.
     private bool _readHeader;
+
+    // Contains the message which is being sent. The write stream buffer is empty if no message is being sent.
     private OutputStream _writeStream;
 
     private ConnectionObserver _observer;
     private int _readStreamPos;
     private int _writeStreamPos;
 
+    // The number of user calls currently executed by the thread-pool (servant dispatch, invocation response, etc.).
     private int _upcallCount;
+
+    // The number of outstanding dispatches. Maintained only while state is StateActive or StateHolding.
+    private int _dispatchCount;
 
     private int _state; // The current state.
     private bool _shutdownInitiated;
@@ -2826,7 +2893,6 @@ public sealed class ConnectionI : Internal.EventHandler, CancellationHandler, Co
     private ConnectionInfo _info;
 
     private CloseCallback _closeCallback;
-    private HeartbeatCallback _heartbeatCallback;
 
     private static ConnectionState[] connectionStateMap = [
         ConnectionState.ConnectionStateValidating,   // StateNotInitialized

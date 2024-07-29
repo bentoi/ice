@@ -5,7 +5,7 @@
 #include "CsUtil.h"
 #include "../Slice/Util.h"
 #include "DotNetNames.h"
-#include "IceUtil/StringUtil.h"
+#include "Ice/StringUtil.h"
 
 #include <algorithm>
 #include <cassert>
@@ -21,8 +21,7 @@
 
 using namespace std;
 using namespace Slice;
-using namespace IceUtil;
-using namespace IceUtilInternal;
+using namespace IceInternal;
 
 namespace
 {
@@ -413,7 +412,7 @@ string
 Slice::CsGenerator::resultStructName(const string& className, const string& opName, bool marshaledResult)
 {
     ostringstream s;
-    s << className << "_" << IceUtilInternal::toUpper(opName.substr(0, 1)) << opName.substr(1)
+    s << className << "_" << IceInternal::toUpper(opName.substr(0, 1)) << opName.substr(1)
       << (marshaledResult ? "MarshaledResult" : "Result");
     return s.str();
 }
@@ -510,24 +509,49 @@ Slice::CsGenerator::isValueType(const TypePtr& type)
 }
 
 bool
-Slice::CsGenerator::isNonNullableReferenceType(const TypePtr& p, bool includeString)
+Slice::CsGenerator::isMappedToNonNullableReference(const DataMemberPtr& p)
 {
-    if (includeString)
+    if (p->optional())
     {
-        BuiltinPtr builtin = dynamic_pointer_cast<Builtin>(p);
-        if (builtin)
-        {
-            return builtin->kind() == Builtin::KindString;
-        }
+        return false;
     }
 
-    StructPtr st = dynamic_pointer_cast<Struct>(p);
+    TypePtr type = p->type();
+
+    BuiltinPtr builtin = dynamic_pointer_cast<Builtin>(type);
+    if (builtin)
+    {
+        return builtin->kind() == Builtin::KindString;
+    }
+
+    StructPtr st = dynamic_pointer_cast<Struct>(type);
     if (st)
     {
         return isMappedToClass(st);
     }
 
-    return dynamic_pointer_cast<Sequence>(p) || dynamic_pointer_cast<Dictionary>(p);
+    return dynamic_pointer_cast<Sequence>(type) || dynamic_pointer_cast<Dictionary>(type);
+}
+
+bool
+Slice::CsGenerator::isMappedToRequiredField(const DataMemberPtr& p)
+{
+    if (p->optional())
+    {
+        return false;
+    }
+
+    // String fields get a "" default.
+
+    TypePtr type = p->type();
+
+    StructPtr st = dynamic_pointer_cast<Struct>(type);
+    if (st)
+    {
+        return isMappedToClass(st);
+    }
+
+    return dynamic_pointer_cast<Sequence>(type) || dynamic_pointer_cast<Dictionary>(type);
 }
 
 void

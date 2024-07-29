@@ -27,6 +27,8 @@ function allTests($helper)
     }
     catch(Ice\AlreadyRegisteredException $ex)
     {
+        test($ex->kindOfObject == "value factory");
+        test($ex->id == "x");
     }
     $communicator->getValueFactoryManager()->add($vf, "");
     try
@@ -36,22 +38,14 @@ function allTests($helper)
     }
     catch(Ice\AlreadyRegisteredException $ex)
     {
+        test($ex->kindOfObject == "value factory");
+        test($ex->id == "");
     }
     echo "ok\n";
 
-    echo "testing stringToProxy... ";
-    flush();
     $ref = sprintf("thrower:%s", $helper->getTestEndpoint());
     $communicator = $helper->communicator();
-    $base = $communicator->stringToProxy($ref);
-    test($base != null);
-    echo "ok\n";
-
-    echo "testing checked cast... ";
-    flush();
-    $thrower = $base->ice_checkedCast("::Test::Thrower");
-    test($thrower != null);
-    test($thrower == $base);
+    $thrower = Test\ThrowerPrxHelper::createProxy($communicator, $ref);
 
     echo "catching exact types... ";
     flush();
@@ -220,7 +214,7 @@ function allTests($helper)
             $thrower->throwMemoryLimitException(array(0x00));
             test(false);
         }
-        catch(Ice\MemoryLimitException $ex)
+        catch(Ice\MarshalException $ex)
         {
         }
 
@@ -246,13 +240,13 @@ function allTests($helper)
     $id = Ice\stringToIdentity("does not exist");
     try
     {
-        $thrower2 = $thrower->ice_identity($id)->ice_uncheckedCast("::Test::Thrower");
+        $thrower2 = Test\ThrowerPrxHelper::uncheckedCast($thrower->ice_identity($id));
         $thrower2->throwAasA(1);
         test(false);
     }
     catch(Ice\ObjectNotExistException $ex)
     {
-        test($ex->id == $id);
+        test(str_contains($ex->getMessage(), "dispatch failed with ObjectNotExistException"));
     }
 
     echo "ok\n";
@@ -261,7 +255,7 @@ function allTests($helper)
     flush();
 
     {
-        $thrower2 = $thrower->ice_uncheckedCast("::Test::Thrower", "no such facet");
+        $thrower2 = Test\ThrowerPrxHelper::uncheckedCast($thrower, "no such facet");
         try
         {
             $thrower2->ice_ping();
@@ -280,7 +274,7 @@ function allTests($helper)
 
     try
     {
-        $thrower2 = $thrower->ice_uncheckedCast("::Test::WrongOperation");
+        $thrower2 = Test\WrongOperationPrxHelper::uncheckedCast($thrower);
         $thrower2->noSuchOperation();
         test(false);
     }

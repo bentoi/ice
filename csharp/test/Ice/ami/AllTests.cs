@@ -442,9 +442,9 @@ namespace Ice
                                 await t;
                                 test(false);
                             }
-                            catch (ConnectionManuallyClosedException ex)
+                            catch (ConnectionClosedException ex)
                             {
-                                test(ex.graceful);
+                                test(ex.closedByApplication);
                             }
                             test(p.opBatchCount() == 0);
                             test(!tcs.Task.IsCompleted);
@@ -770,7 +770,7 @@ namespace Ice
                         //
                         // Local case: start an operation and then close the connection gracefully on the client side
                         // without waiting for the pending invocation to complete. There will be no retry and we expect the
-                        // invocation to fail with ConnectionManuallyClosedException.
+                        // invocation to fail with ConnectionClosedException.
                         //
                         p = (Test.TestIntfPrx)p.ice_connectionId("CloseGracefully"); // Start with a new connection.
                         Connection con = p.ice_getConnection();
@@ -783,9 +783,9 @@ namespace Ice
                             await t;
                             test(false);
                         }
-                        catch (ConnectionManuallyClosedException ex)
+                        catch (ConnectionClosedException ex)
                         {
-                            test(ex.graceful);
+                            test(ex.closedByApplication);
                         }
                         p.finishDispatch();
 
@@ -808,7 +808,7 @@ namespace Ice
                     {
                         //
                         // Local case: start an operation and then close the connection forcefully on the client side.
-                        // There will be no retry and we expect the invocation to fail with ConnectionManuallyClosedException.
+                        // There will be no retry and we expect the invocation to fail with ConnectionAbortedException.
                         //
                         p.ice_ping();
                         Connection con = p.ice_getConnection();
@@ -822,9 +822,9 @@ namespace Ice
                             await t;
                             test(false);
                         }
-                        catch (ConnectionManuallyClosedException ex)
+                        catch (ConnectionAbortedException ex)
                         {
-                            test(!ex.graceful);
+                            test(ex.closedByApplication);
                         }
                         p.finishDispatch();
 
@@ -926,6 +926,35 @@ namespace Ice
                     var r = await q.opAsync(1);
                     test(r.returnValue == 1);
                     test(r.j == 1);
+                }
+                output.WriteLine("ok");
+
+                output.Write("testing back pressure... ");
+                output.Flush();
+                {
+                    // Keep the 3 server thread pool threads busy.
+                    Task sleep1Task = p.sleepAsync(1000);
+                    Task sleep2Task = p.sleepAsync(1000);
+                    Task sleep3Task = p.sleepAsync(1000);
+                    bool canceled = false;
+                    using var cts = new CancellationTokenSource(200);
+                    try
+                    {
+                        var onewayProxy = (Test.TestIntfPrx)p.ice_oneway();
+
+                        // Sending should be canceled because the TCP send/receive buffer size on the server is set
+                        // to 50KB. Note: we don't use the cancel parameter of the operation here because the
+                        // cancellation doesn't cancel the operation whose payload is being sent.
+                        await onewayProxy.opWithPayloadAsync(new byte[768 * 1024]).WaitAsync(cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        canceled = true;
+                    }
+                    test(canceled && !sleep1Task.IsCompleted);
+                    await sleep1Task;
+                    await sleep2Task;
+                    await sleep3Task;
                 }
                 output.WriteLine("ok");
 

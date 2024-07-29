@@ -2,15 +2,15 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-#include "IceUtil/ConsoleUtil.h"
-#include "IceUtil/CtrlCHandler.h"
-#include "IceUtil/Options.h"
-#include "IceUtil/StringUtil.h"
+#include "../Ice/ConsoleUtil.h"
+#include "../Ice/Options.h"
+#include "Ice/CtrlCHandler.h"
+#include "Ice/StringUtil.h"
 // BUGFIX: With MSVC2013 if this isn't included you get strange linker errors.
+#include "../Ice/FileUtil.h"
 #include "../Slice/FileTracker.h"
 #include "../Slice/Preprocessor.h"
 #include "../Slice/Util.h"
-#include "IceUtil/FileUtil.h"
 #include "PythonUtil.h"
 
 #include <cassert>
@@ -30,7 +30,7 @@
 using namespace std;
 using namespace Slice;
 using namespace Slice::Python;
-using namespace IceUtilInternal;
+using namespace IceInternal;
 
 namespace
 {
@@ -46,8 +46,8 @@ namespace
 
     void createDirectory(const string& dir)
     {
-        IceUtilInternal::structstat st;
-        if (!IceUtilInternal::stat(dir, &st))
+        IceInternal::structstat st;
+        if (!IceInternal::stat(dir, &st))
         {
             if (!(st.st_mode & S_IFDIR))
             {
@@ -58,10 +58,10 @@ namespace
             return;
         }
 
-        if (IceUtilInternal::mkdir(dir, 0777) != 0)
+        if (IceInternal::mkdir(dir, 0777) != 0)
         {
             ostringstream os;
-            os << "cannot create directory '" << dir << "': " << IceUtilInternal::errorToString(errno);
+            os << "cannot create directory '" << dir << "': " << IceInternal::errorToString(errno);
             throw FileException(__FILE__, __LINE__, os.str());
         }
     }
@@ -72,11 +72,11 @@ namespace
     //
     void createPackageDirectory(const string& output, const string& pkgdir)
     {
-        assert(output.empty() || IceUtilInternal::directoryExists(output));
+        assert(output.empty() || IceInternal::directoryExists(output));
         assert(!pkgdir.empty());
 
         vector<string> elements;
-        if (!IceUtilInternal::splitString(pkgdir, "/", elements))
+        if (!IceInternal::splitString(pkgdir, "/", elements))
         {
             throw FileException(__FILE__, __LINE__, "invalid path in '" + pkgdir + "'");
         }
@@ -94,13 +94,13 @@ namespace
                 path += "/";
             }
             path += *p;
-            IceUtilInternal::structstat st;
-            if (IceUtilInternal::stat(path, &st) < 0)
+            IceInternal::structstat st;
+            if (IceInternal::stat(path, &st) < 0)
             {
-                if (IceUtilInternal::mkdir(path, 0777) != 0)
+                if (IceInternal::mkdir(path, 0777) != 0)
                 {
                     ostringstream os;
-                    os << "cannot create directory '" << path << "': " << IceUtilInternal::errorToString(errno);
+                    os << "cannot create directory '" << path << "': " << IceInternal::errorToString(errno);
                     throw FileException(__FILE__, __LINE__, os.str());
                 }
                 FileTracker::instance()->addDirectory(path);
@@ -118,17 +118,17 @@ namespace
             // can be empty.
             //
             const string initFile = path + "/__init__.py";
-            if (!IceUtilInternal::fileExists(initFile))
+            if (!IceInternal::fileExists(initFile))
             {
                 //
                 // Create an empty file.
                 //
-                IceUtilInternal::Output out;
+                IceInternal::Output out;
                 out.open(initFile.c_str());
                 if (!out)
                 {
                     ostringstream os;
-                    os << "cannot open '" << initFile << "': " << IceUtilInternal::errorToString(errno);
+                    os << "cannot open '" << initFile << "': " << IceInternal::errorToString(errno);
                     throw FileException(__FILE__, __LINE__, os.str());
                 }
                 FileTracker::instance()->addFile(initFile);
@@ -176,9 +176,6 @@ namespace
             InSubmodules
         };
 
-        static const char* _moduleTag;
-        static const char* _submoduleTag;
-
         static void addModule(const string&, const string&, const string&);
         static void addSubmodule(const string&, const string&, const string&);
 
@@ -188,8 +185,8 @@ namespace
         StringList& _modules;
     };
 
-    const char* PackageVisitor::_moduleTag = "# Modules:";
-    const char* PackageVisitor::_submoduleTag = "# Submodules:";
+    const string moduleTag = "# Modules:";
+    const string submoduleTag = "# Submodules:";
 
     PackageVisitor::PackageVisitor(StringList& modules) : _modules(modules) {}
 
@@ -202,7 +199,7 @@ namespace
         for (StringList::iterator p = modules.begin(); p != modules.end(); ++p)
         {
             vector<string> vs;
-            if (!IceUtilInternal::splitString(*p, ".", vs))
+            if (!IceInternal::splitString(*p, ".", vs))
             {
                 assert(false);
             }
@@ -278,14 +275,14 @@ namespace
     {
         string initPath = dir + "/__init__.py";
 
-        IceUtilInternal::structstat st;
-        if (!IceUtilInternal::stat(initPath, &st))
+        IceInternal::structstat st;
+        if (!IceInternal::stat(initPath, &st))
         {
-            ifstream in(IceUtilInternal::streamFilename(initPath).c_str());
+            ifstream in(IceInternal::streamFilename(initPath).c_str());
             if (!in)
             {
                 ostringstream os;
-                os << "cannot open file '" << initPath << "': " << IceUtilInternal::errorToString(errno);
+                os << "cannot open file '" << initPath << "': " << IceInternal::errorToString(errno);
                 throw FileException(__FILE__, __LINE__, os.str());
             }
 
@@ -294,7 +291,7 @@ namespace
             while (in.getline(line, 1024))
             {
                 string s = line;
-                if (s.find(_moduleTag) == 0)
+                if (s.find(moduleTag) == 0)
                 {
                     if (state != PreModules)
                     {
@@ -302,7 +299,7 @@ namespace
                     }
                     state = InModules;
                 }
-                else if (s.find(_submoduleTag) == 0)
+                else if (s.find(submoduleTag) == 0)
                 {
                     if (state != InModules)
                     {
@@ -376,25 +373,25 @@ namespace
     {
         string initPath = dir + "/__init__.py";
 
-        ofstream os(IceUtilInternal::streamFilename(initPath).c_str());
+        ofstream os(IceInternal::streamFilename(initPath).c_str());
         if (!os)
         {
             ostringstream oss;
-            oss << "cannot open file '" << initPath << "': " << IceUtilInternal::errorToString(errno);
+            oss << "cannot open file '" << initPath << "': " << IceInternal::errorToString(errno);
             throw FileException(__FILE__, __LINE__, oss.str());
         }
         FileTracker::instance()->addFile(initPath);
 
         os << "# Generated by slice2py - DO NOT EDIT!" << endl << "#" << endl;
         os << endl << "import Ice" << endl << "Ice.updateModule(\"" << name << "\")" << endl << endl;
-        os << _moduleTag << endl;
+        os << moduleTag << endl;
         for (StringList::const_iterator p = modules.begin(); p != modules.end(); ++p)
         {
             os << "import " << *p << endl;
         }
 
         os << endl;
-        os << _submoduleTag << endl;
+        os << submoduleTag << endl;
         for (StringList::const_iterator p = submodules.begin(); p != submodules.end(); ++p)
         {
             os << "from . import " << *p << endl;
@@ -425,31 +422,31 @@ namespace
 int
 Slice::Python::compile(const vector<string>& argv)
 {
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("h", "help");
     opts.addOpt("v", "version");
-    opts.addOpt("D", "", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::Repeat);
-    opts.addOpt("U", "", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::Repeat);
-    opts.addOpt("I", "", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::Repeat);
+    opts.addOpt("D", "", IceInternal::Options::NeedArg, "", IceInternal::Options::Repeat);
+    opts.addOpt("U", "", IceInternal::Options::NeedArg, "", IceInternal::Options::Repeat);
+    opts.addOpt("I", "", IceInternal::Options::NeedArg, "", IceInternal::Options::Repeat);
     opts.addOpt("E");
-    opts.addOpt("", "output-dir", IceUtilInternal::Options::NeedArg);
+    opts.addOpt("", "output-dir", IceInternal::Options::NeedArg);
     opts.addOpt("", "depend");
     opts.addOpt("", "depend-xml");
-    opts.addOpt("", "depend-file", IceUtilInternal::Options::NeedArg, "");
+    opts.addOpt("", "depend-file", IceInternal::Options::NeedArg, "");
     opts.addOpt("d", "debug");
     opts.addOpt("", "all");
     opts.addOpt("", "no-package");
     opts.addOpt("", "build-package");
-    opts.addOpt("", "prefix", IceUtilInternal::Options::NeedArg);
+    opts.addOpt("", "prefix", IceInternal::Options::NeedArg);
 
     vector<string> args;
     try
     {
         args = opts.parse(argv);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        consoleErr << argv[0] << ": error: " << e.reason << endl;
+        consoleErr << argv[0] << ": error: " << e.what() << endl;
         usage(argv[0]);
         return EXIT_FAILURE;
     }
@@ -526,7 +523,7 @@ Slice::Python::compile(const vector<string>& argv)
         return EXIT_FAILURE;
     }
 
-    if (!output.empty() && !IceUtilInternal::directoryExists(output))
+    if (!output.empty() && !IceInternal::directoryExists(output))
     {
         consoleErr << argv[0] << ": error: argument for --output-dir does not exist or is not a directory" << endl;
         return EXIT_FAILURE;
@@ -534,7 +531,7 @@ Slice::Python::compile(const vector<string>& argv)
 
     int status = EXIT_SUCCESS;
 
-    IceUtil::CtrlCHandler ctrlCHandler;
+    Ice::CtrlCHandler ctrlCHandler;
     ctrlCHandler.setCallback(interruptedCallback);
 
     bool keepComments = true;
@@ -698,12 +695,12 @@ Slice::Python::compile(const vector<string>& argv)
                             //
                             path += "_ice.py";
 
-                            IceUtilInternal::Output out;
+                            IceInternal::Output out;
                             out.open(path.c_str());
                             if (!out)
                             {
                                 ostringstream oss;
-                                oss << "cannot open '" << path << "': " << IceUtilInternal::errorToString(errno);
+                                oss << "cannot open '" << path << "': " << IceInternal::errorToString(errno);
                                 throw FileException(__FILE__, __LINE__, oss.str());
                             }
                             FileTracker::instance()->addFile(path);
@@ -748,7 +745,7 @@ Slice::Python::compile(const vector<string>& argv)
                         //
                         FileTracker::instance()->cleanup();
                         u->destroy();
-                        consoleErr << argv[0] << ": error: " << ex.reason() << endl;
+                        consoleErr << argv[0] << ": error: " << ex.what() << endl;
                         return EXIT_FAILURE;
                     }
                     catch (const exception& ex)

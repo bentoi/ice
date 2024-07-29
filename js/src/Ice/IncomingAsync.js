@@ -9,9 +9,10 @@ import { Ice as Ice_OperationMode } from "./OperationMode.js";
 const { OperationMode } = Ice_OperationMode;
 import { Ice as Ice_Identity } from "./Identity.js";
 const { Identity } = Ice_Identity;
-import { identityToString } from "./IdentityUtil.js";
+import { identityToString } from "./IdentityToString.js";
 import { FormatType } from "./FormatType.js";
-import { LocalException, UserException } from "./Exception.js";
+import { LocalException } from "./LocalException.js";
+import { UserException } from "./UserException.js";
 import {
     FacetNotExistException,
     MarshalException,
@@ -21,7 +22,7 @@ import {
     UnknownException,
     UnknownLocalException,
     UnknownUserException,
-} from "./LocalException.js";
+} from "./LocalExceptions.js";
 
 import { Protocol } from "./Protocol.js";
 import { OutputStream } from "./Stream.js";
@@ -130,20 +131,20 @@ export class IncomingAsync {
         this._instance.initializationData().logger.warning(s.join(""));
     }
 
-    handleException(ex, amd) {
+    handleException(ex) {
         Debug.assert(this._connection !== null);
 
         const props = this._instance.initializationData().properties;
         if (ex instanceof RequestFailedException) {
-            if (ex.id === null) {
+            if (ex.id === undefined) {
                 ex.id = this._current.id;
             }
 
-            if (ex.facet === null) {
+            if (ex.facet === undefined) {
                 ex.facet = this._current.facet;
             }
 
-            if (ex.operation === null || ex.operation.length === 0) {
+            if (ex.operation === undefined || ex.operation.length === 0) {
                 ex.operation = this._current.operation;
             }
 
@@ -294,7 +295,7 @@ export class IncomingAsync {
         const facetPath = StringSeqHelper.read(this._is);
         if (facetPath.length > 0) {
             if (facetPath.length > 1) {
-                throw new MarshalException();
+                throw new MarshalException(`Received invalid facet path with ${facetPath.length} elements.`);
             }
             this._current.facet = facetPath[0];
         } else {
@@ -327,7 +328,7 @@ export class IncomingAsync {
                         this._servant = this._locator.locate(this._current, this._cookie);
                     } catch (ex) {
                         this.skipReadParams(); // Required for batch requests.
-                        this.handleException(ex, false);
+                        this.handleException(ex);
                         return;
                     }
                 }
@@ -343,7 +344,7 @@ export class IncomingAsync {
                 }
             } catch (ex) {
                 this.skipReadParams(); // Required for batch requests.
-                this.handleException(ex, false);
+                this.handleException(ex);
                 return;
             }
         }
@@ -353,16 +354,16 @@ export class IncomingAsync {
             const promise = this._servant._iceDispatch(this, this._current);
             if (promise !== null) {
                 promise.then(
-                    () => this.completed(null, true),
-                    (ex) => this.completed(ex, true),
+                    () => this.completed(null),
+                    ex => this.completed(ex),
                 );
                 return;
             }
 
             Debug.assert(!this._response || this._os !== null);
-            this.completed(null, false);
+            this.completed(null);
         } catch (ex) {
-            this.completed(ex, false);
+            this.completed(ex);
         }
     }
 
@@ -392,14 +393,14 @@ export class IncomingAsync {
         this._current.encoding = this._is.skipEncapsulation();
     }
 
-    completed(exc, amd) {
+    completed(exc) {
         try {
             if (this._locator !== null) {
                 Debug.assert(this._locator !== null && this._servant !== null);
                 try {
                     this._locator.finished(this._current, this._servant, this._cookie.value);
                 } catch (ex) {
-                    this.handleException(ex, amd);
+                    this.handleException(ex);
                     return;
                 }
             }
@@ -407,7 +408,7 @@ export class IncomingAsync {
             Debug.assert(this._connection !== null);
 
             if (exc !== null) {
-                this.handleException(exc, amd);
+                this.handleException(exc);
             } else if (this._response) {
                 this._connection.sendResponse(this._os);
             } else {

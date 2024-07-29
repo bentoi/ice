@@ -2,7 +2,7 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
-import { ConnectFailedException, ConnectionLostException, SocketException } from "./LocalException.js";
+import { ConnectFailedException, ConnectionLostException, SocketException } from "./LocalExceptions.js";
 import { WSConnectionInfo, TCPConnectionInfo } from "./Connection.js";
 import { ConnectionInfo as SSLConnectionInfo } from "./SSL/ConnectionInfo.js";
 import { SocketOperation } from "./SocketOperation.js";
@@ -60,9 +60,9 @@ if (typeof WebSocket !== "undefined") {
                     this._state = StateConnectPending;
                     this._fd = new WebSocket(this._url, "ice.zeroc.com");
                     this._fd.binaryType = "arraybuffer";
-                    this._fd.onopen = (e) => this.socketConnected(e);
-                    this._fd.onmessage = (e) => this.socketBytesAvailable(e.data);
-                    this._fd.onclose = (e) => this.socketClosed(e);
+                    this._fd.onopen = e => this.socketConnected(e);
+                    this._fd.onmessage = e => this.socketBytesAvailable(e.data);
+                    this._fd.onclose = e => this.socketClosed(e);
                     return SocketOperation.Connect; // Waiting for connect to complete.
                 } else if (this._state === StateConnectPending) {
                     //
@@ -249,13 +249,11 @@ if (typeof WebSocket !== "undefined") {
             info.underlying = this._secure
                 ? new SSLConnectionInfo(tcpInfo, tcpInfo.timeout, tcpInfo.compress)
                 : tcpInfo;
-            info.rcvSize = -1;
-            info.sndSize = this._maxSendPacketSize;
+            tcpInfo.rcvSize = -1;
+            tcpInfo.sndSize = this._maxSendPacketSize;
             info.headers = {};
             return info;
         }
-
-        checkSendSize(stream) {}
 
         setBufferSize(rcvSize, sndSize) {
             this._maxSendPacketSize = sndSize;
@@ -326,13 +324,13 @@ if (typeof WebSocket !== "undefined") {
 
     function translateError(state, err) {
         if (state < StateConnected) {
-            return new ConnectFailedException(err.code, err);
+            return new ConnectFailedException("connect failed", { cause: err });
         } else {
             if (err.code === 1000 || err.code === 1006) {
                 // CLOSE_NORMAL | CLOSE_ABNORMAL
                 return new ConnectionLostException();
             }
-            return new SocketException(err.code, err);
+            return new SocketException("socket exception", { cause: err });
         }
     }
 } else {

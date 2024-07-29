@@ -10,8 +10,7 @@ function allTests($helper)
     global $Ice_Encoding_1_0;
 
     $communicator = $helper->communicator();
-    $obj = $communicator->stringToProxy(sprintf("Test:%s", $helper->getTestEndpoint()));
-    $test = $obj->ice_checkedCast("::Test::TestIntf");
+    $test = Test\TestIntfPrxHelper::createProxy($communicator, sprintf("Test:%s", $helper->getTestEndpoint()));
 
     echo "base as Object... ";
     flush();
@@ -83,7 +82,7 @@ function allTests($helper)
         }
         catch(Exception $ex)
         {
-            test(get_class($ex) == "Ice\\NoValueFactoryException");
+            test(get_class($ex) == "Ice\\MarshalException");
         }
     }
     echo "ok\n";
@@ -100,7 +99,7 @@ function allTests($helper)
             test($o->ice_getSlicedData() != null);
             $test->checkSUnknown($o);
         }
-        catch(Ice\NoValueFactoryException $b)
+        catch(Ice\MarshalException $b)
         {
             test($test->ice_getEncodingVersion() == $Ice_Encoding_1_0);
         }

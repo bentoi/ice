@@ -11,16 +11,9 @@ import { OptionalFormat } from "./OptionalFormat.js";
 import { Encoding_1_0, Protocol } from "./Protocol.js";
 import { SlicedData, SliceInfo, UnknownSlicedValue } from "./UnknownSlicedValue.js";
 import { TraceUtil } from "./TraceUtil.js";
-import { LocalException } from "./Exception.js";
+import { LocalException } from "./LocalException.js";
 import { Value } from "./Value.js";
-import {
-    EncapsulationException,
-    InitializationException,
-    MarshalException,
-    UnmarshalOutOfBoundsException,
-    UnknownUserException,
-    NoValueFactoryException,
-} from "./LocalException.js";
+import { InitializationException, MarshalException } from "./LocalExceptions.js";
 import { Ice as Ice_Identity } from "./Identity.js";
 const { Identity } = Ice_Identity;
 import { Ice as Ice_Version } from "./Version.js";
@@ -29,12 +22,15 @@ import { Instance } from "./Instance.js";
 import { Communicator } from "./Communicator.js";
 import { TypeRegistry } from "./TypeRegistry.js";
 import { Debug } from "./Debug.js";
+import { ObjectPrx } from "./ObjectPrx.js";
 
 const SliceType = {
     NoSlice: 0,
     ValueSlice: 1,
     ExceptionSlice: 2,
 };
+
+const endOfBufferMessage = "Attempting to unmarshal past the end of the buffer.";
 
 //
 // InputStream
@@ -48,10 +44,11 @@ class IndirectPatchEntry {
 }
 
 class EncapsDecoder {
-    constructor(stream, encaps, sliceValues, f) {
+    constructor(stream, encaps, classGraphDepth, f) {
         this._stream = stream;
         this._encaps = encaps;
-        this._sliceValues = sliceValues;
+        this._classGraphDepthMax = classGraphDepth;
+        this._classGraphDepth = 0;
         this._valueFactoryManager = f;
         this._patchMap = null; // Lazy initialized, Map<int, Patcher[] >()
         this._unmarshaledMap = new Map(); // Map<int, Value>()
@@ -76,7 +73,7 @@ class EncapsDecoder {
         if (isIndex) {
             typeId = this._typeIdMap.get(this._stream.readSize());
             if (typeId === undefined) {
-                throw new UnmarshalOutOfBoundsException();
+                throw new MarshalException(endOfBufferMessage);
             }
         } else {
             typeId = this._stream.readString();
@@ -153,7 +150,7 @@ class EncapsDecoder {
         //
         // Append a patch entry for this instance.
         //
-        l.push(cb);
+        l.push(new PatchEntry(cb, this._classGraphDepth));
     }
 
     unmarshal(index, v) {
@@ -180,7 +177,7 @@ class EncapsDecoder {
                 // Patch all pointers that refer to the instance.
                 //
                 for (let i = 0; i < l.length; ++i) {
-                    l[i](v);
+                    l[i].cb(v);
                 }
 
                 //
@@ -229,8 +226,8 @@ class EncapsDecoder {
 }
 
 class EncapsDecoder10 extends EncapsDecoder {
-    constructor(stream, encaps, sliceValues, f) {
-        super(stream, encaps, sliceValues, f);
+    constructor(stream, encaps, classGraphDepth, f) {
+        super(stream, encaps, classGraphDepth, f);
         this._sliceType = SliceType.NoSlice;
     }
 
@@ -299,11 +296,8 @@ class EncapsDecoder10 extends EncapsDecoder {
                 // the last slice of an exception. As a result, we just try to read the
                 // next type ID, which raises UnmarshalOutOfBoundsException when the
                 // input buffer underflow.
-                //
-                // Set the reason member to a more helpful message.
-                //
-                if (ex instanceof UnmarshalOutOfBoundsException) {
-                    ex.reason = "unknown exception type `" + mostDerivedId + "'";
+                if (ex instanceof MarshalException) {
+                    throw new MarshalException(`unknown exception type '${mostDerivedId}'`);
                 }
                 throw ex;
             }
@@ -358,7 +352,7 @@ class EncapsDecoder10 extends EncapsDecoder {
 
         this._sliceSize = this._stream.readInt();
         if (this._sliceSize < 4) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         return this._typeId;
@@ -412,7 +406,7 @@ class EncapsDecoder10 extends EncapsDecoder {
             // marks the last slice.
             //
             if (this._typeId == Value.ice_staticId()) {
-                throw new NoValueFactoryException("", mostDerivedId);
+                throw new MarshalException(`Cannot find value factory for type ID '${mostDerivedId}'.`);
             }
 
             v = this.newInstance(this._typeId);
@@ -425,17 +419,30 @@ class EncapsDecoder10 extends EncapsDecoder {
             }
 
             //
-            // If slicing is disabled, stop unmarshaling.
-            //
-            if (!this._sliceValues) {
-                throw new NoValueFactoryException("no value factory found and slicing is disabled", this._typeId);
-            }
-
-            //
             // Slice off what we don't understand.
             //
             this.skipSlice();
             this.startSlice(); // Read next Slice header for next iteration.
+        }
+
+        //
+        // Compute the biggest class graph depth of this object. To compute this,
+        // we get the class graph depth of each ancestor from the patch map and
+        // keep the biggest one.
+        //
+        this._classGraphDepth = 0;
+        const l = this._patchMap === null ? null : this._patchMap.get(index);
+        if (l !== undefined) {
+            Debug.assert(l.length > 0);
+            for (const entry of l) {
+                if (entry.classGraphDepth > this._classGraphDepth) {
+                    this._classGraphDepth = entry.classGraphDepth;
+                }
+            }
+        }
+
+        if (++this._classGraphDepth > this._classGraphDepthMax) {
+            throw new MarshalException("maximum class graph depth reached");
         }
 
         //
@@ -446,8 +453,8 @@ class EncapsDecoder10 extends EncapsDecoder {
 }
 
 class EncapsDecoder11 extends EncapsDecoder {
-    constructor(stream, encaps, sliceValues, f, r) {
-        super(stream, encaps, sliceValues, f);
+    constructor(stream, encaps, classGraphDepth, f, r) {
+        super(stream, encaps, classGraphDepth, f);
         this._compactIdResolver = r;
         this._current = null;
         this._valueIdIndex = 1;
@@ -510,10 +517,7 @@ class EncapsDecoder11 extends EncapsDecoder {
             this.skipSlice();
 
             if ((this._current.sliceFlags & Protocol.FLAG_IS_LAST_SLICE) !== 0) {
-                if (mostDerivedId.indexOf("::") === 0) {
-                    throw new UnknownUserException(mostDerivedId.substr(2));
-                }
-                throw new UnknownUserException(mostDerivedId);
+                throw new MarshalException(`cannot unmarshal user exception with type ID '${mostDerivedId}'`);
             }
 
             this.startSlice();
@@ -584,7 +588,7 @@ class EncapsDecoder11 extends EncapsDecoder {
         if ((this._current.sliceFlags & Protocol.FLAG_HAS_SLICE_SIZE) !== 0) {
             this._current.sliceSize = this._stream.readInt();
             if (this._current.sliceSize < 4) {
-                throw new UnmarshalOutOfBoundsException();
+                throw new MarshalException(endOfBufferMessage);
             }
         } else {
             this._current.sliceSize = 0;
@@ -631,7 +635,7 @@ class EncapsDecoder11 extends EncapsDecoder {
             // Convert indirect references into direct references.
             //
             if (this._current.indirectPatchList !== null) {
-                this._current.indirectPatchList.forEach((e) => {
+                this._current.indirectPatchList.forEach(e => {
                     Debug.assert(e.index >= 0);
                     if (e.index >= indirectionTable.length) {
                         throw new MarshalException("indirection out of range");
@@ -651,16 +655,14 @@ class EncapsDecoder11 extends EncapsDecoder {
         if ((this._current.sliceFlags & Protocol.FLAG_HAS_SLICE_SIZE) !== 0) {
             Debug.assert(this._current.sliceSize >= 4);
             this._stream.skip(this._current.sliceSize - 4);
-        } else if (this._current.sliceType === SliceType.ValueSlice) {
-            throw new NoValueFactoryException(
-                "no value factory found and compact format prevents slicing " +
-                    "(the sender should use the sliced format instead)",
-                this._current.typeId,
-            );
-        } else if (this._current.typeId.indexOf("::") === 0) {
-            throw new UnknownUserException(this._current.typeId.substring(2));
         } else {
-            throw new UnknownUserException(this._current.typeId);
+            if (this._current.sliceType == SliceType.ValueSlice) {
+                throw new MarshalException(
+                    `Cannot find value factory for type ID '${this._current.typeId}' and compact format prevents slicing.`,
+                );
+            } else {
+                throw new MarshalException(`Cannot find user exception for type ID '${this._current.typeId}'`);
+            }
         }
 
         //
@@ -761,7 +763,7 @@ class EncapsDecoder11 extends EncapsDecoder {
                         if (!(ex instanceof LocalException)) {
                             throw new MarshalException(
                                 "exception in CompactIdResolver for ID " + this._current.compactId,
-                                ex,
+                                { cause: ex },
                             );
                         }
                         throw ex;
@@ -785,16 +787,6 @@ class EncapsDecoder11 extends EncapsDecoder {
             }
 
             //
-            // If slicing is disabled, stop unmarshaling.
-            //
-            if (!this._sliceValues) {
-                throw new NoValueFactoryException(
-                    "no value factory found and slicing is disabled",
-                    this._current.typeId,
-                );
-            }
-
-            //
             // Slice off what we don't understand.
             //
             this.skipSlice();
@@ -811,10 +803,16 @@ class EncapsDecoder11 extends EncapsDecoder {
             this.startSlice(); // Read next Slice header for next iteration.
         }
 
+        if (++this._classGraphDepth > this._classGraphDepthMax) {
+            throw new MarshalException("maximum class graph depth reached");
+        }
+
         //
         // Unmarshal the instance.
         //
         this.unmarshal(index, v);
+
+        --this._classGraphDepth;
 
         if (this._current === null && this._patchMap !== null && this._patchMap.size !== 0) {
             //
@@ -896,7 +894,7 @@ EncapsDecoder11.InstanceData = class {
 };
 
 const sequencePatcher = function (seq, index, T) {
-    return (v) => {
+    return v => {
         if (v !== null && !(v instanceof T)) {
             throwUOE(T.ice_staticId(), v);
         }
@@ -921,6 +919,21 @@ class ReadEncaps {
     setEncoding(encoding) {
         this.encoding = encoding;
         this.encoding_1_0 = encoding.equals(Encoding_1_0);
+    }
+}
+
+class PatchEntry {
+    constructor(cb, classGraphDepth) {
+        this._cb = cb;
+        this._classGraphDepth = classGraphDepth;
+    }
+
+    get cb() {
+        return this._cb;
+    }
+
+    get classGraphDepth() {
+        return this._classGraphDepth;
     }
 }
 
@@ -961,7 +974,7 @@ export class InputStream {
         // (encoding, buffer)
         // (encoding, buffer)
         //
-        arr.forEach((arg) => {
+        arr.forEach(arg => {
             if (arg !== null && arg !== undefined) {
                 if (arg.constructor === Communicator) {
                     args.instance = arg.instance;
@@ -991,7 +1004,6 @@ export class InputStream {
         this._encapsStack = null;
         this._encapsCache = null;
         this._closure = null;
-        this._sliceValues = true;
         this._startSeq = -1;
         this._sizePos = -1;
         this._compactIdResolver = null;
@@ -1003,6 +1015,7 @@ export class InputStream {
             this._traceSlicing = this._instance.traceLevels().slicing > 0;
             this._valueFactoryManager = this._instance.initializationData().valueFactoryManager;
             this._logger = this._instance.initializationData().logger;
+            this._classGraphDepthMax = this._instance.classGraphDepthMax();
         } else {
             if (this._encoding === null) {
                 this._encoding = Protocol.currentEncoding;
@@ -1010,6 +1023,7 @@ export class InputStream {
             this._traceSlicing = false;
             this._valueFactoryManager = null;
             this._logger = null;
+            this._classGraphDepthMax = 0x7fffffff;
         }
 
         if (args.bytes !== null) {
@@ -1039,7 +1053,6 @@ export class InputStream {
         }
 
         this._startSeq = -1;
-        this._sliceValues = true;
     }
 
     swap(other) {
@@ -1049,7 +1062,7 @@ export class InputStream {
         [other._encoding, this._encoding] = [this._encoding, other._encoding];
         [other._traceSlicing, this._traceSlicing] = [this._traceSlicing, other._traceSlicing];
         [other._closure, this._closure] = [this._closure, other.closure];
-        [other._sliceValues, this._sliceValues] = [this._sliceValues, other._sliceValues];
+        [other._classGraphDepthMax, this._classGraphDepthMax] = [this._classGraphDepthMax, other._classGraphDepthMax];
 
         //
         // Swap is never called for InputStreams that have encapsulations being read/write. However,
@@ -1119,10 +1132,10 @@ export class InputStream {
         //
         const sz = this.readInt();
         if (sz < 6) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         if (sz - 4 > this._buf.remaining) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         this._encapsStack.sz = sz;
 
@@ -1140,11 +1153,11 @@ export class InputStream {
         if (!this._encapsStack.encoding_1_0) {
             this.skipOptionals();
             if (this._buf.position !== this._encapsStack.start + this._encapsStack.sz) {
-                throw new EncapsulationException();
+                throw new MarshalException("Failed to unmarshal encapsulation.");
             }
         } else if (this._buf.position !== this._encapsStack.start + this._encapsStack.sz) {
             if (this._buf.position + 1 !== this._encapsStack.start + this._encapsStack.sz) {
-                throw new EncapsulationException();
+                throw new MarshalException("Failed to unmarshal encapsulation.");
             }
 
             //
@@ -1157,7 +1170,7 @@ export class InputStream {
             try {
                 this._buf.get();
             } catch (ex) {
-                throw new UnmarshalOutOfBoundsException();
+                throw new MarshalException(endOfBufferMessage);
             }
         }
 
@@ -1171,10 +1184,10 @@ export class InputStream {
     skipEmptyEncapsulation() {
         const sz = this.readInt();
         if (sz < 6) {
-            throw new EncapsulationException();
+            throw new MarshalException(`${sz} is not a valid encapsulation size.`);
         }
         if (sz - 4 > this._buf.remaining) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         const encoding = new EncodingVersion();
@@ -1183,7 +1196,7 @@ export class InputStream {
 
         if (encoding.equals(Encoding_1_0)) {
             if (sz != 6) {
-                throw new EncapsulationException();
+                throw new MarshalException(`${sz} is not a valid encapsulation size for a 1.0 empty encapsulation.`);
             }
         } else {
             // Skip the optional content of the encapsulation if we are expecting an
@@ -1197,11 +1210,11 @@ export class InputStream {
         Debug.assert(encoding !== undefined);
         const sz = this.readInt();
         if (sz < 6) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         if (sz - 4 > this._buf.remaining) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         if (encoding !== null) {
@@ -1214,7 +1227,7 @@ export class InputStream {
         try {
             return this._buf.getArray(sz);
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1230,14 +1243,14 @@ export class InputStream {
     skipEncapsulation() {
         const sz = this.readInt();
         if (sz < 6) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         const encoding = new EncodingVersion();
         encoding._read(this);
         try {
             this._buf.position = this._buf.position + sz - 6;
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         return encoding;
     }
@@ -1284,13 +1297,13 @@ export class InputStream {
             if (b === 255) {
                 const v = this._buf.getInt();
                 if (v < 0) {
-                    throw new UnmarshalOutOfBoundsException();
+                    throw new MarshalException(endOfBufferMessage);
                 }
                 return v;
             }
             return b;
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1331,7 +1344,7 @@ export class InputStream {
         // data: it's claiming having more data that what is possible to read.
         //
         if (this._startSeq + this._minSeqSize > this._buf.limit) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         return sz;
@@ -1339,12 +1352,12 @@ export class InputStream {
 
     readBlob(sz) {
         if (this._buf.remaining < sz) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         try {
             return this._buf.getArray(sz);
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1368,7 +1381,7 @@ export class InputStream {
         try {
             return this._buf.get();
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1380,7 +1393,7 @@ export class InputStream {
         try {
             return this._buf.get() === 1;
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1388,7 +1401,7 @@ export class InputStream {
         try {
             return this._buf.getShort();
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1396,7 +1409,7 @@ export class InputStream {
         try {
             return this._buf.getInt();
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1404,7 +1417,7 @@ export class InputStream {
         try {
             return this._buf.getLong();
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1412,7 +1425,7 @@ export class InputStream {
         try {
             return this._buf.getFloat();
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1420,7 +1433,7 @@ export class InputStream {
         try {
             return this._buf.getDouble();
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
@@ -1433,18 +1446,22 @@ export class InputStream {
         // Check the buffer has enough bytes to read.
         //
         if (this._buf.remaining < len) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         try {
             return this._buf.getString(len);
         } catch (ex) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
     }
 
     readProxy(type) {
-        return this._instance.proxyFactory().streamToProxy(this, type);
+        const ident = new Identity();
+        ident._read(this);
+        const reference = this._instance.referenceFactory().createFromStream(ident, this);
+        const TPrx = type == null ? ObjectPrx : type;
+        return reference == null ? null : new TPrx(reference);
     }
 
     readOptionalProxy(tag, type) {
@@ -1472,7 +1489,7 @@ export class InputStream {
 
         const e = T.valueOf(v);
         if (e === undefined) {
-            throw new MarshalException("enumerator value " + v + " is out of range");
+            throw new MarshalException(`enumerator value '${v}' is out of range`);
         }
         return e;
     }
@@ -1487,7 +1504,7 @@ export class InputStream {
 
     readValue(cb, T) {
         this.initEncaps();
-        this._encapsStack.decoder.readValue((obj) => {
+        this._encapsStack.decoder.readValue(obj => {
             if (obj !== null && !(obj instanceof T)) {
                 throwUOE(T.ice_staticId(), obj);
             }
@@ -1531,7 +1548,7 @@ export class InputStream {
                 this.skipOptional(format); // Skip optional data members
             } else {
                 if (format !== expectedFormat) {
-                    throw new MarshalException("invalid optional data member `" + tag + "': unexpected format");
+                    throw new MarshalException(`invalid optional data member '${tag}': unexpected format`);
                 }
                 return true;
             }
@@ -1569,7 +1586,7 @@ export class InputStream {
                 break;
             }
             case OptionalFormat.Class: {
-                throw new Ice.MarshalException("cannot skip an optional class");
+                throw new MarshalException("cannot skip an optional class");
             }
             default: {
                 Debug.assert(false);
@@ -1603,7 +1620,7 @@ export class InputStream {
 
     skip(size) {
         if (size > this._buf.remaining) {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         this._buf.position += size;
     }
@@ -1625,14 +1642,14 @@ export class InputStream {
 
     createInstance(id) {
         let obj = null;
+        const typeId = id.length > 2 ? id.substr(2).replace(/::/g, ".") : "";
         try {
-            const typeId = id.length > 2 ? id.substr(2).replace(/::/g, ".") : "";
             const Class = TypeRegistry.getValueType(typeId);
             if (Class !== undefined) {
                 obj = new Class();
             }
         } catch (ex) {
-            throw new NoValueFactoryException("no value factory", id, ex);
+            throw new MarshalException(`Failed to create a class with type ID '${typeId}'.`, { cause: ex });
         }
 
         return obj;
@@ -1647,7 +1664,7 @@ export class InputStream {
                 userEx = new Class();
             }
         } catch (ex) {
-            throw new MarshalException(ex);
+            throw new MarshalException(`Failed to create user exception with type ID '${id}'.`, { cause: ex });
         }
         return userEx;
     }
@@ -1680,14 +1697,14 @@ export class InputStream {
                 this._encapsStack.decoder = new EncapsDecoder10(
                     this,
                     this._encapsStack,
-                    this._sliceValues,
+                    this._classGraphDepthMax,
                     this._valueFactoryManager,
                 );
             } else {
                 this._encapsStack.decoder = new EncapsDecoder11(
                     this,
                     this._encapsStack,
-                    this._sliceValues,
+                    this._classGraphDepthMax,
                     this._valueFactoryManager,
                     this._compactIdResolver,
                 );
@@ -1743,23 +1760,6 @@ export class InputStream {
 
     set compactIdResolver(value) {
         this._compactIdResolver = value !== undefined ? value : null;
-    }
-
-    //
-    // Determines the behavior of the stream when extracting instances of Slice classes.
-    // A instance is "sliced" when a factory cannot be found for a Slice type ID.
-    // The stream's default behavior is to slice instances.
-    //
-    // If slicing is disabled and the stream encounters a Slice type ID
-    // during decoding for which no value factory is installed, it raises
-    // NoValueFactoryException.
-    //
-    get sliceValues() {
-        return this._sliceValues;
-    }
-
-    set sliceValues(value) {
-        this._sliceValues = value;
     }
 
     //
@@ -2141,7 +2141,7 @@ class EncapsEncoder11 extends EncapsEncoder {
             // Write the indirection instance table.
             //
             this._stream.writeSize(this._current.indirectionTable.length);
-            this._current.indirectionTable.forEach((o) => this.writeInstance(o));
+            this._current.indirectionTable.forEach(o => this.writeInstance(o));
             this._current.indirectionTable.length = 0; // Faster way to clean array in JavaScript
             this._current.indirectionMap.clear();
         }
@@ -2178,7 +2178,7 @@ class EncapsEncoder11 extends EncapsEncoder {
             return;
         }
 
-        slicedData.slices.forEach((info) => {
+        slicedData.slices.forEach(info => {
             this.startSlice(info.typeId, info.compactId, info.isLastSlice);
 
             //
@@ -2200,7 +2200,7 @@ class EncapsEncoder11 extends EncapsEncoder {
                     this._current.indirectionMap = new Map(); // Map<Value, int>
                 }
 
-                info.instances.forEach((instance) => this._current.indirectionTable.push(instance));
+                info.instances.forEach(instance => this._current.indirectionTable.push(instance));
             }
 
             this.endSlice();
@@ -2457,7 +2457,7 @@ export class OutputStream {
 
     writeEncapsulation(v) {
         if (v.length < 6) {
-            throw new EncapsulationException();
+            throw new MarshalException(`A byte sequence with ${v.length} bytes is not a valid encapsulation.`);
         }
         this.expand(v.length);
         this._buf.putArray(v);
@@ -2619,7 +2619,7 @@ export class OutputStream {
     }
 
     writeOptionalProxy(tag, v) {
-        if (v !== undefined) {
+        if (v !== undefined && v !== null) {
             if (this.writeOptional(tag, OptionalFormat.FSize)) {
                 const pos = this.startSize();
                 this.writeProxy(v);
@@ -2892,7 +2892,7 @@ export const ObjectHelper = class {
 
     static read(is) {
         let o;
-        is.readValue((v) => {
+        is.readValue(v => {
             o = v;
         }, Value);
         return o;

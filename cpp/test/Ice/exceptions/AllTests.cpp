@@ -47,8 +47,15 @@ allTests(Test::TestHelper* helper)
         A a;
         string aMsg = "::Test::A";
 
-        Ice::UnknownLocalException ule("thisFile", 99);
-        string uleMsg = "thisFile:99: ::Ice::UnknownLocalException:\nunknown local exception";
+        Ice::OperationNotExistException opNotExist("thisFile", 99);
+        string opNotExistWhat = "dispatch failed with OperationNotExistException";
+        string opNotExistPrint = opNotExist.ice_id();
+        string opNotExistStream = "thisFile:99 " + opNotExistPrint + " " + opNotExistWhat;
+
+        string customMessage = "custom message";
+        Ice::UnknownLocalException customUle("thisFile", 199, customMessage);
+        string customUlePrint = customUle.ice_id();
+        string customUleStream = "thisFile:199 " + customUlePrint + " " + customMessage;
 
         //
         // Test ice_print().
@@ -60,8 +67,13 @@ allTests(Test::TestHelper* helper)
         }
         {
             stringstream str;
-            ule.ice_print(str);
-            test(str.str() == uleMsg);
+            opNotExist.ice_print(str);
+            test(str.str() == opNotExistPrint);
+        }
+        {
+            stringstream str;
+            customUle.ice_print(str);
+            test(str.str() == customUlePrint);
         }
 
         //
@@ -70,22 +82,25 @@ allTests(Test::TestHelper* helper)
         {
             stringstream str;
             str << a;
-            test(str.str() == aMsg);
+            test(str.str().substr(0, aMsg.size()) == aMsg);
         }
         {
             stringstream str;
-            str << ule;
-            test(str.str() == uleMsg);
+            str << opNotExist;
+            test(str.str().substr(0, opNotExistStream.size()) == opNotExistStream);
+        }
+        {
+            stringstream str;
+            str << customUle;
+            test(str.str().substr(0, customUleStream.size()) == customUleStream);
         }
 
         //
-        // Test what(). (Called twice because of lazy initialization in what().)
+        // Test what().
         //
         test(aMsg == a.what());
-        test(aMsg == a.what());
-
-        test(uleMsg == ule.what());
-        test(uleMsg == ule.what());
+        test(opNotExistWhat == opNotExist.what());
+        test(string{customMessage} == customUle.what());
 
         {
             E ex("E");
@@ -205,12 +220,12 @@ allTests(Test::TestHelper* helper)
             {
                 adapter->add(obj, Ice::stringToIdentity(""));
             }
-            catch (const Ice::IllegalIdentityException& ex)
+            catch (const std::invalid_argument& ex)
             {
                 if (printException)
                 {
                     Ice::Print printer(communicator->getLogger());
-                    printer << ex;
+                    printer << ex.what();
                 }
             }
 
@@ -219,12 +234,12 @@ allTests(Test::TestHelper* helper)
                 obj = nullptr;
                 adapter->add(obj, Ice::stringToIdentity("x"));
             }
-            catch (const Ice::IllegalServantException& ex)
+            catch (const std::invalid_argument& ex)
             {
                 if (printException)
                 {
                     Ice::Print printer(communicator->getLogger());
-                    printer << ex;
+                    printer << ex.what();
                 }
             }
 
@@ -505,7 +520,6 @@ allTests(Test::TestHelper* helper)
         catch (const Ice::Exception& ex)
         {
             cout << ex << endl;
-            cout << ex.ice_stackTrace() << endl;
             test(false);
         }
         catch (...)
@@ -550,7 +564,7 @@ allTests(Test::TestHelper* helper)
             thrower->throwMemoryLimitException(Ice::ByteSeq());
             test(false);
         }
-        catch (const Ice::MemoryLimitException&)
+        catch (const Ice::MarshalException&)
         {
         }
         catch (...)
@@ -583,7 +597,7 @@ allTests(Test::TestHelper* helper)
             {
                 thrower2->throwMemoryLimitException(Ice::ByteSeq(2 * 1024 * 1024)); // 2MB (no limits)
             }
-            catch (const Ice::MemoryLimitException&)
+            catch (const Ice::MarshalException&)
             {
             }
 
@@ -609,13 +623,13 @@ allTests(Test::TestHelper* helper)
     Ice::Identity id = Ice::stringToIdentity("does not exist");
     try
     {
-        ThrowerPrx thrower2(thrower->ice_identity(id));
+        auto thrower2 = thrower->ice_identity<ThrowerPrx>(id);
         thrower2->throwAasA(1);
         test(false);
     }
     catch (const Ice::ObjectNotExistException& ex)
     {
-        test(ex.id == id);
+        test(ex.id() == id);
     }
     catch (...)
     {
@@ -628,7 +642,7 @@ allTests(Test::TestHelper* helper)
 
     try
     {
-        ThrowerPrx thrower2(thrower->ice_facet("no such facet"));
+        auto thrower2 = thrower->ice_facet<ThrowerPrx>("no such facet");
         try
         {
             thrower2->ice_ping();
@@ -636,7 +650,7 @@ allTests(Test::TestHelper* helper)
         }
         catch (const Ice::FacetNotExistException& ex)
         {
-            test(ex.facet == "no such facet");
+            test(ex.facet() == "no such facet");
         }
     }
     catch (...)
@@ -650,13 +664,13 @@ allTests(Test::TestHelper* helper)
 
     try
     {
-        WrongOperationPrx thrower2(thrower);
+        auto thrower2 = Ice::uncheckedCast<WrongOperationPrx>(thrower);
         thrower2->noSuchOperation();
         test(false);
     }
     catch (const Ice::OperationNotExistException& ex)
     {
-        test(ex.operation == "noSuchOperation");
+        test(ex.operation() == "noSuchOperation");
     }
     catch (...)
     {
@@ -963,7 +977,6 @@ allTests(Test::TestHelper* helper)
             catch (const Ice::Exception& ex)
             {
                 cout << ex << endl;
-                cout << ex.ice_stackTrace() << endl;
                 test(false);
             }
             catch (...)
@@ -1008,7 +1021,7 @@ allTests(Test::TestHelper* helper)
     cout << "catching object not exist exception with new AMI mapping... " << flush;
     {
         id = Ice::stringToIdentity("does not exist");
-        ThrowerPrx thrower2(thrower->ice_identity(id));
+        auto thrower2 = thrower->ice_identity<ThrowerPrx>(id);
         auto f = thrower2->throwAasAAsync(1);
         try
         {
@@ -1016,7 +1029,7 @@ allTests(Test::TestHelper* helper)
         }
         catch (const Ice::ObjectNotExistException& ex)
         {
-            test(ex.id == id);
+            test(ex.id() == id);
         }
         catch (...)
         {
@@ -1029,7 +1042,7 @@ allTests(Test::TestHelper* helper)
     cout << "catching facet not exist exception with new AMI mapping... " << flush;
 
     {
-        ThrowerPrx thrower2(thrower->ice_facet("no such facet"));
+        auto thrower2 = thrower->ice_facet<ThrowerPrx>("no such facet");
         auto f = thrower2->throwAasAAsync(1);
         try
         {
@@ -1037,7 +1050,7 @@ allTests(Test::TestHelper* helper)
         }
         catch (const Ice::FacetNotExistException& ex)
         {
-            test(ex.facet == "no such facet");
+            test(ex.facet() == "no such facet");
         }
     }
 
@@ -1046,7 +1059,7 @@ allTests(Test::TestHelper* helper)
     cout << "catching operation not exist exception with new AMI mapping... " << flush;
 
     {
-        WrongOperationPrx thrower4(thrower);
+        auto thrower4 = Ice::uncheckedCast<WrongOperationPrx>(thrower);
         auto f = thrower4->noSuchOperationAsync();
         try
         {
@@ -1054,7 +1067,7 @@ allTests(Test::TestHelper* helper)
         }
         catch (const Ice::OperationNotExistException& ex)
         {
-            test(ex.operation == "noSuchOperation");
+            test(ex.operation() == "noSuchOperation");
         }
         catch (...)
         {

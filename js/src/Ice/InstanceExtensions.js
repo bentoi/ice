@@ -3,7 +3,6 @@
 //
 
 import { Instance, StateDestroyInProgress, StateDestroyed } from "./Instance.js";
-import { ACMConfig } from "./ACM.js";
 import { AsyncResultBase } from "./AsyncResultBase.js";
 import { DefaultsAndOverrides } from "./DefaultsAndOverrides.js";
 import { EndpointFactoryManager } from "./EndpointFactoryManager.js";
@@ -12,22 +11,22 @@ import { LocatorManager } from "./LocatorManager.js";
 import { ObjectAdapterFactory } from "./ObjectAdapterFactory.js";
 import { OutgoingConnectionFactory } from "./OutgoingConnectionFactory.js";
 import { Properties } from "./Properties.js";
-import { ProxyFactory } from "./ProxyFactory.js";
-import { ReferenceFactory } from "./Reference.js";
-import { RequestHandlerFactory } from "./RequestHandlerFactory.js";
+import { ReferenceFactory } from "./ReferenceFactory.js";
 import { RetryQueue } from "./RetryQueue.js";
 import { RouterManager } from "./RouterManager.js";
 import { Timer } from "./Timer.js";
 import { TraceLevels } from "./TraceLevels.js";
 import { ValueFactoryManager } from "./ValueFactoryManager.js";
-import { LocalException } from "./Exception.js";
-import { CommunicatorDestroyedException, InitializationException } from "./LocalException.js";
+import { LocalException } from "./LocalException.js";
+import { CommunicatorDestroyedException, InitializationException } from "./LocalExceptions.js";
 import { getProcessLogger } from "./ProcessLogger.js";
 import { ToStringMode } from "./ToStringMode.js";
 import { ProtocolInstance } from "./ProtocolInstance.js";
 import { TcpEndpointFactory } from "./TcpEndpointFactory.js";
 import { WSEndpointFactory } from "./WSEndpointFactory.js";
 import { Promise } from "./Promise.js";
+import { ConnectionOptions } from "./ConnectionOptions.js";
+import { StringUtil } from "./StringUtil.js";
 
 import { Ice as Ice_Router } from "./Router.js";
 const { RouterPrx } = Ice_Router;
@@ -91,24 +90,6 @@ Instance.prototype.referenceFactory = function () {
     return this._referenceFactory;
 };
 
-Instance.prototype.requestHandlerFactory = function () {
-    if (this._state === StateDestroyed) {
-        throw new CommunicatorDestroyedException();
-    }
-
-    Debug.assert(this._requestHandlerFactory !== null);
-    return this._requestHandlerFactory;
-};
-
-Instance.prototype.proxyFactory = function () {
-    if (this._state === StateDestroyed) {
-        throw new CommunicatorDestroyedException();
-    }
-
-    Debug.assert(this._proxyFactory !== null);
-    return this._proxyFactory;
-};
-
 Instance.prototype.outgoingConnectionFactory = function () {
     if (this._state === StateDestroyed) {
         throw new CommunicatorDestroyedException();
@@ -164,9 +145,9 @@ Instance.prototype.batchAutoFlushSize = function () {
     return this._batchAutoFlushSize;
 };
 
-Instance.prototype.clientACM = function () {
+Instance.prototype.classGraphDepthMax = function () {
     // This value is immutable.
-    return this._clientACM;
+    return this._classGraphDepthMax;
 };
 
 Instance.prototype.toStringMode = function () {
@@ -208,6 +189,14 @@ Instance.prototype.finishSetup = function (communicator, promise) {
             this._initData.properties = Properties.createProperties();
         }
 
+        this._clientConnectionOptions = new ConnectionOptions(
+            this._initData.properties.getIcePropertyAsInt("Ice.Connection.ConnectTimeout"),
+            this._initData.properties.getIcePropertyAsInt("Ice.Connection.CloseTimeout"),
+            this._initData.properties.getIcePropertyAsInt("Ice.Connection.IdleTimeout"),
+            this._initData.properties.getIcePropertyAsInt("Ice.Connection.EnableIdleCheck") > 0,
+            this._initData.properties.getIcePropertyAsInt("Ice.Connection.InactivityTimeout"),
+        );
+
         if (_oneOfDone === undefined) {
             _printStackTraces = this._initData.properties.getPropertyAsIntWithDefault("Ice.PrintStackTraces", 0) > 0;
 
@@ -248,12 +237,12 @@ Instance.prototype.finishSetup = function (communicator, promise) {
             }
         }
 
-        this._clientACM = new ACMConfig(
-            this._initData.properties,
-            this._initData.logger,
-            "Ice.ACM.Client",
-            new ACMConfig(this._initData.properties, this._initData.logger, "Ice.ACM", new ACMConfig()),
-        );
+        num = this._initData.properties.getIcePropertyAsInt("Ice.ClassGraphDepthMax");
+        if (num < 1 || num > 0x7fffffff) {
+            this._classGraphDepthMax = 0x7fffffff;
+        } else {
+            this._classGraphDepthMax = num;
+        }
 
         const toStringModeStr = this._initData.properties.getPropertyWithDefault("Ice.ToStringMode", "Unicode");
         if (toStringModeStr === "ASCII") {
@@ -271,10 +260,6 @@ Instance.prototype.finishSetup = function (communicator, promise) {
         this._locatorManager = new LocatorManager(this._initData.properties);
 
         this._referenceFactory = new ReferenceFactory(this, communicator);
-
-        this._requestHandlerFactory = new RequestHandlerFactory(this, communicator);
-
-        this._proxyFactory = new ProxyFactory(this);
 
         this._endpointFactoryManager = new EndpointFactoryManager(this);
 
@@ -303,16 +288,42 @@ Instance.prototype.finishSetup = function (communicator, promise) {
         this._objectAdapterFactory = new ObjectAdapterFactory(this, communicator);
 
         this._retryQueue = new RetryQueue(this);
-        this._timer = new Timer(this._initData.logger);
+        const retryIntervals = this._initData.properties.getPropertyAsList("Ice.RetryIntervals");
+        if (retryIntervals.length > 0) {
+            this._retryIntervals = [];
 
-        const router = RouterPrx.uncheckedCast(this._proxyFactory.propertyToProxy("Ice.Default.Router"));
-        if (router !== null) {
-            this._referenceFactory = this._referenceFactory.setDefaultRouter(router);
+            for (let i = 0; i < retryIntervals.length; i++) {
+                let v;
+
+                try {
+                    v = StringUtil.toInt(retryIntervals[i]);
+                } catch (ex) {
+                    v = 0;
+                }
+
+                //
+                // If -1 is the first value, no retry and wait intervals.
+                //
+                if (i === 0 && v === -1) {
+                    break;
+                }
+
+                this._retryIntervals[i] = v > 0 ? v : 0;
+            }
+        } else {
+            this._retryIntervals = [0];
         }
 
-        const loc = LocatorPrx.uncheckedCast(this._proxyFactory.propertyToProxy("Ice.Default.Locator"));
+        this._timer = new Timer(this._initData.logger);
+
+        const router = communicator.propertyToProxy("Ice.Default.Router");
+        if (router !== null) {
+            this._referenceFactory = this._referenceFactory.setDefaultRouter(new RouterPrx(router));
+        }
+
+        const loc = communicator.propertyToProxy("Ice.Default.Locator");
         if (loc !== null) {
-            this._referenceFactory = this._referenceFactory.setDefaultLocator(loc);
+            this._referenceFactory = this._referenceFactory.setDefaultLocator(new LocatorPrx(loc));
         }
 
         if (promise !== null) {
@@ -334,9 +345,6 @@ Instance.prototype.finishSetup = function (communicator, promise) {
     }
 };
 
-//
-// Only for use by CommunicatorI
-//
 Instance.prototype.destroy = function () {
     const promise = new AsyncResultBase(null, "destroy", null, this, null);
 
@@ -386,7 +394,7 @@ Instance.prototype.destroy = function () {
             }
 
             if (this._objectFactoryMap !== null) {
-                this._objectFactoryMap.forEach((factory) => factory.destroy());
+                this._objectFactoryMap.forEach(factory => factory.destroy());
                 this._objectFactoryMap.clear();
             }
 
@@ -405,7 +413,7 @@ Instance.prototype.destroy = function () {
                 if (unusedProperties.length > 0) {
                     const message = [];
                     message.push("The following properties were set but never read:");
-                    unusedProperties.forEach((p) => message.push("\n    ", p));
+                    unusedProperties.forEach(p => message.push("\n    ", p));
                     this._initData.logger.warning(message.join(""));
                 }
             }
@@ -416,8 +424,6 @@ Instance.prototype.destroy = function () {
             this._timer = null;
 
             this._referenceFactory = null;
-            this._requestHandlerFactory = null;
-            this._proxyFactory = null;
             this._routerManager = null;
             this._locatorManager = null;
             this._endpointFactoryManager = null;
@@ -425,15 +431,22 @@ Instance.prototype.destroy = function () {
             this._state = StateDestroyed;
 
             if (this._destroyPromises) {
-                this._destroyPromises.forEach((p) => p.resolve());
+                this._destroyPromises.forEach(p => p.resolve());
             }
             promise.resolve();
         })
-        .catch((ex) => {
+        .catch(ex => {
             if (this._destroyPromises) {
-                this._destroyPromises.forEach((p) => p.reject(ex));
+                this._destroyPromises.forEach(p => p.reject(ex));
             }
             promise.reject(ex);
         });
     return promise;
 };
+
+Object.defineProperty(Instance.prototype, "clientConnectionOptions", {
+    get: function () {
+        return this._clientConnectionOptions;
+    },
+    enumerable: true,
+});

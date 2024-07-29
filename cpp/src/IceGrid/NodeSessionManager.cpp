@@ -33,7 +33,7 @@ optional<NodeSessionPrx>
 NodeSessionKeepAliveThread::createSession(InternalRegistryPrx& registry, chrono::seconds& timeout)
 {
     optional<NodeSessionPrx> session;
-    string exceptionMessage;
+    string exceptionDetails;
     auto traceLevels = _node->getTraceLevels();
     try
     {
@@ -52,7 +52,7 @@ NodeSessionKeepAliveThread::createSession(InternalRegistryPrx& registry, chrono:
             }
             catch (const Ice::LocalException& ex)
             {
-                exceptionMessage = ex.what();
+                exceptionDetails = ex.what();
                 used.insert(registry);
                 registry = registry->ice_endpoints(Ice::EndpointSeq());
             }
@@ -77,7 +77,7 @@ NodeSessionKeepAliveThread::createSession(InternalRegistryPrx& registry, chrono:
                 optional<InternalRegistryPrx> newRegistry;
                 try
                 {
-                    newRegistry = optional<InternalRegistryPrx>(result.get());
+                    newRegistry = Ice::uncheckedCast<InternalRegistryPrx>(result.get());
                     if (newRegistry && used.find(*newRegistry) == used.end())
                     {
                         session = createSessionImpl(*newRegistry, timeout);
@@ -87,7 +87,7 @@ NodeSessionKeepAliveThread::createSession(InternalRegistryPrx& registry, chrono:
                 }
                 catch (const Ice::LocalException& ex)
                 {
-                    exceptionMessage = ex.what();
+                    exceptionDetails = ex.what();
                     if (newRegistry)
                     {
                         used.insert(*newRegistry);
@@ -103,7 +103,7 @@ NodeSessionKeepAliveThread::createSession(InternalRegistryPrx& registry, chrono:
             traceLevels->logger->error(
                 "a node with the same name is already active with the replica `" + _replicaName + "'");
         }
-        exceptionMessage = ex.what();
+        exceptionDetails = ex.what();
     }
     catch (const PermissionDeniedException& ex)
     {
@@ -111,11 +111,11 @@ NodeSessionKeepAliveThread::createSession(InternalRegistryPrx& registry, chrono:
         {
             traceLevels->logger->error("connection to the registry `" + _replicaName + "' was denied:\n" + ex.reason);
         }
-        exceptionMessage = ex.what();
+        exceptionDetails = ex.what();
     }
     catch (const Ice::Exception& ex)
     {
-        exceptionMessage = ex.what();
+        exceptionDetails = ex.what();
     }
 
     if (session)
@@ -132,9 +132,9 @@ NodeSessionKeepAliveThread::createSession(InternalRegistryPrx& registry, chrono:
         {
             Ice::Trace out(traceLevels->logger, traceLevels->replicaCat);
             out << "failed to establish session with replica `" << _replicaName << "':\n";
-            if (!exceptionMessage.empty())
+            if (!exceptionDetails.empty())
             {
-                out << exceptionMessage;
+                out << exceptionDetails;
             }
             else
             {
@@ -628,7 +628,7 @@ NodeSessionManager::createdSession(const optional<NodeSessionPrx>& session)
                     prx = prx->ice_identity(id)->ice_endpoints(Ice::EndpointSeq());
 
                     id.name = "Locator";
-                    prx = prx->ice_locator(optional<Ice::LocatorPrx>(prx->ice_identity(id)));
+                    prx = prx->ice_locator(prx->ice_identity<Ice::LocatorPrx>(id));
 
                     proxies.insert({id, std::move(*prx)});
                 }
@@ -641,7 +641,7 @@ NodeSessionManager::createdSession(const optional<NodeSessionPrx>& session)
 
         for (const auto& prx : proxies)
         {
-            replicas.push_back(InternalRegistryPrx(prx.second));
+            replicas.push_back(Ice::uncheckedCast<InternalRegistryPrx>(prx.second));
         }
     }
 

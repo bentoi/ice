@@ -10,7 +10,7 @@ import {
     ConnectionRefusedException,
     ConnectFailedException,
     SocketException,
-} from "./LocalException.js";
+} from "./LocalExceptions.js";
 import { Debug } from "./Debug.js";
 import net from "net";
 
@@ -55,7 +55,7 @@ if (typeof net.createConnection === "function") {
                     });
 
                     this._fd.on("connect", () => this.socketConnected());
-                    this._fd.on("data", (buf) => this.socketBytesAvailable(buf));
+                    this._fd.on("data", buf => this.socketBytesAvailable(buf));
 
                     //
                     // The error callback can be triggered from the socket
@@ -64,8 +64,8 @@ if (typeof net.createConnection === "function") {
                     // setImmediate. We do the same for close as a
                     // precaution. See also issue #6226.
                     //
-                    this._fd.on("close", (err) => Timer.setImmediate(() => this.socketClosed(err)));
-                    this._fd.on("error", (err) => Timer.setImmediate(() => this.socketError(err)));
+                    this._fd.on("close", err => Timer.setImmediate(() => this.socketClosed(err)));
+                    this._fd.on("error", err => Timer.setImmediate(() => this.socketError(err)));
 
                     return SocketOperation.Connect; // Waiting for connect to complete.
                 } else if (this._state === StateConnectPending) {
@@ -232,8 +232,6 @@ if (typeof net.createConnection === "function") {
             return info;
         }
 
-        checkSendSize(stream) {}
-
         setBufferSize(rcvSize, sndSize) {
             this._maxSendPacketSize = sndSize;
         }
@@ -321,14 +319,14 @@ if (typeof net.createConnection === "function") {
             return new ConnectionLostException();
         } else if (state < StateConnected) {
             if (connectionRefused(err.code)) {
-                return new ConnectionRefusedException(err.code, err);
+                return new ConnectionRefusedException("connection refused", { cause: err });
             } else if (connectionFailed(err.code)) {
-                return new ConnectFailedException(err.code, err);
+                return new ConnectFailedException("connect failed", { cause: err });
             }
         } else if (connectionLost(err.code)) {
-            return new ConnectionLostException(err.code, err);
+            return new ConnectionLostException("connection lost", { cause: err });
         }
-        return new SocketException(err.code, err);
+        return new SocketException("socket exception", { cause: err });
     }
 
     function addressesToString(localHost, localPort, remoteHost, remotePort, targetAddr) {

@@ -9,13 +9,11 @@ const { Identity } = Ice_Identity;
 import { generateUUID } from "./UUID.js";
 import {
     AlreadyRegisteredException,
-    IllegalServantException,
     FeatureNotSupportedException,
     InitializationException,
-    IllegalIdentityException,
     ObjectAdapterDeactivatedException,
-    ProxyParseException,
-} from "./LocalException.js";
+    ParseException,
+} from "./LocalExceptions.js";
 import { Ice as Ice_Router } from "./Router.js";
 const { RouterPrx } = Ice_Router;
 import { Promise } from "./Promise.js";
@@ -23,8 +21,9 @@ import { PropertyNames } from "./PropertyNames.js";
 import { ServantManager } from "./ServantManager.js";
 import { StringUtil } from "./StringUtil.js";
 import { Timer } from "./Timer.js";
-import { identityToString } from "./IdentityUtil.js";
+import { identityToString } from "./IdentityToString.js";
 import { Debug } from "./Debug.js";
+import { ObjectPrx } from "./ObjectPrx.js";
 
 const _suffixes = [
     "ACM",
@@ -103,7 +102,7 @@ export class ObjectAdapter {
         //
         if (unknownProps.length !== 0 && properties.getPropertyAsIntWithDefault("Ice.Warn.UnknownProperties", 1) > 0) {
             const message = ["found unknown properties for object adapter `" + name + "':"];
-            unknownProps.forEach((unknownProp) => message.push("\n    " + unknownProp));
+            unknownProps.forEach(unknownProp => message.push("\n    " + unknownProp));
             this._instance.initializationData().logger.warning(message.join(""));
         }
 
@@ -111,7 +110,7 @@ export class ObjectAdapter {
         // Make sure named adapter has some configuration.
         //
         if (router === null && noProps) {
-            throw new InitializationException(`object adapter \`${this._name}' requires configuration`);
+            throw new InitializationException(`object adapter '${this._name}' requires configuration`);
         }
 
         //
@@ -121,13 +120,14 @@ export class ObjectAdapter {
         const proxyOptions = properties.getPropertyWithDefault(this._name + ".ProxyOptions", "-t");
         try {
             this._reference = this._instance.referenceFactory().createFromString("dummy " + proxyOptions, "");
-        } catch (e) {
-            if (e instanceof ProxyParseException) {
+        } catch (ex) {
+            if (ex instanceof ParseException) {
                 throw new InitializationException(
-                    `invalid proxy options \`${proxyOptions}' for object adapter \`${name}'`,
+                    `invalid proxy options '${proxyOptions}' for object adapter '${name}'`,
+                    { cause: ex },
                 );
             } else {
-                throw e;
+                throw ex;
             }
         }
 
@@ -142,8 +142,8 @@ export class ObjectAdapter {
         }
 
         try {
-            if (router === null) {
-                router = RouterPrx.uncheckedCast(this._instance.proxyFactory().propertyToProxy(this._name + ".Router"));
+            if (router === null && properties.getProperty(this._name + ".Router").length > 0) {
+                router = new RouterPrx(communicator.propertyToProxy(this._name + ".Router"));
             }
             let p;
             if (router !== null) {
@@ -182,11 +182,11 @@ export class ObjectAdapter {
             }
 
             p.then(() => this.computePublishedEndpoints()).then(
-                (endpoints) => {
+                endpoints => {
                     this._publishedEndpoints = endpoints;
                     promise.resolve(this);
                 },
-                (ex) => {
+                ex => {
                     this.destroy();
                     promise.reject(ex);
                 },
@@ -198,9 +198,6 @@ export class ObjectAdapter {
     }
 
     getName() {
-        //
-        // No mutex lock necessary, _name is immutable.
-        //
         return this._noConfig ? "" : this._name;
     }
 
@@ -272,8 +269,8 @@ export class ObjectAdapter {
 
     addFacet(object, ident, facet) {
         this.checkForDeactivation();
-        this.checkIdentity(ident);
-        this.checkServant(object);
+        ObjectAdapter.checkIdentity(ident);
+        ObjectAdapter.checkServant(object);
 
         //
         // Create a copy of the Identity argument, in case the caller
@@ -295,7 +292,7 @@ export class ObjectAdapter {
     }
 
     addDefaultServant(servant, category) {
-        this.checkServant(servant);
+        ObjectAdapter.checkServant(servant);
         this.checkForDeactivation();
 
         this._servantManager.addDefaultServant(servant, category);
@@ -307,14 +304,14 @@ export class ObjectAdapter {
 
     removeFacet(ident, facet) {
         this.checkForDeactivation();
-        this.checkIdentity(ident);
+        ObjectAdapter.checkIdentity(ident);
 
         return this._servantManager.removeServant(ident, facet);
     }
 
     removeAllFacets(ident) {
         this.checkForDeactivation();
-        this.checkIdentity(ident);
+        ObjectAdapter.checkIdentity(ident);
 
         return this._servantManager.removeAllFacets(ident);
     }
@@ -331,13 +328,13 @@ export class ObjectAdapter {
 
     findFacet(ident, facet) {
         this.checkForDeactivation();
-        this.checkIdentity(ident);
+        ObjectAdapter.checkIdentity(ident);
         return this._servantManager.findServant(ident, facet);
     }
 
     findAllFacets(ident) {
         this.checkForDeactivation();
-        this.checkIdentity(ident);
+        ObjectAdapter.checkIdentity(ident);
         return this._servantManager.findAllFacets(ident);
     }
 
@@ -369,7 +366,7 @@ export class ObjectAdapter {
 
     createProxy(ident) {
         this.checkForDeactivation();
-        this.checkIdentity(ident);
+        ObjectAdapter.checkIdentity(ident);
         return this.newProxy(ident, "");
     }
 
@@ -391,7 +388,7 @@ export class ObjectAdapter {
 
     refreshPublishedEndpoints() {
         this.checkForDeactivation();
-        return this.computePublishedEndpoints().then((endpoints) => {
+        return this.computePublishedEndpoints().then(endpoints => {
             this._publishedEndpoints = endpoints;
         });
     }
@@ -433,24 +430,21 @@ export class ObjectAdapter {
         //
         // Create a reference and return a proxy for this reference.
         //
-        return this._instance
-            .proxyFactory()
-            .referenceToProxy(
-                this._instance.referenceFactory().create(ident, facet, this._reference, this._publishedEndpoints),
-            );
+        const reference = this._instance
+            .referenceFactory()
+            .create(ident, facet, this._reference, this._publishedEndpoints);
+        return new ObjectPrx(reference);
     }
 
     checkForDeactivation() {
         if (this._state >= StateDeactivated) {
-            const ex = new ObjectAdapterDeactivatedException();
-            ex.name = this.getName();
-            throw ex;
+            throw new ObjectAdapterDeactivatedException(this.getName());
         }
     }
 
-    checkIdentity(ident) {
+    static checkIdentity(ident) {
         if (ident.name === undefined || ident.name === null || ident.name.length === 0) {
-            throw new IllegalIdentityException();
+            throw new TypeError("The name of an Ice object identity cannot be empty.");
         }
 
         if (ident.category === undefined || ident.category === null) {
@@ -458,22 +452,22 @@ export class ObjectAdapter {
         }
     }
 
-    checkServant(servant) {
+    static checkServant(servant) {
         if (servant === undefined || servant === null) {
-            throw new IllegalServantException("cannot add null servant to Object Adapter");
+            throw new TypeError("cannot add null servant to Object Adapter");
         }
     }
 
     computePublishedEndpoints() {
         let p;
         if (this._routerInfo !== null) {
-            p = this._routerInfo.getServerEndpoints().then((endpts) => {
+            p = this._routerInfo.getServerEndpoints().then(endpts => {
                 //
                 // Remove duplicate endpoints, so we have a list of unique endpoints.
                 //
                 const endpoints = [];
-                endpts.forEach((endpoint) => {
-                    if (endpoints.findIndex((value) => endpoint.equals(value)) === -1) {
+                endpts.forEach(endpoint => {
+                    if (endpoints.findIndex(value => endpoint.equals(value)) === -1) {
                         endpoints.push(endpoint);
                     }
                 });
@@ -494,7 +488,7 @@ export class ObjectAdapter {
                 beg = StringUtil.findFirstNotOf(s, delim, end);
                 if (beg === -1) {
                     if (s != "") {
-                        throw new EndpointParseException("invalid empty object adapter endpoint");
+                        throw new ParseException("invalid empty object adapter endpoint");
                     }
                     break;
                 }
@@ -533,7 +527,7 @@ export class ObjectAdapter {
                 const es = s.substring(beg, end);
                 const endp = this._instance.endpointFactoryManager().create(es, false);
                 if (endp === null) {
-                    throw new EndpointParseException("invalid object adapter endpoint `" + s + "'");
+                    throw new ParseException(`invalid object adapter endpoint '${s}'`);
                 }
                 endpoints.push(endp);
             }
@@ -541,14 +535,14 @@ export class ObjectAdapter {
             p = Promise.resolve(endpoints);
         }
 
-        return p.then((endpoints) => {
+        return p.then(endpoints => {
             if (this._instance.traceLevels().network >= 1 && endpoints.length > 0) {
                 const s = [];
                 s.push("published endpoints for object adapter `");
                 s.push(this._name);
                 s.push("':\n");
                 let first = true;
-                endpoints.forEach((endpoint) => {
+                endpoints.forEach(endpoint => {
                     if (!first) {
                         s.push(":");
                     }
@@ -567,8 +561,8 @@ export class ObjectAdapter {
         //
         let addUnknown = true;
         const prefix = this._name + ".";
-        for (let i = 0; i < PropertyNames.clPropNames.length; ++i) {
-            if (prefix.indexOf(PropertyNames.clPropNames[i] + ".") === 0) {
+        for (const validPrefix of PropertyNames.validProps.keys()) {
+            if (prefix.indexOf(`${validPrefix}.`) === 0) {
                 addUnknown = false;
                 break;
             }
@@ -601,14 +595,14 @@ export class ObjectAdapter {
         this._state = state;
 
         let promises = [];
-        (state < StateDeactivated ? [state] : [StateHeld, StateDeactivated]).forEach((s) => {
+        (state < StateDeactivated ? [state] : [StateHeld, StateDeactivated]).forEach(s => {
             if (this._statePromises[s]) {
                 promises = promises.concat(this._statePromises[s]);
                 delete this._statePromises[s];
             }
         });
         if (promises.length > 0) {
-            Timer.setImmediate(() => promises.forEach((p) => p.resolve()));
+            Timer.setImmediate(() => promises.forEach(p => p.resolve()));
         }
     }
 

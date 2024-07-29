@@ -84,7 +84,8 @@ allTests(Test::TestHelper* helper)
                 // The bridge forwards the CloseConnectionException from the server as an
                 // UnknownLocalException. It eventually closes the connection when notified
                 // of the connection close.
-                test(ex.unknown.find("CloseConnectionException") != string::npos);
+                string message{ex.what()};
+                test(message.find("::Ice::CloseConnectionException") != string::npos);
             }
             this_thread::sleep_for(1ms);
         }
@@ -196,15 +197,13 @@ allTests(Test::TestHelper* helper)
     }
     cout << "ok" << endl;
 
-    // TODO: add heartbeat test
-
     cout << "testing server shutdown... " << flush;
     cl->shutdown();
     cout << "ok" << endl;
 
     cout << "testing bridge shutdown... " << flush;
     Ice::ObjectPrx admin(communicator, "IceBridge/admin:" + helper->getTestEndpoint(2, "tcp"));
-    Ice::ProcessPrx process(admin->ice_facet("Process"));
+    auto process = admin->ice_facet<Ice::ProcessPrx>("Process");
     process->shutdown();
     cout << "ok" << endl;
 }

@@ -4,7 +4,7 @@
 
 #include "Subscriber.h"
 #include "Ice/LoggerUtil.h"
-#include "IceUtil/StringUtil.h"
+#include "Ice/StringUtil.h"
 #include "Instance.h"
 #include "NodeI.h"
 #include "SendQueueSizeMaxReached.h"
@@ -303,7 +303,7 @@ namespace
 {
     SubscriberLink::SubscriberLink(const shared_ptr<Instance>& instance, const SubscriberRecord& rec)
         : Subscriber(instance, rec, nullopt, -1, 1),
-          _obj(TopicLinkPrx(rec.obj->ice_collocationOptimized(false)->ice_invocationTimeout(
+          _obj(Ice::uncheckedCast<TopicLinkPrx>(rec.obj->ice_collocationOptimized(false)->ice_invocationTimeout(
               static_cast<int>(instance->sendTimeout().count()))))
     {
     }
@@ -426,7 +426,7 @@ Subscriber::create(const shared_ptr<Instance>& instance, const SubscriberRecord&
             p = rec.theQoS.find("locatorCacheTimeout");
             if (p != rec.theQoS.end())
             {
-                istringstream is(IceUtilInternal::trim(p->second));
+                istringstream is(IceInternal::trim(p->second));
                 int locatorCacheTimeout;
                 if (!(is >> locatorCacheTimeout) || !is.eof())
                 {
@@ -438,7 +438,7 @@ Subscriber::create(const shared_ptr<Instance>& instance, const SubscriberRecord&
             p = rec.theQoS.find("connectionCached");
             if (p != rec.theQoS.end())
             {
-                istringstream is(IceUtilInternal::trim(p->second));
+                istringstream is(IceInternal::trim(p->second));
                 int connectionCached;
                 if (!(is >> connectionCached) || !is.eof())
                 {
@@ -543,7 +543,10 @@ Subscriber::queue(bool forwarded, const EventDataSeq& events)
                 {
                     if (_instance->sendQueueSizeMaxPolicy() == Instance::RemoveSubscriber)
                     {
-                        error(false, make_exception_ptr(SendQueueSizeMaxReached(__FILE__, __LINE__)));
+                        error(
+                            false,
+                            make_exception_ptr(
+                                SendQueueSizeMaxReached{__FILE__, __LINE__, "send queue size max reached"}));
                         return false;
                     }
                     else // DropEvents

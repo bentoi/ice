@@ -199,7 +199,8 @@ public final class Current implements Cloneable {
 
     ReplyStatus replyStatus;
     String exceptionId;
-    String exceptionMessage;
+    String exceptionDetails = null;
+    String unknownExceptionMessage = null;
 
     // TODO: replace by switch statement with Java 21
     if (exc instanceof RequestFailedException rfe) {
@@ -215,26 +216,26 @@ public final class Current implements Cloneable {
         throw new MarshalException("Unexpected exception type");
       }
 
-      if (rfe.id.name.length() == 0) {
+      if (rfe.id.name.isEmpty()) {
         rfe.id = id;
       }
 
-      if (rfe.facet.length() == 0 && facet.length() > 0) {
+      if (rfe.facet.isEmpty() && !facet.isEmpty()) {
         rfe.facet = facet;
       }
 
-      if (rfe.operation.length() == 0 && operation.length() > 0) {
+      if (rfe.operation.isEmpty() && !operation.isEmpty()) {
         rfe.operation = operation;
       }
 
       // Called after fixing id, facet and operation.
-      exceptionMessage = rfe.toString();
+      exceptionDetails = rfe.toString();
 
       if (requestId != 0) {
         ostr.writeByte(replyStatus.value());
         Identity.ice_write(ostr, rfe.id);
 
-        if (rfe.facet.length() == 0) {
+        if (rfe.facet.isEmpty()) {
           ostr.writeStringSeq(new String[] {});
         } else {
           ostr.writeStringSeq(new String[] {rfe.facet});
@@ -244,7 +245,7 @@ public final class Current implements Cloneable {
       }
     } else if (exc instanceof UserException ex) {
       exceptionId = ex.ice_id();
-      exceptionMessage = ex.toString();
+      exceptionDetails = ex.toString();
 
       replyStatus = ReplyStatus.UserException;
 
@@ -257,28 +258,27 @@ public final class Current implements Cloneable {
     } else if (exc instanceof UnknownLocalException ex) {
       exceptionId = ex.ice_id();
       replyStatus = ReplyStatus.UnknownLocalException;
-      exceptionMessage = ex.unknown;
+      unknownExceptionMessage = ex.unknown;
     } else if (exc instanceof UnknownUserException ex) {
       exceptionId = ex.ice_id();
       replyStatus = ReplyStatus.UnknownUserException;
-      exceptionMessage = ex.unknown;
+      unknownExceptionMessage = ex.unknown;
     } else if (exc instanceof UnknownException ex) {
       exceptionId = ex.ice_id();
       replyStatus = ReplyStatus.UnknownException;
-      exceptionMessage = ex.unknown;
+      unknownExceptionMessage = ex.unknown;
     } else if (exc instanceof LocalException ex) {
       exceptionId = ex.ice_id();
       replyStatus = ReplyStatus.UnknownLocalException;
-      exceptionMessage = ex.toString();
+
     } else if (exc instanceof com.zeroc.Ice.Exception ex) {
       exceptionId = ex.ice_id();
       replyStatus = ReplyStatus.UnknownException;
-      exceptionMessage = ex.toString();
+
     } else {
       replyStatus = ReplyStatus.UnknownException;
       exceptionId =
           exc.getClass().getName() != null ? exc.getClass().getName() : "java.lang.Exception";
-      exceptionMessage = exc.toString();
     }
 
     if (requestId != 0
@@ -286,10 +286,17 @@ public final class Current implements Cloneable {
             || replyStatus == ReplyStatus.UnknownLocalException
             || replyStatus == ReplyStatus.UnknownException)) {
       ostr.writeByte(replyStatus.value());
-      ostr.writeString(exceptionMessage);
+      if (unknownExceptionMessage == null) {
+        unknownExceptionMessage = "Dispatch failed with " + exceptionId + ": " + exc.getMessage();
+      }
+      ostr.writeString(unknownExceptionMessage);
     }
 
-    return new OutgoingResponse(replyStatus, exceptionId, exceptionMessage, ostr);
+    if (exceptionDetails == null) {
+      exceptionDetails = exc.toString();
+    }
+
+    return new OutgoingResponse(replyStatus, exceptionId, exceptionDetails, ostr);
   }
 
   /**

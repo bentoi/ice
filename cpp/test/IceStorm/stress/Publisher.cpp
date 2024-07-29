@@ -2,10 +2,10 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
+#include "../../src/Ice/Options.h"
 #include "Event.h"
 #include "Ice/Ice.h"
 #include "IceStorm/IceStorm.h"
-#include "IceUtil/Options.h"
 #include "TestHelper.h"
 
 #include <stdexcept>
@@ -26,8 +26,8 @@ void
 Publisher::run(int argc, char** argv)
 {
     Ice::CommunicatorHolder communicator = initialize(argc, argv);
-    IceUtilInternal::Options opts;
-    opts.addOpt("", "events", IceUtilInternal::Options::NeedArg);
+    IceInternal::Options opts;
+    opts.addOpt("", "events", IceInternal::Options::NeedArg);
     opts.addOpt("", "oneway");
     opts.addOpt("", "maxQueueTest");
 
@@ -35,10 +35,10 @@ Publisher::run(int argc, char** argv)
     {
         opts.parse(argc, (const char**)argv);
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
         ostringstream os;
-        os << argv[0] << ": error: " << e.reason;
+        os << argv[0] << ": error: " << e.what();
         throw invalid_argument(os.str());
     }
 
@@ -78,7 +78,7 @@ Publisher::run(int argc, char** argv)
 
     auto topic = manager->retrieve("fed1");
 
-    auto twowayProxy = EventPrx(topic->getPublisher()->ice_twoway());
+    auto twowayProxy = uncheckedCast<EventPrx>(topic->getPublisher()->ice_twoway());
     EventPrx proxy = oneway ? twowayProxy->ice_oneway() : twowayProxy;
 
     for (int i = 0; i < events; ++i)

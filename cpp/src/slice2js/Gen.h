@@ -13,7 +13,7 @@ namespace Slice
     {
     public:
         JsVisitor(
-            ::IceUtilInternal::Output&,
+            ::IceInternal::Output&,
             const std::vector<std::pair<std::string, std::string>>& imports =
                 std::vector<std::pair<std::string, std::string>>());
         virtual ~JsVisitor();
@@ -21,9 +21,9 @@ namespace Slice
         std::vector<std::pair<std::string, std::string>> imports() const;
 
     protected:
-        void writeMarshalDataMembers(const DataMemberList&, const DataMemberList&);
-        void writeUnmarshalDataMembers(const DataMemberList&, const DataMemberList&);
-        void writeInitDataMembers(const DataMemberList&);
+        void writeMarshalDataMembers(const DataMemberList&, const DataMemberList&, const ContainedPtr&);
+        void writeUnmarshalDataMembers(const DataMemberList&, const DataMemberList&, const ContainedPtr&);
+        void writeInitDataMembers(const DataMemberList&, const ContainedPtr&);
 
         std::string getValue(const std::string&, const TypePtr&);
 
@@ -33,7 +33,7 @@ namespace Slice
         static StringList splitComment(const ContainedPtr&);
         void writeDocCommentFor(const ContainedPtr&);
 
-        ::IceUtilInternal::Output& _out;
+        ::IceInternal::Output& _out;
 
         std::vector<std::pair<std::string, std::string>> _imports;
     };
@@ -50,8 +50,8 @@ namespace Slice
         void generate(const UnitPtr&);
 
     private:
-        IceUtilInternal::Output _jsout;
-        IceUtilInternal::Output _tsout;
+        IceInternal::Output _javaScriptOutput;
+        IceInternal::Output _typeScriptOutput;
 
         std::vector<std::string> _includePaths;
         std::string _fileBase;
@@ -61,7 +61,7 @@ namespace Slice
         class ImportVisitor final : public JsVisitor
         {
         public:
-            ImportVisitor(::IceUtilInternal::Output&, std::vector<std::string>, bool);
+            ImportVisitor(::IceInternal::Output&, std::vector<std::string>);
 
             bool visitClassDefStart(const ClassDefPtr&) final;
             bool visitInterfaceDefStart(const InterfaceDefPtr&) final;
@@ -76,7 +76,6 @@ namespace Slice
             std::set<std::string> writeImports(const UnitPtr&);
 
         private:
-            bool _icejs;
             bool _seenClass;
             bool _seenInterface;
             bool _seenCompactId;
@@ -96,7 +95,7 @@ namespace Slice
         class ExportsVisitor final : public JsVisitor
         {
         public:
-            ExportsVisitor(::IceUtilInternal::Output&, std::set<std::string>);
+            ExportsVisitor(::IceInternal::Output&, std::set<std::string>);
 
             bool visitModuleStart(const ModulePtr&) final;
 
@@ -112,7 +111,7 @@ namespace Slice
         class TypesVisitor final : public JsVisitor
         {
         public:
-            TypesVisitor(::IceUtilInternal::Output&);
+            TypesVisitor(::IceInternal::Output&);
 
             bool visitClassDefStart(const ClassDefPtr&) final;
             bool visitInterfaceDefStart(const InterfaceDefPtr&) final;
@@ -130,9 +129,9 @@ namespace Slice
         class TypeScriptImportVisitor final : public JsVisitor
         {
         public:
-            TypeScriptImportVisitor(::IceUtilInternal::Output&, bool);
+            TypeScriptImportVisitor(::IceInternal::Output&);
 
-            bool visitModuleStart(const ModulePtr&) final;
+            bool visitUnitStart(const UnitPtr&) final;
             bool visitClassDefStart(const ClassDefPtr&) final;
             bool visitInterfaceDefStart(const InterfaceDefPtr&) final;
             bool visitStructStart(const StructPtr&) final;
@@ -140,43 +139,29 @@ namespace Slice
             void visitSequence(const SequencePtr&) final;
             void visitDictionary(const DictionaryPtr&) final;
 
-        private:
-            void addImport(const TypePtr&, const ContainedPtr&);
-            void addImport(const ContainedPtr&, const ContainedPtr&);
-            void addImport(const std::string&, const std::string&, const std::string&, const std::string&);
-
-            std::string nextImportPrefix();
-
-            bool _icejs;
-            int _nextImport;
-        };
-
-        class TypeScriptAliasVisitor final : public JsVisitor
-        {
-        public:
-            TypeScriptAliasVisitor(::IceUtilInternal::Output&);
-
-            bool visitClassDefStart(const ClassDefPtr&) final;
-            bool visitInterfaceDefStart(const InterfaceDefPtr&) final;
-            bool visitStructStart(const StructPtr&) final;
-            bool visitExceptionStart(const ExceptionPtr&) final;
-            void visitSequence(const SequencePtr&) final;
-            void visitDictionary(const DictionaryPtr&) final;
-
-            void writeAlias(const UnitPtr&);
+            // Emit the import statements for the given unit and return a map of the imported types per module.
+            std::map<std::string, std::string> writeImports();
 
         private:
-            void addAlias(const ExceptionPtr&, const ContainedPtr&);
-            void addAlias(const TypePtr&, const ContainedPtr&);
-            void addAlias(const std::string&, const std::string&, const ContainedPtr&);
-            std::vector<std::pair<std::string, std::string>> _aliases;
+            void addImport(const ContainedPtr&);
+
+            // All modules imported by the current unit.
+            std::set<std::string> _importedModules;
+            // A map of imported types to their module name.
+            std::map<std::string, std::string> _importedTypes;
+            // The module name of the current unit.
+            std::string _module;
+            // The filename of the current unit.
+            std::string _filename;
         };
 
         class TypeScriptVisitor final : public JsVisitor
         {
         public:
-            TypeScriptVisitor(::IceUtilInternal::Output&, const std::vector<std::pair<std::string, std::string>>&);
+            TypeScriptVisitor(::IceInternal::Output&, std::map<std::string, std::string>);
 
+            bool visitUnitStart(const UnitPtr&) final;
+            void visitUnitEnd(const UnitPtr&) final;
             bool visitModuleStart(const ModulePtr&) final;
             void visitModuleEnd(const ModulePtr&) final;
             bool visitClassDefStart(const ClassDefPtr&) final;
@@ -189,8 +174,17 @@ namespace Slice
             void visitConst(const ConstPtr&) final;
 
         private:
-            void writeImports();
-            bool _wroteImports;
+            std::string importPrefix(const std::string&) const;
+            std::string
+            typeToTsString(const TypePtr&, bool nullable = false, bool forParameter = false, bool optional = false)
+                const;
+
+            // The module name of the current unit.
+            std::string _module;
+            // The import prefix for the "ice" module either empty string when building Ice or "__module_ice."
+            std::string _iceImportPrefix;
+            // A map of imported types to their module name.
+            std::map<std::string, std::string> _importedTypes;
         };
     };
 }

@@ -9,6 +9,8 @@
 #include "ConnectionF.h"
 #include "EndpointF.h"
 #include "Ice/Identity.h"
+#include "Ice/Proxy.h"
+#include "Ice/ProxyFunctions.h"
 #include "ObjectAdapterF.h"
 
 #include <future>
@@ -25,8 +27,6 @@
 
 namespace Ice
 {
-    class ObjectPrx;
-
     /**
      * The batch compression option when flushing queued batch requests.
      */
@@ -135,12 +135,6 @@ namespace Ice
     using CloseCallback = std::function<void(const ConnectionPtr& con)>;
 
     /**
-     * This method is called by the connection when a heartbeat is received from the peer.
-     * @param con The connection on which a heartbeat was received.
-     */
-    using HeartbeatCallback = std::function<void(const ConnectionPtr& con)>;
-
-    /**
      * The user-level interface to a connection.
      * \headerfile Ice/Ice.h
      */
@@ -164,7 +158,11 @@ namespace Ice
          * @return A proxy that matches the given identity and uses this connection.
          * @see #setAdapter
          */
-        virtual ObjectPrx createProxy(const Identity& id) const = 0;
+        template<typename Prx = ObjectPrx, std::enable_if_t<std::is_base_of<ObjectPrx, Prx>::value, bool> = true>
+        Prx createProxy(const Identity& id) const
+        {
+            return uncheckedCast<Prx>(_createProxy(id));
+        }
 
         /**
          * Explicitly set an object adapter that dispatches requests that are received over this connection. A client
@@ -232,33 +230,6 @@ namespace Ice
         virtual void setCloseCallback(CloseCallback callback) = 0;
 
         /**
-         * Set a heartbeat callback on the connection. The callback is called by the connection when a heartbeat is
-         * received. The callback is called from the Ice thread pool associated with the connection.
-         * @param callback The heartbeat callback object.
-         */
-        virtual void setHeartbeatCallback(HeartbeatCallback callback) = 0;
-
-        /**
-         * Send a heartbeat message.
-         */
-        void heartbeat();
-
-        /**
-         * Send a heartbeat message.
-         * @param exception The exception callback.
-         * @param sent The sent callback.
-         * @return A function that can be called to cancel the invocation locally.
-         */
-        virtual std::function<void()>
-        heartbeatAsync(std::function<void(std::exception_ptr)> exception, std::function<void(bool)> sent = nullptr) = 0;
-
-        /**
-         * Send a heartbeat message.
-         * @return The future object for the invocation.
-         */
-        std::future<void> heartbeatAsync();
-
-        /**
          * Return the connection type. This corresponds to the endpoint type, i.e., "tcp", "udp", etc.
          * @return The type of the connection.
          */
@@ -285,11 +256,14 @@ namespace Ice
 
         /**
          * Throw an exception indicating the reason for connection closure. For example,
-         * {@link CloseConnectionException} is raised if the connection was closed gracefully, whereas
-         * {@link ConnectionManuallyClosedException} is raised if the connection was manually closed by
-         * the application. This operation does nothing if the connection is not yet closed.
+         * {@link CloseConnectionException} is raised if the connection was closed gracefully by the peer, whereas
+         * {@link ConnectionAbortedException} or {@link ConnectionClosedException} is raised if the connection was
+         * manually closed by the application. This operation does nothing if the connection is not yet closed.
          */
         virtual void throwException() const = 0;
+
+    protected:
+        virtual ObjectPrx _createProxy(const Identity& id) const = 0;
     };
 
     /**

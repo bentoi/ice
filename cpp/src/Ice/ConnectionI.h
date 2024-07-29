@@ -22,8 +22,7 @@
 #include "Ice/OutgoingAsync.h"
 #include "Ice/OutgoingResponse.h"
 #include "Ice/OutputStream.h"
-#include "IceUtil/StopWatch.h"
-#include "IceUtil/Timer.h"
+#include "Ice/Timer.h"
 #include "RequestHandler.h"
 #include "TraceLevelsF.h"
 #include "TransceiverF.h"
@@ -174,20 +173,16 @@ namespace Ice
             std::function<void(bool)> = nullptr) final;
 
         void setCloseCallback(CloseCallback) final;
-        void setHeartbeatCallback(HeartbeatCallback) final;
-
-        std::function<void()>
-            heartbeatAsync(std::function<void(std::exception_ptr)>, std::function<void(bool)> = nullptr) final;
 
         void asyncRequestCanceled(const IceInternal::OutgoingAsyncBasePtr&, std::exception_ptr) final;
 
         IceInternal::EndpointIPtr endpoint() const;
         IceInternal::ConnectorPtr connector() const;
 
-        void setAdapter(const ObjectAdapterPtr&) final;           // From Connection.
-        ObjectAdapterPtr getAdapter() const noexcept final;       // From Connection.
-        EndpointPtr getEndpoint() const noexcept final;           // From Connection.
-        ObjectPrx createProxy(const Identity& ident) const final; // From Connection.
+        void setAdapter(const ObjectAdapterPtr&) final;            // From Connection.
+        ObjectAdapterPtr getAdapter() const noexcept final;        // From Connection.
+        EndpointPtr getEndpoint() const noexcept final;            // From Connection.
+        ObjectPrx _createProxy(const Identity& ident) const final; // From Connection.
 
         void setAdapterFromAdapter(const ObjectAdapterIPtr&); // From ObjectAdapterI.
 
@@ -223,13 +218,12 @@ namespace Ice
 
         void closeCallback(const CloseCallback&);
 
-        /// Aborts the connection with a ConnectionIdleException unless any of the following is true:
+        /// Aborts the connection with a ConnectionAbortedException unless any of the following is true:
         /// - the connection is no longer active
         /// - its transceiver is waiting to be read
         /// - the idle check timer task has been rescheduled by a concurrent read
         /// In the two latter cases, this function reschedules the idle check timer task in idle timeout.
-        void
-        idleCheck(const IceUtil::TimerTaskPtr& idleCheckTimerTask, const std::chrono::seconds& idleTimeout) noexcept;
+        void idleCheck(const Ice::TimerTaskPtr& idleCheckTimerTask, const std::chrono::seconds& idleTimeout) noexcept;
 
         /// Shuts down the connection gracefully if it's at rest when this function is called.
         void inactivityCheck() noexcept;
@@ -291,8 +285,21 @@ namespace Ice
 
         bool initialize(IceInternal::SocketOperation = IceInternal::SocketOperationNone);
         bool validate(IceInternal::SocketOperation = IceInternal::SocketOperationNone);
-        IceInternal::SocketOperation sendNextMessages(std::vector<OutgoingMessage>&);
-        IceInternal::AsyncStatus sendMessage(OutgoingMessage&);
+
+        /// Sends the next queued messages. This method is called by message() once the message which is being sent
+        /// (_sendStreams.First) is fully sent. Before sending the next message, this message is removed from
+        /// _sendsStream. If any, its sent callback is also queued in given callback queue.
+        ///
+        /// @param callbacks The sent callbacks to call for the messages that were sent.
+        /// @return The socket operation to register with the thread pool's selector to send the remainder of the
+        /// pending message being sent (_sendStreams.First).
+        IceInternal::SocketOperation sendNextMessages(std::vector<OutgoingMessage>& callbacks);
+
+        /// Sends or queues the given message.
+        ///
+        /// @param message The message to send.
+        /// @return The send status.
+        IceInternal::AsyncStatus sendMessage(OutgoingMessage& message);
 
 #ifdef ICE_HAS_BZIP2
         void doCompress(Ice::OutputStream&, Ice::OutputStream&);
@@ -312,15 +319,6 @@ namespace Ice
         IceInternal::SocketOperation read(IceInternal::Buffer&);
         IceInternal::SocketOperation write(IceInternal::Buffer&);
 
-        // A connection is at rest if it is active and has no outstanding invocations or dispatches.
-        // We schedule the inactivity timer task when it enters the "at rest" state, and we cancel this timer task when
-        // the connection is about to leave this state.
-        // Must be called with _mutex locked.
-        bool isAtRest() const noexcept
-        {
-            return _state == StateActive && _dispatchCount == 0 && _asyncRequests.empty();
-        }
-
         void scheduleInactivityTimerTask();
         void cancelInactivityTimerTask();
 
@@ -336,18 +334,21 @@ namespace Ice
 
         ObjectAdapterIPtr _adapter;
 
+        // The application configured a custom executor or a dispatch queue executor in InitializationData
         const bool _hasExecutor;
+
         const LoggerPtr _logger;
         const IceInternal::TraceLevelsPtr _traceLevels;
         const IceInternal::ThreadPoolPtr _threadPool;
 
-        const IceUtil::TimerPtr _timer;
+        const Ice::TimerPtr _timer;
 
         const std::chrono::seconds _connectTimeout;
         const std::chrono::seconds _closeTimeout;
         const std::chrono::seconds _inactivityTimeout;
 
-        IceUtil::TimerTaskPtr _inactivityTimerTask;
+        Ice::TimerTaskPtr _inactivityTimerTask;
+        bool _inactivityTimerTaskScheduled;
 
         std::function<void(ConnectionIPtr)> _connectionStartCompleted;
         std::function<void(ConnectionIPtr, std::exception_ptr)> _connectionStartFailed;
@@ -372,8 +373,16 @@ namespace Ice
 
         std::deque<OutgoingMessage> _sendStreams;
 
+        // Contains the message which is being received. If the connection is waiting to receive a message (_readHeader
+        // == true), its size is Protocol.headerSize. Otherwise, its size is the message size specified in the received
+        // message header.
         Ice::InputStream _readStream;
+
+        // When _readHeader is true, the next bytes we'll read are the header of a new message. When false, we're
+        // reading next the remainder of a message that was already partially received.
         bool _readHeader;
+
+        // Contains the message which is being sent. The write stream buffer is empty if no message is being sent.
         Ice::OutputStream _writeStream;
 
         Observer _observer;
@@ -381,8 +390,7 @@ namespace Ice
         // The number of user calls currently executed by the thread-pool (servant dispatch, invocation response, ...)
         int _upcallCount;
 
-        // The number of outstanding dispatches. This does not include heartbeat messages, even when the heartbeat
-        // callback is not null.
+        // The number of outstanding dispatches. Maintained only while state is StateActive or StateHolding.
         int _dispatchCount = 0;
 
         State _state; // The current state.
@@ -391,7 +399,6 @@ namespace Ice
         bool _validated;
 
         CloseCallback _closeCallback;
-        HeartbeatCallback _heartbeatCallback;
 
         mutable std::mutex _mutex;
         mutable std::condition_variable _conditionVariable;

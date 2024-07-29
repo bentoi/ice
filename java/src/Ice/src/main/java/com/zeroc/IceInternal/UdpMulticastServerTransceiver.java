@@ -133,6 +133,12 @@ final class UdpMulticastServerTransceiver implements Transceiver {
   }
 
   @Override
+  public boolean isWaitingToBeRead() {
+    assert false; // not implemented for UDP
+    return false;
+  }
+
+  @Override
   public String protocol() {
     return _instance.protocol();
   }
@@ -153,7 +159,7 @@ final class UdpMulticastServerTransceiver implements Transceiver {
         Network.getInterfacesForMulticast(_mcastInterface, Network.getProtocolSupport(_addr));
     if (!intfs.isEmpty()) {
       s.append("\nlocal interfaces = ");
-      s.append(com.zeroc.IceUtilInternal.StringUtil.joinString(intfs, ", "));
+      s.append(String.join(", ", intfs));
     }
     return s.toString();
   }

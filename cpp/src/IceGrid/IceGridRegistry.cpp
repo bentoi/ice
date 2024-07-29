@@ -3,15 +3,15 @@
 //
 
 #include "../Ice/ConsoleUtil.h"
+#include "../Ice/Options.h"
 #include "Ice/Ice.h"
-#include "IceUtil/Options.h"
 #include "RegistryI.h"
 #include "TraceLevels.h"
 #include "Util.h"
 
 using namespace std;
 using namespace Ice;
-using namespace IceUtilInternal;
+using namespace IceInternal;
 using namespace IceGrid;
 
 namespace IceGrid
@@ -50,21 +50,21 @@ RegistryService::start(int argc, char* argv[], int& status)
     bool readonly;
     std::string initFromReplica;
 
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("h", "help");
     opts.addOpt("v", "version");
     opts.addOpt("", "nowarn");
     opts.addOpt("", "readonly");
-    opts.addOpt("", "initdb-from-replica", IceUtilInternal::Options::NeedArg);
+    opts.addOpt("", "initdb-from-replica", IceInternal::Options::NeedArg);
 
     vector<string> args;
     try
     {
         args = opts.parse(argc, const_cast<const char**>(argv));
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        error(e.reason);
+        error(e.what());
         usage(argv[0]);
         return false;
     }

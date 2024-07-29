@@ -5,7 +5,7 @@
 import { Ice as Ice_Context } from "./Context.js";
 const { Context, ContextHelper } = Ice_Context;
 
-import { InitializationException } from "./LocalException.js";
+import { InitializationException } from "./LocalExceptions.js";
 
 //
 // The base class for all ImplicitContext implementations
@@ -103,7 +103,7 @@ export class ImplicitContext {
         } else if (kind === "Shared") {
             return new ImplicitContext();
         } else {
-            throw new InitializationException("'" + kind + "' is not a valid value for Ice.ImplicitContext");
+            throw new InitializationException(`'${kind}' is not a valid value for Ice.ImplicitContext`);
         }
     }
 }

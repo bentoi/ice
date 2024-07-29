@@ -13,7 +13,7 @@ def test(b):
 
 
 class TestI(Test.TestIntf):
-    def transient(self, current=None):
+    def transient(self, current):
         communicator = current.adapter.getCommunicator()
         adapter = communicator.createObjectAdapterWithEndpoints(
             "TransientTestAdapter", "default"
@@ -21,7 +21,7 @@ class TestI(Test.TestIntf):
         adapter.activate()
         adapter.destroy()
 
-    def deactivate(self, current=None):
+    def deactivate(self, current):
         current.adapter.deactivate()
         time.sleep(0.1)
 
@@ -36,7 +36,8 @@ class RouterI(Ice.Router):
     def getServerProxy(self, c):
         port = self._nextPort
         self._nextPort += 1
-        return c.adapter.getCommunicator().stringToProxy(
+        return Ice.ObjectPrx(
+            c.adapter.getCommunicator(),
             "dummy:tcp -h localhost -p {0} -t 30000".format(port)
         )
 

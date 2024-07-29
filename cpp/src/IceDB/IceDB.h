@@ -5,11 +5,11 @@
 #ifndef ICE_DB_H
 #define ICE_DB_H
 
+#include "../Ice/FileUtil.h"
 #include "Ice/Initialize.h"
 #include "Ice/InputStream.h"
+#include "Ice/LocalException.h"
 #include "Ice/OutputStream.h"
-#include "IceUtil/Exception.h"
-#include "IceUtil/FileUtil.h"
 
 #include <lmdb.h>
 
@@ -42,53 +42,36 @@ namespace IceDB
     // LMDBException wraps an error condition (and error code)
     // returned by LMDB
     //
-    class ICE_DB_API LMDBException : public IceUtil::Exception
+    class ICE_DB_API LMDBException final : public Ice::LocalException
     {
     public:
-        LMDBException(const char*, int, int);
+        LMDBException(const char* file, int line, int error);
 
-        virtual std::string ice_id() const;
-        virtual void ice_print(std::ostream&) const;
-
-        int error() const;
-
-    private:
-        const int _error;
-        static const char* _name;
+        const char* ice_id() const noexcept final;
     };
 
     //
     // KeyTooLongException is thrown if we attempt to marshal a
     // key with a marshaled representation longer than maxKeySize.
     //
-    class ICE_DB_API KeyTooLongException : public IceUtil::Exception
+    class ICE_DB_API KeyTooLongException final : public Ice::LocalException
     {
     public:
-        KeyTooLongException(const char*, int, size_t);
+        KeyTooLongException(const char* file, int line, size_t size);
 
-        virtual std::string ice_id() const;
-        virtual void ice_print(std::ostream&) const;
-
-    private:
-        const size_t _size;
-        static const char* _name;
+        const char* ice_id() const noexcept final;
     };
 
     //
     // The creation of an Env fails with BadEnvException when this
     // Env's max key size is smaller than maxKeySize.
     //
-    class ICE_DB_API BadEnvException : public IceUtil::Exception
+    class ICE_DB_API BadEnvException final : public Ice::LocalException
     {
     public:
         BadEnvException(const char*, int, size_t);
 
-        virtual std::string ice_id() const;
-        virtual void ice_print(std::ostream&) const;
-
-    private:
-        const size_t _size;
-        static const char* _name;
+        const char* ice_id() const noexcept final;
     };
 
     //

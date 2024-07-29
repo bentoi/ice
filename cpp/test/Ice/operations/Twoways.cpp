@@ -154,8 +154,8 @@ twoways(const Ice::CommunicatorPtr& communicator, Test::TestHelper*, const Test:
     }
 
     {
-        test(Test::MyClassPrx::ice_staticId() == Test::MyClass::ice_staticId());
-        test(Ice::ObjectPrx::ice_staticId() == Ice::Object::ice_staticId());
+        test(string{Test::MyClassPrx::ice_staticId()} == Test::MyClass::ice_staticId());
+        test(string{Ice::ObjectPrx::ice_staticId()} == Ice::Object::ice_staticId());
     }
 
     {
@@ -1745,7 +1745,7 @@ twoways(const Ice::CommunicatorPtr& communicator, Test::TestHelper*, const Test:
     test(p->opDouble1(1.0) == 1.0);
     test(p->opString1("opString1") == "opString1");
 
-    MyDerivedClassPrx d(p);
+    auto d = Ice::uncheckedCast<MyDerivedClassPrx>(p);
 
     Test::MyStruct1 s;
     s.tesT = "Test::MyStruct1::s";

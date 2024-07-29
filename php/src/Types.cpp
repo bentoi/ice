@@ -3,8 +3,8 @@
 //
 
 #include "Types.h"
+#include "Ice/OutputUtil.h"
 #include "Ice/SlicedData.h"
-#include "IceUtil/OutputUtil.h"
 #include "Proxy.h"
 #include "Util.h"
 #include "slice2php/PHPUtil.h"
@@ -15,8 +15,8 @@
 
 using namespace std;
 using namespace IcePHP;
-using namespace IceUtil;
-using namespace IceUtilInternal;
+using namespace Ice;
+using namespace IceInternal;
 
 ZEND_EXTERN_MODULE_GLOBALS(ice)
 
@@ -368,19 +368,15 @@ IcePHP::StreamUtil::getSlicedDataMember(zval* obj, ObjectMap* objectMap)
             {
                 assert(Z_OBJCE_P(s) == _sliceInfoType);
 
-                Ice::SliceInfoPtr info = make_shared<Ice::SliceInfo>();
-
                 zval* typeId = zend_hash_str_find(Z_OBJPROP_P(s), "typeId", sizeof("typeId") - 1);
                 assert(Z_TYPE_P(typeId) == IS_INDIRECT);
                 typeId = Z_INDIRECT_P(typeId);
                 assert(typeId && Z_TYPE_P(typeId) == IS_STRING);
-                info->typeId = string(Z_STRVAL_P(typeId), Z_STRLEN_P(typeId));
 
                 zval* compactId = zend_hash_str_find(Z_OBJPROP_P(s), "compactId", sizeof("compactId") - 1);
                 assert(Z_TYPE_P(compactId) == IS_INDIRECT);
                 compactId = Z_INDIRECT_P(compactId);
                 assert(compactId && Z_TYPE_P(compactId) == IS_LONG);
-                info->compactId = static_cast<long>(Z_LVAL_P(compactId));
 
                 zval* bytes = zend_hash_str_find(Z_OBJPROP_P(s), "bytes", sizeof("bytes") - 1);
                 assert(Z_TYPE_P(bytes) == IS_INDIRECT);
@@ -388,7 +384,7 @@ IcePHP::StreamUtil::getSlicedDataMember(zval* obj, ObjectMap* objectMap)
                 assert(bytes && Z_TYPE_P(bytes) == IS_ARRAY);
                 HashTable* barr = Z_ARRVAL_P(bytes);
                 zval* e;
-                info->bytes.resize(zend_hash_num_elements(barr));
+                vector<byte> byteVector(zend_hash_num_elements(barr));
 
 #if defined(__clang__)
 #    pragma clang diagnostic push
@@ -399,12 +395,32 @@ IcePHP::StreamUtil::getSlicedDataMember(zval* obj, ObjectMap* objectMap)
                 {
                     long l = static_cast<long>(Z_LVAL_P(e));
                     assert(l >= 0 && l <= 255);
-                    info->bytes[i++] = static_cast<byte>(l);
+                    byteVector[i++] = static_cast<byte>(l);
                 }
                 ZEND_HASH_FOREACH_END();
 #if defined(__clang__)
 #    pragma clang diagnostic pop
 #endif
+
+                zval* hasOptionalMembers =
+                    zend_hash_str_find(Z_OBJPROP_P(s), "hasOptionalMembers", sizeof("hasOptionalMembers") - 1);
+                assert(Z_TYPE_P(hasOptionalMembers) == IS_INDIRECT);
+                hasOptionalMembers = Z_INDIRECT_P(hasOptionalMembers);
+                assert(
+                    hasOptionalMembers &&
+                    (Z_TYPE_P(hasOptionalMembers) == IS_TRUE || Z_TYPE_P(hasOptionalMembers) == IS_FALSE));
+
+                zval* isLastSlice = zend_hash_str_find(Z_OBJPROP_P(s), "isLastSlice", sizeof("isLastSlice") - 1);
+                assert(Z_TYPE_P(isLastSlice) == IS_INDIRECT);
+                isLastSlice = Z_INDIRECT_P(isLastSlice);
+                assert(isLastSlice && (Z_TYPE_P(isLastSlice) == IS_TRUE || Z_TYPE_P(isLastSlice) == IS_FALSE));
+
+                auto info = make_shared<Ice::SliceInfo>(
+                    string(Z_STRVAL_P(typeId), Z_STRLEN_P(typeId)),
+                    static_cast<long>(Z_LVAL_P(compactId)),
+                    std::move(byteVector),
+                    Z_TYPE_P(hasOptionalMembers) == IS_TRUE,
+                    Z_TYPE_P(isLastSlice) == IS_TRUE);
 
                 zval* instances = zend_hash_str_find(Z_OBJPROP_P(s), "instances", sizeof("instances") - 1);
                 assert(Z_TYPE_P(instances) == IS_INDIRECT);
@@ -440,22 +456,6 @@ IcePHP::StreamUtil::getSlicedDataMember(zval* obj, ObjectMap* objectMap)
 #if defined(__clang__)
 #    pragma clang diagnostic pop
 #endif
-
-                zval* hasOptionalMembers =
-                    zend_hash_str_find(Z_OBJPROP_P(s), "hasOptionalMembers", sizeof("hasOptionalMembers") - 1);
-                assert(Z_TYPE_P(hasOptionalMembers) == IS_INDIRECT);
-                hasOptionalMembers = Z_INDIRECT_P(hasOptionalMembers);
-                assert(
-                    hasOptionalMembers &&
-                    (Z_TYPE_P(hasOptionalMembers) == IS_TRUE || Z_TYPE_P(hasOptionalMembers) == IS_FALSE));
-                info->hasOptionalMembers = Z_TYPE_P(hasOptionalMembers) == IS_TRUE;
-
-                zval* isLastSlice = zend_hash_str_find(Z_OBJPROP_P(s), "isLastSlice", sizeof("isLastSlice") - 1);
-                assert(Z_TYPE_P(isLastSlice) == IS_INDIRECT);
-                isLastSlice = Z_INDIRECT_P(isLastSlice);
-                assert(isLastSlice && (Z_TYPE_P(isLastSlice) == IS_TRUE || Z_TYPE_P(isLastSlice) == IS_FALSE));
-                info->isLastSlice = Z_TYPE_P(isLastSlice) == IS_TRUE;
-
                 slices.push_back(info);
             }
             ZEND_HASH_FOREACH_END();
@@ -936,7 +936,7 @@ IcePHP::PrimitiveInfo::unmarshal(
 }
 
 void
-IcePHP::PrimitiveInfo::print(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory*)
+IcePHP::PrimitiveInfo::print(zval* zv, IceInternal::Output& out, PrintObjectHistory*)
 {
     if (!validate(zv, false))
     {
@@ -1046,7 +1046,7 @@ IcePHP::EnumInfo::unmarshal(
 }
 
 void
-IcePHP::EnumInfo::print(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory*)
+IcePHP::EnumInfo::print(zval* zv, IceInternal::Output& out, PrintObjectHistory*)
 {
     if (!validate(zv, false))
     {
@@ -1331,7 +1331,7 @@ IcePHP::StructInfo::unmarshal(
 }
 
 void
-IcePHP::StructInfo::print(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory* history)
+IcePHP::StructInfo::print(zval* zv, IceInternal::Output& out, PrintObjectHistory* history)
 {
     if (!validate(zv, false))
     {
@@ -1530,7 +1530,7 @@ IcePHP::SequenceInfo::unmarshal(
 }
 
 void
-IcePHP::SequenceInfo::print(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory* history)
+IcePHP::SequenceInfo::print(zval* zv, IceInternal::Output& out, PrintObjectHistory* history)
 {
     if (!validate(zv, false))
     {
@@ -2149,7 +2149,7 @@ IcePHP::DictionaryInfo::unmarshal(
 }
 
 void
-IcePHP::DictionaryInfo::print(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory* history)
+IcePHP::DictionaryInfo::print(zval* zv, IceInternal::Output& out, PrintObjectHistory* history)
 {
     if (!validate(zv, false))
     {
@@ -2407,7 +2407,7 @@ IcePHP::ClassInfo::unmarshal(
 }
 
 void
-IcePHP::ClassInfo::print(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory* history)
+IcePHP::ClassInfo::print(zval* zv, IceInternal::Output& out, PrintObjectHistory* history)
 {
     if (!validate(zv, false))
     {
@@ -2454,7 +2454,7 @@ IcePHP::ClassInfo::destroy()
 }
 
 void
-IcePHP::ClassInfo::printMembers(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory* history)
+IcePHP::ClassInfo::printMembers(zval* zv, IceInternal::Output& out, PrintObjectHistory* history)
 {
     if (base)
     {
@@ -2663,7 +2663,7 @@ IcePHP::ProxyInfo::unmarshal(
 }
 
 void
-IcePHP::ProxyInfo::print(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory*)
+IcePHP::ProxyInfo::print(zval* zv, IceInternal::Output& out, PrintObjectHistory*)
 {
     if (!validate(zv, false))
     {
@@ -3061,11 +3061,11 @@ IcePHP::ReadObjectCallback::invoke(const shared_ptr<Ice::Value>& p)
         // Verify that the unmarshaled object is compatible with the formal type.
         if (!_info->interface && !reader->getInfo()->isA(_info->id))
         {
-            Ice::UnexpectedObjectException ex(__FILE__, __LINE__);
-            ex.reason = "unmarshaled object is not an instance of " + _info->id;
-            ex.type = reader->getInfo()->id;
-            ex.expectedType = _info->id;
-            throw ex;
+            throw MarshalException{
+                __FILE__,
+                __LINE__,
+                "failed to unmarshal class with type ID '" + _info->id +
+                    "': value factory returned a class with type ID '" + reader->getInfo()->id + "'"};
         }
         zval* obj = reader->getObject();
         _cb->unmarshaled(obj, &_target, _closure);
@@ -3123,7 +3123,7 @@ IcePHP::ExceptionInfo::unmarshal(Ice::InputStream* is, const CommunicatorInfoPtr
 }
 
 void
-IcePHP::ExceptionInfo::print(zval* zv, IceUtilInternal::Output& out)
+IcePHP::ExceptionInfo::print(zval* zv, IceInternal::Output& out)
 {
     out << "exception " << id;
     out.sb();
@@ -3153,7 +3153,7 @@ IcePHP::ExceptionInfo::print(zval* zv, IceUtilInternal::Output& out)
 }
 
 void
-IcePHP::ExceptionInfo::printMembers(zval* zv, IceUtilInternal::Output& out, PrintObjectHistory* history)
+IcePHP::ExceptionInfo::printMembers(zval* zv, IceInternal::Output& out, PrintObjectHistory* history)
 {
     if (base)
     {
@@ -3239,10 +3239,10 @@ IcePHP::ExceptionReader::~ExceptionReader()
 #endif
 }
 
-string
-IcePHP::ExceptionReader::ice_id() const
+const char*
+IcePHP::ExceptionReader::ice_id() const noexcept
 {
-    return _info->id;
+    return _info->id.c_str();
 }
 
 void
@@ -3642,7 +3642,7 @@ ZEND_FUNCTION(IcePHP_stringify)
     assert(type);
 
     ostringstream ostr;
-    IceUtilInternal::Output out(ostr);
+    IceInternal::Output out(ostr);
     PrintObjectHistory history;
     history.index = 0;
     type->print(v, out, &history);
@@ -3670,7 +3670,7 @@ ZEND_FUNCTION(IcePHP_stringifyException)
     assert(ex);
 
     ostringstream ostr;
-    IceUtilInternal::Output out(ostr);
+    IceInternal::Output out(ostr);
     ex->print(v, out);
 
     string str = ostr.str();

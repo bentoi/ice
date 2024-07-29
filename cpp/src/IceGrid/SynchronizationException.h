@@ -10,17 +10,13 @@
 
 namespace IceGrid
 {
-    class SynchronizationException : public Ice::LocalException
+    class SynchronizationException final : public Ice::LocalException
     {
     public:
-        using LocalException::LocalException;
+        SynchronizationException(const char* file, int line) : Ice::LocalException(file, line, "synchronization error")
+        {
+        }
 
-        /**
-         * Obtains the Slice type ID of this exception.
-         * @return The fully-scoped type ID.
-         */
-        static std::string_view ice_staticId() noexcept;
-
-        std::string ice_id() const override;
+        const char* ice_id() const noexcept final;
     };
 }

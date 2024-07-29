@@ -10,7 +10,6 @@
 #include "EndpointIF.h"
 #include "Ice/BuiltinSequences.h"
 #include "Ice/CommunicatorF.h"
-#include "Ice/Exception.h"
 #include "Ice/InstanceF.h"
 #include "Ice/ObjectAdapter.h"
 #include "Ice/ObjectF.h"
@@ -22,7 +21,7 @@
 #include "ServantManagerF.h"
 #include "ThreadPoolF.h"
 
-#ifdef ICE_SWIFT
+#ifdef __APPLE__
 #    include <dispatch/dispatch.h>
 #endif
 
@@ -56,10 +55,10 @@ namespace Ice
 
         ObjectAdapterPtr use(std::function<ObjectPtr(ObjectPtr)> middlewareFactory) final;
 
-        ObjectPrx add(const ObjectPtr&, const Identity&) final;
-        ObjectPrx addFacet(const ObjectPtr&, const Identity&, const std::string&) final;
-        ObjectPrx addWithUUID(const ObjectPtr&) final;
-        ObjectPrx addFacetWithUUID(const ObjectPtr&, const std::string&) final;
+        ObjectPrx _add(const ObjectPtr&, const Identity&) final;
+        ObjectPrx _addFacet(const ObjectPtr&, const Identity&, const std::string&) final;
+        ObjectPrx _addWithUUID(const ObjectPtr&) final;
+        ObjectPrx _addFacetWithUUID(const ObjectPtr&, const std::string&) final;
         void addDefaultServant(const ObjectPtr&, const std::string&) final;
         ObjectPtr remove(const Identity&) final;
         ObjectPtr removeFacet(const Identity&, const std::string&) final;
@@ -76,9 +75,9 @@ namespace Ice
 
         const ObjectPtr& dispatchPipeline() const noexcept final;
 
-        ObjectPrx createProxy(const Identity&) const final;
-        ObjectPrx createDirectProxy(const Identity&) const final;
-        ObjectPrx createIndirectProxy(const Identity&) const final;
+        ObjectPrx _createProxy(const Identity&) const final;
+        ObjectPrx _createDirectProxy(const Identity&) const final;
+        ObjectPrx _createIndirectProxy(const Identity&) const final;
 
         void setLocator(const std::optional<LocatorPrx>&) final;
         std::optional<LocatorPrx> getLocator() const noexcept;
@@ -88,7 +87,7 @@ namespace Ice
         EndpointSeq getPublishedEndpoints() const noexcept;
         void setPublishedEndpoints(const EndpointSeq&) final;
 
-#ifdef ICE_SWIFT
+#ifdef __APPLE__
         dispatch_queue_t getDispatchQueue() const final;
 #endif
 

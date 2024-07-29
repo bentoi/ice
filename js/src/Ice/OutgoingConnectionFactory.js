@@ -3,12 +3,11 @@
 //
 
 import { ConnectionI } from "./ConnectionI.js";
-import { FactoryACMMonitor } from "./ACM.js";
 import { HashMap } from "./HashMap.js";
 import { AsyncResultBase } from "./AsyncResultBase.js";
 import { Promise } from "./Promise.js";
-import { LocalException } from "./Exception.js";
-import { CommunicatorDestroyedException } from "./LocalException.js";
+import { LocalException } from "./LocalException.js";
+import { CommunicatorDestroyedException } from "./LocalExceptions.js";
 import { Debug } from "./Debug.js";
 
 //
@@ -19,8 +18,7 @@ export class OutgoingConnectionFactory {
         this._communicator = communicator;
         this._instance = instance;
         this._destroyed = false;
-
-        this._monitor = new FactoryACMMonitor(this._instance, this._instance.clientACM());
+        this._connectionOptions = instance.clientConnectionOptions;
 
         this._connectionsByEndpoint = new ConnectionListMap(); // map<EndpointI, Array<Ice.ConnectionI>>
         this._pending = new HashMap(HashMap.compareEquals); // map<EndpointI, Array<ConnectCallback>>
@@ -34,7 +32,7 @@ export class OutgoingConnectionFactory {
             return;
         }
 
-        this._connectionsByEndpoint.forEach((connection) => connection.destroy(ConnectionI.CommunicatorDestroyed));
+        this._connectionsByEndpoint.forEach(connection => connection.destroy(ConnectionI.CommunicatorDestroyed));
 
         this._destroyed = true;
         this._communicator = null;
@@ -50,13 +48,8 @@ export class OutgoingConnectionFactory {
     //
     // Returns a promise, success callback receives the connection
     //
-    create(endpts, hasMore, selType) {
-        Debug.assert(endpts.length > 0);
-
-        //
-        // Apply the overrides.
-        //
-        const endpoints = this.applyOverrides(endpts);
+    create(endpoints, hasMore, selType) {
+        Debug.assert(endpoints.length > 0);
 
         //
         // Try to find a connection to one of the given endpoints.
@@ -79,7 +72,7 @@ export class OutgoingConnectionFactory {
                 throw new CommunicatorDestroyedException();
             }
             return routerInfo.getClientEndpoints();
-        }).then((endpoints) => {
+        }).then(endpoints => {
             //
             // Search for connections to the router's client proxy
             // endpoints, and update the object adapter for such
@@ -87,15 +80,7 @@ export class OutgoingConnectionFactory {
             // received over such connections.
             //
             const adapter = routerInfo.getAdapter();
-            const defaultsAndOverrides = this._instance.defaultsAndOverrides();
-            endpoints.forEach((endpoint) => {
-                //
-                // Modify endpoints with overrides.
-                //
-                if (defaultsAndOverrides.overrideTimeout) {
-                    endpoint = endpoint.changeTimeout(defaultsAndOverrides.overrideTimeoutValue);
-                }
-
+            endpoints.forEach(endpoint => {
                 //
                 // The Connection object does not take the compression flag of
                 // endpoints into account, but instead gets the information
@@ -107,7 +92,7 @@ export class OutgoingConnectionFactory {
                 //
                 endpoint = endpoint.changeCompress(false);
 
-                this._connectionsByEndpoint.forEach((connection) => {
+                this._connectionsByEndpoint.forEach(connection => {
                     if (connection.endpoint().equals(endpoint)) {
                         connection.setAdapter(adapter);
                     }
@@ -120,7 +105,7 @@ export class OutgoingConnectionFactory {
         if (this._destroyed) {
             return;
         }
-        this._connectionsByEndpoint.forEach((connection) => {
+        this._connectionsByEndpoint.forEach(connection => {
             if (connection.getAdapter() === adapter) {
                 connection.setAdapter(null);
             }
@@ -135,9 +120,9 @@ export class OutgoingConnectionFactory {
         }
 
         Promise.all(
-            this._connectionsByEndpoint.map((connection) => {
+            this._connectionsByEndpoint.map(connection => {
                 if (connection.isActiveOrHolding()) {
-                    return connection.flushBatchRequests().catch((ex) => {
+                    return connection.flushBatchRequests().catch(ex => {
                         if (ex instanceof LocalException) {
                             // Ignore
                         } else {
@@ -150,17 +135,6 @@ export class OutgoingConnectionFactory {
         return promise;
     }
 
-    applyOverrides(endpts) {
-        const defaultsAndOverrides = this._instance.defaultsAndOverrides();
-        return endpts.map((endpoint) => {
-            if (defaultsAndOverrides.overrideTimeout) {
-                return endpoint.changeTimeout(defaultsAndOverrides.overrideTimeoutValue);
-            } else {
-                return endpoint;
-            }
-        });
-    }
-
     findConnectionByEndpoint(endpoints) {
         if (this._destroyed) {
             throw new CommunicatorDestroyedException();
@@ -168,14 +142,14 @@ export class OutgoingConnectionFactory {
 
         Debug.assert(endpoints.length > 0);
 
-        for (let i = 0; i < endpoints.length; ++i) {
-            const endpoint = endpoints[i];
+        for (const endpoint of endpoints) {
+            const proxyEndpoint = endpoint.changeTimeout(-1);
 
-            if (this._pending.has(endpoint)) {
+            if (this._pending.has(proxyEndpoint)) {
                 continue;
             }
 
-            const connectionList = this._connectionsByEndpoint.get(endpoint);
+            const connectionList = this._connectionsByEndpoint.get(proxyEndpoint);
             if (connectionList === undefined) {
                 continue;
             }
@@ -217,17 +191,6 @@ export class OutgoingConnectionFactory {
     getConnection(endpoints, cb) {
         if (this._destroyed) {
             throw new CommunicatorDestroyedException();
-        }
-
-        //
-        // Reap closed connections
-        //
-        const cons = this._monitor.swapReapedConnections();
-        if (cons !== null) {
-            cons.forEach((c) => {
-                this._connectionsByEndpoint.removeConnection(c.endpoint(), c);
-                this._connectionsByEndpoint.removeConnection(c.endpoint().changeCompress(true), c);
-            });
         }
 
         //
@@ -289,11 +252,10 @@ export class OutgoingConnectionFactory {
             connection = new ConnectionI(
                 this._communicator,
                 this._instance,
-                this._monitor,
                 transceiver,
-                endpoint.changeCompress(false),
-                false,
-                null,
+                endpoint.changeCompress(false).changeTimeout(-1),
+                connection => this.removeConnection(connection),
+                this._connectionOptions,
             );
         } catch (ex) {
             if (ex instanceof LocalException) {
@@ -311,6 +273,11 @@ export class OutgoingConnectionFactory {
         return connection;
     }
 
+    removeConnection(connection) {
+        this._connectionsByEndpoint.removeConnection(connection.endpoint(), connection);
+        this._connectionsByEndpoint.removeConnection(connection.endpoint().changeCompress(true), connection);
+    }
+
     finishGetConnection(endpoints, endpoint, connection, cb) {
         // cb is-a ConnectCallback
 
@@ -320,11 +287,11 @@ export class OutgoingConnectionFactory {
         }
 
         const callbacks = [];
-        endpoints.forEach((endpt) => {
+        endpoints.forEach(endpt => {
             const cbs = this._pending.get(endpt);
             if (cbs !== undefined) {
                 this._pending.delete(endpt);
-                cbs.forEach((cc) => {
+                cbs.forEach(cc => {
                     if (cc.hasEndpoint(endpoint)) {
                         if (connectionCallbacks.indexOf(cc) === -1) {
                             connectionCallbacks.push(cc);
@@ -336,7 +303,7 @@ export class OutgoingConnectionFactory {
             }
         });
 
-        connectionCallbacks.forEach((cc) => {
+        connectionCallbacks.forEach(cc => {
             cc.removeFromPending();
             const idx = callbacks.indexOf(cc);
             if (idx !== -1) {
@@ -344,10 +311,10 @@ export class OutgoingConnectionFactory {
             }
         });
 
-        callbacks.forEach((cc) => cc.removeFromPending());
+        callbacks.forEach(cc => cc.removeFromPending());
 
-        callbacks.forEach((cc) => cc.getConnection());
-        connectionCallbacks.forEach((cc) => cc.setConnection(connection));
+        callbacks.forEach(cc => cc.getConnection());
+        connectionCallbacks.forEach(cc => cc.setConnection(connection));
 
         this.checkFinished();
     }
@@ -361,11 +328,11 @@ export class OutgoingConnectionFactory {
         }
 
         const callbacks = [];
-        endpoints.forEach((endpt) => {
+        endpoints.forEach(endpt => {
             const cbs = this._pending.get(endpt);
             if (cbs !== undefined) {
                 this._pending.delete(endpt);
-                cbs.forEach((cc) => {
+                cbs.forEach(cc => {
                     if (cc.removeEndpoints(endpoints)) {
                         if (failedCallbacks.indexOf(cc) === -1) {
                             failedCallbacks.push(cc);
@@ -377,13 +344,13 @@ export class OutgoingConnectionFactory {
             }
         });
 
-        callbacks.forEach((cc) => {
+        callbacks.forEach(cc => {
             Debug.assert(failedCallbacks.indexOf(cc) === -1);
             cc.removeFromPending();
         });
         this.checkFinished();
-        callbacks.forEach((cc) => cc.getConnection());
-        failedCallbacks.forEach((cc) => cc.setException(ex));
+        callbacks.forEach(cc => cc.getConnection());
+        failedCallbacks.forEach(cc => cc.setException(ex));
     }
 
     addToPending(cb, endpoints) {
@@ -394,7 +361,7 @@ export class OutgoingConnectionFactory {
         //
         let found = false;
         if (cb !== null) {
-            endpoints.forEach((p) => {
+            endpoints.forEach(p => {
                 const cbs = this._pending.get(p);
                 if (cbs !== undefined) {
                     found = true;
@@ -414,7 +381,7 @@ export class OutgoingConnectionFactory {
         // responsible for its establishment. We add empty pending lists,
         // other callbacks to the same endpoints will be queued.
         //
-        endpoints.forEach((p) => {
+        endpoints.forEach(p => {
             if (!this._pending.has(p)) {
                 this._pending.set(p, []);
             }
@@ -425,7 +392,7 @@ export class OutgoingConnectionFactory {
 
     removeFromPending(cb, endpoints) {
         // cb is-a ConnectCallback
-        endpoints.forEach((p) => {
+        endpoints.forEach(p => {
             const cbs = this._pending.get(p);
             if (cbs !== undefined) {
                 const idx = cbs.indexOf(cb);
@@ -470,7 +437,7 @@ export class OutgoingConnectionFactory {
         }
     }
 
-    checkFinished() {
+    async checkFinished() {
         //
         // Can't continue until the factory is destroyed and there are no pending connections.
         //
@@ -478,29 +445,18 @@ export class OutgoingConnectionFactory {
             return;
         }
 
-        Promise.all(
-            this._connectionsByEndpoint.map((connection) =>
-                connection.waitUntilFinished().catch((ex) => Debug.assert(false)),
-            ),
-        ).then(() => {
-            const cons = this._monitor.swapReapedConnections();
-            if (cons !== null) {
-                const arr = [];
-                this._connectionsByEndpoint.forEach((connection) => {
-                    if (arr.indexOf(connection) === -1) {
-                        arr.push(connection);
-                    }
-                });
-                Debug.assert(cons.length === arr.length);
-                this._connectionsByEndpoint.clear();
-            } else {
-                Debug.assert(this._connectionsByEndpoint.size === 0);
-            }
+        await Promise.all(
+            this._connectionsByEndpoint.map(async connection => {
+                try {
+                    await connection.waitUntilFinished();
+                } catch (ex) {
+                    Debug.assert(false);
+                }
+            }),
+        );
 
-            Debug.assert(this._waitPromise !== null);
-            this._waitPromise.resolve();
-            this._monitor.destroy();
-        });
+        Debug.assert(this._waitPromise !== null);
+        this._waitPromise.resolve();
     }
 }
 
@@ -536,7 +492,7 @@ class ConnectionListMap extends HashMap {
 
     map(fn) {
         const arr = [];
-        this.forEach((c) => arr.push(fn(c)));
+        this.forEach(c => arr.push(fn(c)));
         return arr;
     }
 
@@ -595,11 +551,11 @@ class ConnectCallback {
     }
 
     findEndpoint(endpoint) {
-        return this._endpoints.findIndex((value) => endpoint.equals(value));
+        return this._endpoints.findIndex(value => endpoint.equals(value));
     }
 
     removeEndpoints(endpoints) {
-        endpoints.forEach((endpoint) => {
+        endpoints.forEach(endpoint => {
             const idx = this.findEndpoint(endpoint);
             if (idx !== -1) {
                 this._endpoints.splice(idx, 1);
@@ -655,12 +611,12 @@ class ConnectCallback {
     }
 
     nextEndpoint() {
-        const start = (connection) => {
+        const start = connection => {
             connection.start().then(
                 () => {
                     this.connectionStartCompleted(connection);
                 },
-                (ex) => {
+                ex => {
                     this.connectionStartFailed(connection, ex);
                 },
             );

@@ -3,22 +3,54 @@
 //
 
 #include "Ice/OutgoingResponse.h"
-#include "Ice/LocalException.h"
+#include "Ice/LocalExceptions.h"
 #include "Ice/ObjectAdapter.h"
 #include "Ice/UserException.h"
 #include "Protocol.h"
+#include "RequestFailedMessage.h"
+
+#if defined(__GNUC__) || defined(__clang__)
+#    include <cxxabi.h>
+#endif
+
+#include <typeinfo>
 
 using namespace std;
 using namespace Ice;
 using namespace IceInternal;
 
-namespace IceUtilInternal
-{
-    extern bool printStackTraces;
-}
-
 namespace
 {
+    inline string toString(const Exception& ex)
+    {
+        // Includes the stack trace when available.
+        ostringstream os;
+        os << ex;
+        return os.str();
+    }
+
+    inline string createUnknownExceptionMessage(const string& typeId, const char* what)
+    {
+        ostringstream os;
+        os << "dispatch failed with " << typeId << ": " << what;
+        return os.str();
+    }
+
+    inline string demangle(const char* name)
+    {
+#if defined(__GNUC__) || defined(__clang__)
+        int status;
+        char* demangled = abi::__cxa_demangle(name, nullptr, nullptr, &status);
+        if (status == 0) // success
+        {
+            string result{demangled};
+            std::free(demangled);
+            return result;
+        }
+#endif
+        return name; // keep the original name
+    }
+
     // The "core" implementation of makeOutgoingResponse for exceptions. Note that it can throw an exception.
     OutgoingResponse makeOutgoingResponseCore(std::exception_ptr exc, const Current& current)
     {
@@ -32,7 +64,8 @@ namespace
         }
         ReplyStatus replyStatus;
         string exceptionId;
-        string exceptionMessage;
+        string exceptionDetails;
+        string unknownExceptionMessage;
 
         try
         {
@@ -61,44 +94,43 @@ namespace
                 replyStatus = ReplyStatus::ObjectNotExist;
             }
 
-            if (rfe.id.name.empty())
+            Identity id = rfe.id();
+            string facet = rfe.facet();
+            string operation = rfe.operation();
+            if (id.name.empty())
             {
-                rfe.id = current.id;
+                id = current.id;
+                facet = current.facet;
+            }
+            if (operation.empty())
+            {
+                operation = current.operation;
             }
 
-            if (rfe.facet.empty() && !current.facet.empty())
-            {
-                rfe.facet = current.facet;
-            }
-
-            if (rfe.operation.empty() && !current.operation.empty())
-            {
-                rfe.operation = current.operation;
-            }
-
-            exceptionMessage = rfe.what();
+            // +7 to slice-off "::Ice::".
+            exceptionDetails = createRequestFailedMessage(rfe.ice_id() + 7, id, facet, operation);
 
             if (current.requestId != 0)
             {
                 ostr.write(static_cast<uint8_t>(replyStatus));
-                ostr.write(rfe.id);
+                ostr.write(id);
 
-                if (rfe.facet.empty())
+                if (facet.empty())
                 {
                     ostr.write(static_cast<string*>(nullptr), static_cast<string*>(nullptr));
                 }
                 else
                 {
-                    ostr.write(&rfe.facet, &rfe.facet + 1);
+                    ostr.write(&facet, &facet + 1);
                 }
 
-                ostr.write(rfe.operation, false);
+                ostr.write(operation, false);
             }
         }
         catch (const UserException& ex)
         {
             exceptionId = ex.ice_id();
-            exceptionMessage = ex.what();
+            exceptionDetails = toString(ex);
 
             replyStatus = ReplyStatus::UserException;
 
@@ -113,58 +145,53 @@ namespace
         catch (const UnknownLocalException& ex)
         {
             exceptionId = ex.ice_id();
+            exceptionDetails = toString(ex);
+            unknownExceptionMessage = ex.what();
             replyStatus = ReplyStatus::UnknownLocalException;
-            exceptionMessage = ex.unknown;
         }
         catch (const UnknownUserException& ex)
         {
             exceptionId = ex.ice_id();
+            exceptionDetails = toString(ex);
+            unknownExceptionMessage = ex.what();
             replyStatus = ReplyStatus::UnknownUserException;
-            exceptionMessage = ex.unknown;
         }
         catch (const UnknownException& ex)
         {
             exceptionId = ex.ice_id();
+            exceptionDetails = toString(ex);
+            unknownExceptionMessage = ex.what();
             replyStatus = ReplyStatus::UnknownException;
-            exceptionMessage = ex.unknown;
         }
         catch (const LocalException& ex)
         {
             exceptionId = ex.ice_id();
+            exceptionDetails = toString(ex);
+            unknownExceptionMessage = createUnknownExceptionMessage(exceptionId, ex.what());
             replyStatus = ReplyStatus::UnknownLocalException;
-            ostringstream str;
-            str << ex;
-            if (IceUtilInternal::printStackTraces)
-            {
-                str << '\n' << ex.ice_stackTrace();
-            }
-            exceptionMessage = str.str();
         }
         catch (const Exception& ex)
         {
             exceptionId = ex.ice_id();
+            exceptionDetails = toString(ex);
+            unknownExceptionMessage = createUnknownExceptionMessage(exceptionId, ex.what());
             replyStatus = ReplyStatus::UnknownException;
-            ostringstream str;
-            str << ex;
-            if (IceUtilInternal::printStackTraces)
-            {
-                str << '\n' << ex.ice_stackTrace();
-            }
-            exceptionMessage = str.str();
         }
         catch (const std::exception& ex)
         {
-            replyStatus = ReplyStatus::UnknownException;
-            exceptionId = ex.what();
+            exceptionId = demangle(typeid(ex).name());
             ostringstream str;
-            str << "c++ exception: " << exceptionId;
-            exceptionMessage = str.str();
+            str << "c++ exception: " << ex.what();
+            exceptionDetails = str.str();
+            unknownExceptionMessage = createUnknownExceptionMessage(exceptionId, ex.what());
+            replyStatus = ReplyStatus::UnknownException;
         }
         catch (...)
         {
-            replyStatus = ReplyStatus::UnknownException;
             exceptionId = "unknown";
-            exceptionMessage = "c++ exception: unknown";
+            exceptionDetails = "c++ exception: unknown";
+            unknownExceptionMessage = createUnknownExceptionMessage(exceptionId, "c++ exception");
+            replyStatus = ReplyStatus::UnknownException;
         }
 
         if ((current.requestId != 0) &&
@@ -172,13 +199,13 @@ namespace
              replyStatus == ReplyStatus::UnknownException))
         {
             ostr.write(static_cast<uint8_t>(replyStatus));
-            ostr.write(exceptionMessage);
+            ostr.write(unknownExceptionMessage);
         }
 
         return OutgoingResponse{
             replyStatus,
             std::move(exceptionId),
-            std::move(exceptionMessage),
+            std::move(exceptionDetails),
             std::move(ostr),
             current};
     }
@@ -187,12 +214,12 @@ namespace
 OutgoingResponse::OutgoingResponse(
     ReplyStatus replyStatus,
     string exceptionId,
-    string exceptionMessage,
+    string exceptionDetails,
     OutputStream outputStream,
     const Current& current) noexcept
     : _current(current),
       _exceptionId(std::move(exceptionId)),
-      _exceptionMessage(std::move(exceptionMessage)),
+      _exceptionDetails(std::move(exceptionDetails)),
       _outputStream(std::move(outputStream)),
       _replyStatus(replyStatus)
 {

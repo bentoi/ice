@@ -6,7 +6,7 @@
 /* eslint no-process-env: "off" */
 /* eslint no-process-exit: "off" */
 
-import { deleteAsync, deleteSync } from "del";
+import { deleteAsync } from "del";
 import vinylPaths from "vinyl-paths";
 import extReplace from "gulp-ext-replace";
 import fs from "fs";
@@ -16,13 +16,12 @@ import path from "path";
 import pump from "pump";
 import { rollup } from "rollup";
 import { fileURLToPath } from "url";
+import tsc from "gulp-typescript";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const sliceDir = path.resolve(__dirname, "..", "slice");
-
 const iceBinDist = (process.env.ICE_BIN_DIST || "").split(" ");
-const useBinDist = iceBinDist.find((v) => v == "js" || v == "all") !== undefined;
+const useBinDist = iceBinDist.find(v => v == "js" || v == "all") !== undefined;
 
 function parseArg(argv, key) {
     for (let i = 0; i < argv.length; ++i) {
@@ -71,80 +70,73 @@ function slice2js(options) {
     return iceBuilder(defaults);
 }
 
-//
-// Tasks to build IceJS Distribution
-//
 const root = path.resolve(__dirname);
 const libs = ["Ice", "Glacier2", "IceStorm", "IceGrid"];
 
-const generateTask = (name) => name.toLowerCase() + ":generate";
+const libTask = (libName, taskName) => libName + ":" + taskName;
 
-const srcDir = (name) => path.join(root, "src", name);
-const libCleanTask = (lib) => lib + ":clean";
+const excludes = {
+    Ice: ["!../slice/Ice/Identity.ice", "!../slice/Ice/Version.ice"],
+};
 
-function libFiles(name) {
-    return [path.join(root, "lib", name + ".js")];
+function createCleanTask(taskName, patterns, extension, dest = undefined) {
+    gulp.task(taskName, async cb => {
+        const pumpArgs = [gulp.src(patterns), extReplace(extension)];
+        if (dest !== undefined) {
+            pumpArgs.push(gulp.dest(dest));
+        }
+        pumpArgs.push(vinylPaths(deleteAsync));
+        return new Promise((resolve, reject) => {
+            pump(pumpArgs, err => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            });
+        });
+    });
 }
-
-function libGeneratedFiles(lib, sources) {
-    const tsSliceSources = sources.typescriptSlice || sources.slice;
-
-    return sources.slice
-        .map((f) => path.join(srcDir(lib), path.basename(f, ".ice") + ".js"))
-        .concat(tsSliceSources.map((f) => path.join(srcDir(lib), path.basename(f, ".ice") + ".d.ts")))
-        .concat(libFiles(lib))
-        .concat([path.join(srcDir(lib), ".depend", "*")]);
-}
-
-const sliceFile = (f) => path.join(sliceDir, f);
 
 for (const lib of libs) {
-    const sources = JSON.parse(
-        fs.readFileSync(path.join(srcDir(lib), "sources.json"), {
-            encoding: "utf8",
-        }),
-    );
-
-    gulp.task(generateTask(lib), (cb) => {
+    const slicePatterns = [`../slice/${lib}/*.ice`, ...(excludes[lib] || [])];
+    gulp.task(libTask(lib, "generate"), cb => {
         pump(
             [
-                gulp.src(sources.slice.map(sliceFile)),
+                gulp.src(slicePatterns),
                 slice2js({
                     jsbundle: false,
                     tsbundle: false,
                     args: ["--typescript"],
                 }),
-                gulp.dest(srcDir(lib)),
+                gulp.dest(`${root}/src/${lib}`),
             ],
             cb,
         );
     });
 
-    gulp.task(libCleanTask(lib), (cb) => {
-        deleteAsync(libGeneratedFiles(lib, sources));
-        cb();
-    });
+    createCleanTask(libTask(lib, "clean:js"), slicePatterns, ".js", `${root}/src/${lib}`);
+    createCleanTask(libTask(lib, "clean:d.ts"), slicePatterns, ".d.ts", `${root}/src/${lib}`);
+
+    gulp.task(libTask(lib, "clean"), gulp.series(libTask(lib, "clean:js"), libTask(lib, "clean:d.ts")));
 }
 
 if (useBinDist) {
-    gulp.task("ice:module", (cb) => cb());
-    gulp.task("ice:module:clean", (cb) => cb());
-    gulp.task("dist", (cb) => cb());
-    gulp.task("dist:clean", (cb) => cb());
+    gulp.task("ice:module", cb => cb());
+    gulp.task("ice:module:clean", cb => cb());
+    gulp.task("dist", cb => cb());
+    gulp.task("dist:clean", cb => cb());
 } else {
-    gulp.task("dist", gulp.parallel(libs.map(generateTask)));
+    gulp.task("dist", gulp.parallel(libs.map(libName => libTask(libName, "generate"))));
 
-    gulp.task("dist:clean", gulp.parallel(libs.map(libCleanTask)));
+    gulp.task("dist:clean", gulp.parallel(libs.map(libName => libTask(libName, "clean"))));
 
-    gulp.task("ice:module:package", () => gulp.src(["package.json"]).pipe(gulp.dest(path.join("node_modules", "ice"))));
+    gulp.task("ice:module:package", () => gulp.src(["package.json"]).pipe(gulp.dest("node_modules/ice")));
 
     gulp.task(
         "ice:module",
-        gulp.series("ice:module:package", (cb) => {
-            pump(
-                [gulp.src([path.join(root, "src/**/*")]), gulp.dest(path.join(root, "node_modules", "ice", "src"))],
-                cb,
-            );
+        gulp.series("ice:module:package", cb => {
+            pump([gulp.src([`${root}/src/**/*`]), gulp.dest(`${root}/node_modules/ice/src`)], cb);
         }),
     );
 
@@ -160,6 +152,8 @@ const tests = [
     "test/Ice/exceptions",
     "test/Ice/facets",
     "test/Ice/hold",
+    "test/Ice/idleTimeout",
+    "test/Ice/inactivityTimeout",
     "test/Ice/info",
     "test/Ice/inheritance",
     "test/Ice/location",
@@ -181,33 +175,40 @@ const tests = [
     "test/Slice/macros",
 ];
 
-gulp.task("test:common:generate", (cb) => {
+gulp.task("test:common:generate", cb => {
     pump([gulp.src(["../scripts/Controller.ice"]), slice2js(), gulp.dest("test/Common")], cb);
 });
 
 // A rollup plug-in to resolve "net" module as a mockup file.
 
-const nodeMokups = ["net", "fs", "path"];
-function NodeMookupResolver() {
+const nodeMockups = ["net", "fs", "path"];
+function NodeMockupResolver() {
     return {
-        name: "mookup-resolver",
+        name: "mockup-resolver",
         async resolveId(source) {
-            if (nodeMokups.includes(source)) {
-                return path.join(__dirname, `test/Common/${source}.mockup.js`);
+            if (nodeMockups.includes(source)) {
+                return `${__dirname}/test/Common/${source}.mockup.js`;
             }
             return null;
         },
     };
 }
 
-gulp.task("ice:bundle", async (cb) => {
-    let bundle = await rollup({
-        input: "src/index.js",
-        plugins: [NodeMookupResolver()],
-    });
-    return bundle.write({
-        file: "dist/ice.js",
-        format: "esm",
+gulp.task("ice:bundle", cb => {
+    return new Promise(async (resolve, reject) => {
+        try {
+            let bundle = await rollup({
+                input: "src/index.js",
+                plugins: [NodeMockupResolver()],
+            });
+            bundle.write({
+                file: "dist/ice.js",
+                format: "esm",
+            });
+            resolve();
+        } catch (e) {
+            reject(e);
+        }
     });
 });
 
@@ -224,38 +225,44 @@ function IceResolver() {
     };
 }
 
-gulp.task("test:common:bundle", async (cb) => {
-    let bundle = await rollup({
-        input: ["test/Common/ControllerI.js", "test/Common/ControllerWorker.js"],
-        plugins: [IceResolver()],
-    });
-    return bundle.write({
-        format: "esm",
-        output: {
-            dir: "dist/test/Common/",
-        },
+gulp.task("test:common:bundle", cb => {
+    return new Promise(async (resolve, reject) => {
+        try {
+            let bundle = await rollup({
+                input: ["test/Common/ControllerI.js", "test/Common/ControllerWorker.js"],
+                plugins: [IceResolver()],
+            });
+            bundle.write({
+                format: "esm",
+                output: {
+                    dir: "dist/test/Common/",
+                },
+            });
+            resolve();
+        } catch (e) {
+            reject(e);
+        }
     });
 });
 
-gulp.task("test:common:clean", (cb) => {
+gulp.task("test:common:clean", cb => {
     deleteAsync(["test/Common/Controller.js", "test/Common/.depend"]);
     cb();
 });
 
-const testTask = (name) => name.replace(/\//g, "_");
-const testCleanTask = (name) => testTask(name) + ":clean";
-const testBuildTask = (name) => testTask(name) + ":build";
-const testBundleTask = (name) => testTask(name) + ":bundle";
-const testAssetsTask = (name) => testTask(name) + ":assets";
+const testTask = (testName, taskName) => testName.replace(/\//g, "_") + ":" + taskName;
 
 for (const name of tests) {
-    gulp.task(testBuildTask(name), (cb) => {
-        const outputDirectory = path.join(root, name);
+    gulp.task(testTask(name, "build"), cb => {
+        const outputDirectory = `${root}/${name}`;
         pump(
             [
-                gulp.src(path.join(outputDirectory, "*.ice")),
+                gulp.src(`${outputDirectory}/*.ice`),
                 slice2js({
                     include: [outputDirectory],
+                    args: ["--typescript"],
+                    jsbundle: false,
+                    tsbundle: false,
                 }),
                 gulp.dest(outputDirectory),
             ],
@@ -263,14 +270,29 @@ for (const name of tests) {
         );
     });
 
-    gulp.task(testBundleTask(name), async (cb) => {
-        let input = fs.existsSync(path.join(name, "index.js"))
-            ? path.join(name, "index.js")
-            : path.join(name, "Client.js");
+    gulp.task(testTask(name, "ts-compile"), cb => {
+        pump(
+            [
+                gulp.src([`${root}/${name}/*.ts`, `!${root}/${name}/*.d.ts`]),
+                tsc({
+                    lib: ["dom", "es2020"],
+                    target: "es2020",
+                    module: "es2020",
+                    noImplicitAny: true,
+                    moduleResolution: "node",
+                }),
+                gulp.dest(`${root}/${name}`),
+            ],
+            cb,
+        );
+    });
+
+    gulp.task(testTask(name, "bundle"), async cb => {
+        let input = fs.existsSync(`${name}/index.js`) ? `${name}/index.js` : `${name}/Client.js`;
 
         let bundle = await rollup({
             input: input,
-            plugins: [IceResolver(), NodeMookupResolver()],
+            plugins: [IceResolver(), NodeMockupResolver()],
         });
         await bundle.write({
             file: path.join("dist", name, "index.js"),
@@ -278,20 +300,17 @@ for (const name of tests) {
         });
     });
 
-    gulp.task(testAssetsTask(name), async (cb) => {
-        pump([gulp.src("test/Common/controller.html"), gulp.dest(path.join("dist", name))], cb);
+    gulp.task(testTask(name, "copy:assets"), async cb => {
+        pump([gulp.src("test/Common/controller.html"), gulp.dest(`dist/${name}`)], cb);
     });
 
-    gulp.task(testCleanTask(name), (cb) =>
-        pump(
-            [
-                gulp.src(path.join(name, "*.ice")),
-                extReplace(".js"),
-                gulp.src(path.join(name, ".depend"), { allowEmpty: true }),
-                vinylPaths(deleteAsync),
-            ],
-            cb(),
-        ),
+    createCleanTask(testTask(name, "clean:js"), [`${name}/*.ice`], ".js");
+    createCleanTask(testTask(name, "clean:d.ts"), [`${name}/*.ice`], ".d.ts");
+    createCleanTask(testTask(name, "clean:ts"), [`${name}/*.ts`], ".js");
+
+    gulp.task(
+        testTask(name, "clean"),
+        gulp.series(testTask(name, "clean:js"), testTask(name, "clean:d.ts"), testTask(name, "clean:ts")),
     );
 }
 
@@ -301,13 +320,23 @@ gulp.task(
         "ice:bundle",
         "test:common:generate",
         "test:common:bundle",
-        gulp.parallel(tests.map(testBuildTask)),
-        gulp.parallel(tests.map(testBundleTask)),
-        gulp.parallel(tests.map(testAssetsTask)),
+        gulp.series(tests.map(testName => testTask(testName, "build"))),
+        gulp.series(tests.map(testName => testTask(testName, "ts-compile"))),
+        gulp.series(tests.map(testName => testTask(testName, "bundle"))),
+        gulp.series(tests.map(testName => testTask(testName, "copy:assets"))),
     ),
 );
 
-gulp.task("test:clean", gulp.parallel("test:common:clean", tests.map(testCleanTask)));
+gulp.task("test:bundle:clean", () => deleteAsync("dist"));
+
+gulp.task(
+    "test:clean",
+    gulp.series(
+        "test:common:clean",
+        "test:bundle:clean",
+        tests.map(testName => testTask(testName, "clean")),
+    ),
+);
 
 gulp.task("build", gulp.series("dist", "ice:module", "test"));
 gulp.task("clean", gulp.series("dist:clean", "ice:module:clean", "test:clean"));

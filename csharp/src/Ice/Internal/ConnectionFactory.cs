@@ -2,6 +2,7 @@
 
 using System.Diagnostics;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Ice.Internal;
 public class MultiDictionary<K, V> : Dictionary<K, ICollection<V>>
@@ -157,7 +158,6 @@ public sealed class OutgoingConnectionFactory
             // connections, so that callbacks from the router can be
             // received over such connections.
             //
-            DefaultsAndOverrides defaultsAndOverrides = _instance.defaultsAndOverrides();
             for (int i = 0; i < endpoints.Length; i++)
             {
                 EndpointI endpoint = endpoints[i];
@@ -281,9 +281,9 @@ public sealed class OutgoingConnectionFactory
                 {
                     if (connection.isActiveOrHolding()) // Don't return destroyed or un-validated connections
                     {
-                        if (defaultsAndOverrides.overrideCompress)
+                        if (defaultsAndOverrides.overrideCompress is not null)
                         {
-                            compress = defaultsAndOverrides.overrideCompressValue;
+                            compress = defaultsAndOverrides.overrideCompress.Value;
                         }
                         else
                         {
@@ -322,9 +322,9 @@ public sealed class OutgoingConnectionFactory
             {
                 if (connection.isActiveOrHolding()) // Don't return destroyed or un-validated connections
                 {
-                    if (defaultsAndOverrides.overrideCompress)
+                    if (defaultsAndOverrides.overrideCompress is not null)
                     {
-                        compress = defaultsAndOverrides.overrideCompressValue;
+                        compress = defaultsAndOverrides.overrideCompress.Value;
                     }
                     else
                     {
@@ -542,9 +542,9 @@ public sealed class OutgoingConnectionFactory
 
         bool compress;
         DefaultsAndOverrides defaultsAndOverrides = _instance.defaultsAndOverrides();
-        if (defaultsAndOverrides.overrideCompress)
+        if (defaultsAndOverrides.overrideCompress is not null)
         {
-            compress = defaultsAndOverrides.overrideCompressValue;
+            compress = defaultsAndOverrides.overrideCompress.Value;
         }
         else
         {
@@ -1253,23 +1253,40 @@ public sealed class IncomingConnectionFactory : EventHandler, Ice.ConnectionI.St
     //
     // Operations from EventHandler.
     //
-    public override bool startAsync(int operation, AsyncCallback callback, ref bool completedSynchronously)
+    public override bool startAsync(int operation, AsyncCallback completedCallback)
     {
         if (_state >= StateClosed)
         {
             return false;
         }
 
-        Debug.Assert(_acceptor != null);
-        try
+        // Run the IO operation on a .NET thread pool thread to ensure the IO operation won't be interrupted if the
+        // Ice thread pool thread is terminated.
+        Task.Run(() =>
         {
-            completedSynchronously = _acceptor.startAccept(callback, this);
-        }
-        catch (Ice.LocalException ex)
-        {
-            _acceptorException = ex;
-            completedSynchronously = true;
-        }
+            lock (this)
+            {
+                if (_state >= StateClosed)
+                {
+                    completedCallback(this);
+                    return;
+                }
+
+                try
+                {
+                    if (_acceptor.startAccept(completedCallback, this))
+                    {
+                        completedCallback(this);
+                    }
+                }
+                catch (Ice.LocalException ex)
+                {
+                    _acceptorException = ex;
+                    completedCallback(this);
+                }
+            }
+        });
+
         return true;
     }
 
@@ -1299,15 +1316,15 @@ public sealed class IncomingConnectionFactory : EventHandler, Ice.ConnectionI.St
         return _state < StateClosed;
     }
 
-    public override void message(ref ThreadPoolCurrent current)
+    public override void message(ThreadPoolCurrent current)
     {
         Ice.ConnectionI connection = null;
 
-        ThreadPoolMessage msg = new ThreadPoolMessage(this);
+        using ThreadPoolMessage msg = new ThreadPoolMessage(current, this);
 
         lock (this)
         {
-            if (!msg.startIOScope(ref current))
+            if (!msg.startIOScope())
             {
                 return;
             }
@@ -1405,7 +1422,7 @@ public sealed class IncomingConnectionFactory : EventHandler, Ice.ConnectionI.St
             }
             finally
             {
-                msg.finishIOScope(ref current);
+                msg.finishIOScope();
             }
         }
 
@@ -1413,7 +1430,7 @@ public sealed class IncomingConnectionFactory : EventHandler, Ice.ConnectionI.St
         connection.start(this);
     }
 
-    public override void finished(ref ThreadPoolCurrent current)
+    public override void finished(ThreadPoolCurrent current)
     {
         lock (this)
         {
@@ -1489,9 +1506,9 @@ public sealed class IncomingConnectionFactory : EventHandler, Ice.ConnectionI.St
 
         DefaultsAndOverrides defaultsAndOverrides = _instance.defaultsAndOverrides();
 
-        if (defaultsAndOverrides.overrideCompress)
+        if (defaultsAndOverrides.overrideCompress is not null)
         {
-            _endpoint = _endpoint.compress(defaultsAndOverrides.overrideCompressValue);
+            _endpoint = _endpoint.compress(defaultsAndOverrides.overrideCompress.Value);
         }
 
         try
@@ -1553,7 +1570,7 @@ public sealed class IncomingConnectionFactory : EventHandler, Ice.ConnectionI.St
             }
             else
             {
-                throw new Ice.SyscallException(ex);
+                throw new SyscallException(ex);
             }
         }
     }

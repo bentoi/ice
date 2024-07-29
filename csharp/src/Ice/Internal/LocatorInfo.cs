@@ -286,7 +286,7 @@ public sealed class LocatorInfo : IEquatable<LocatorInfo>
             //
             // The locator registry can't be located. We use ordered
             // endpoint selection in case the locator returned a proxy
-            // with some endpoints which are prefered to be tried first.
+            // with some endpoints which are preferred to be tried first.
             //
             _locatorRegistry = (Ice.LocatorRegistryPrx)locatorRegistry.ice_locator(null).ice_endpointSelection(
                 Ice.EndpointSelectionType.Ordered);
@@ -449,7 +449,7 @@ public sealed class LocatorInfo : IEquatable<LocatorInfo>
         {
             throw exc;
         }
-        catch (Ice.AdapterNotFoundException ex)
+        catch (Ice.AdapterNotFoundException)
         {
             Instance instance = @ref.getInstance();
             if (instance.traceLevels().location >= 1)
@@ -460,12 +460,9 @@ public sealed class LocatorInfo : IEquatable<LocatorInfo>
                 instance.initializationData().logger.trace(instance.traceLevels().locationCat, s.ToString());
             }
 
-            Ice.NotRegisteredException e = new Ice.NotRegisteredException(ex);
-            e.kindOfObject = "object adapter";
-            e.id = @ref.getAdapterId();
-            throw e;
+            throw new NotRegisteredException("object adapter", @ref.getAdapterId());
         }
-        catch (Ice.ObjectNotFoundException ex)
+        catch (Ice.ObjectNotFoundException)
         {
             Instance instance = @ref.getInstance();
             if (instance.traceLevels().location >= 1)
@@ -476,10 +473,9 @@ public sealed class LocatorInfo : IEquatable<LocatorInfo>
                 instance.initializationData().logger.trace(instance.traceLevels().locationCat, s.ToString());
             }
 
-            Ice.NotRegisteredException e = new Ice.NotRegisteredException(ex);
-            e.kindOfObject = "object";
-            e.id = Ice.Util.identityToString(@ref.getIdentity(), instance.toStringMode());
-            throw e;
+            throw new NotRegisteredException(
+                "object",
+                Ice.Util.identityToString(@ref.getIdentity(), instance.toStringMode()));
         }
         catch (Ice.NotRegisteredException)
         {

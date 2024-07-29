@@ -3,14 +3,14 @@
 //
 
 #include "../Ice/ConsoleUtil.h"
+#include "../Ice/Options.h"
 #include "../IceLocatorDiscovery/Plugin.h"
 #include "FileParserI.h"
 #include "Glacier2/Router.h"
 #include "Ice/Ice.h"
+#include "Ice/StringUtil.h"
 #include "Ice/UUID.h"
 #include "IceGrid/Registry.h"
-#include "IceUtil/Options.h"
-#include "IceUtil/StringUtil.h"
 #include "Parser.h"
 
 #include <fstream>
@@ -78,7 +78,7 @@ main(int argc, char* argv[])
 
     try
     {
-        IceUtil::CtrlCHandler ctrlCHandler;
+        Ice::CtrlCHandler ctrlCHandler;
         auto defaultProps = Ice::createProperties();
         defaultProps->setProperty("IceGridAdmin.Server.Endpoints", "tcp -h localhost");
         Ice::InitializationData id;
@@ -114,7 +114,7 @@ main(int argc, char* argv[])
             // Expected if the client is interrupted during the initialization.
         }
     }
-    catch (const IceUtil::Exception& ex)
+    catch (const Ice::Exception& ex)
     {
         consoleErr << args[0] << ": " << ex << endl;
         status = 1;
@@ -174,7 +174,7 @@ getPassword(const string& prompt)
     }
 #endif
     consoleOut << endl;
-    return IceUtilInternal::trim(password);
+    return IceInternal::trim(password);
 }
 
 extern "C" ICE_LOCATOR_DISCOVERY_API Ice::Plugin*
@@ -186,19 +186,19 @@ run(const Ice::StringSeq& args)
     string commands;
     bool debug;
 
-    IceUtilInternal::Options opts;
+    IceInternal::Options opts;
     opts.addOpt("h", "help");
     opts.addOpt("v", "version");
-    opts.addOpt("e", "", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::Repeat);
-    opts.addOpt("i", "instanceName", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::NoRepeat);
-    opts.addOpt("H", "host", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::NoRepeat);
-    opts.addOpt("P", "port", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::NoRepeat);
-    opts.addOpt("u", "username", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::NoRepeat);
-    opts.addOpt("p", "password", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::NoRepeat);
+    opts.addOpt("e", "", IceInternal::Options::NeedArg, "", IceInternal::Options::Repeat);
+    opts.addOpt("i", "instanceName", IceInternal::Options::NeedArg, "", IceInternal::Options::NoRepeat);
+    opts.addOpt("H", "host", IceInternal::Options::NeedArg, "", IceInternal::Options::NoRepeat);
+    opts.addOpt("P", "port", IceInternal::Options::NeedArg, "", IceInternal::Options::NoRepeat);
+    opts.addOpt("u", "username", IceInternal::Options::NeedArg, "", IceInternal::Options::NoRepeat);
+    opts.addOpt("p", "password", IceInternal::Options::NeedArg, "", IceInternal::Options::NoRepeat);
     opts.addOpt("S", "ssl");
     opts.addOpt("d", "debug");
     opts.addOpt("s", "server");
-    opts.addOpt("r", "replica", IceUtilInternal::Options::NeedArg, "", IceUtilInternal::Options::NoRepeat);
+    opts.addOpt("r", "replica", IceInternal::Options::NeedArg, "", IceInternal::Options::NoRepeat);
 
     try
     {
@@ -209,9 +209,9 @@ run(const Ice::StringSeq& args)
             return 1;
         }
     }
-    catch (const IceUtilInternal::BadOptException& e)
+    catch (const IceInternal::BadOptException& e)
     {
-        consoleErr << e.reason << endl;
+        consoleErr << e.what() << endl;
         usage(args[0]);
         return 1;
     }
@@ -358,7 +358,7 @@ run(const Ice::StringSeq& args)
                         {
                             return 1;
                         }
-                        line = IceUtilInternal::trim(line);
+                        line = IceInternal::trim(line);
 
                         istringstream is(line);
                         is >> num;
@@ -391,10 +391,10 @@ run(const Ice::StringSeq& args)
         if (communicator->getDefaultRouter())
         {
             // Use SSL if available.
-            router = Glacier2::RouterPrx(communicator->getDefaultRouter()->ice_preferSecure(true));
+            router = Ice::uncheckedCast<Glacier2::RouterPrx>(communicator->getDefaultRouter()->ice_preferSecure(true));
             if (ssl)
             {
-                session = optional<IceGrid::AdminSessionPrx>(router->createSessionFromSecureConnection());
+                session = Ice::uncheckedCast<IceGrid::AdminSessionPrx>(router->createSessionFromSecureConnection());
                 if (!session)
                 {
                     consoleErr
@@ -414,7 +414,7 @@ run(const Ice::StringSeq& args)
                     {
                         return 1;
                     }
-                    id = IceUtilInternal::trim(id);
+                    id = IceInternal::trim(id);
                 }
 
                 if (password.empty())
@@ -428,7 +428,7 @@ run(const Ice::StringSeq& args)
 #endif
                 }
 
-                session = optional<IceGrid::AdminSessionPrx>(router->createSession(id, password));
+                session = Ice::uncheckedCast<IceGrid::AdminSessionPrx>(router->createSession(id, password));
                 fill(password.begin(), password.end(), '\0'); // Zero the password string.
 
                 if (!session)
@@ -468,7 +468,7 @@ run(const Ice::StringSeq& args)
             // no need to go further. Otherwise, we get the proxy of local registry
             // proxy.
             //
-            IceGrid::LocatorPrx locator{*communicator->getDefaultLocator()};
+            auto locator = Ice::uncheckedCast<IceGrid::LocatorPrx>(*communicator->getDefaultLocator());
             optional<IceGrid::RegistryPrx> localRegistry;
             try
             {
@@ -490,7 +490,7 @@ run(const Ice::StringSeq& args)
                 // The locator local registry isn't the registry we want to connect to.
                 try
                 {
-                    registry = optional<IceGrid::RegistryPrx>(locator->findObjectById(registryId));
+                    registry = Ice::uncheckedCast<IceGrid::RegistryPrx>(locator->findObjectById(registryId));
                     if (!registry)
                     {
                         consoleErr << args[0] << ": could not contact an IceGrid registry" << endl;
@@ -540,7 +540,7 @@ run(const Ice::StringSeq& args)
             {
                 auto colloc = communicator->createObjectAdapter(""); // colloc-only adapter
                 communicator->setDefaultRouter(
-                    Ice::RouterPrx{colloc->addWithUUID(make_shared<ReuseConnectionRouter>(locator))});
+                    colloc->addWithUUID<Ice::RouterPrx>(make_shared<ReuseConnectionRouter>(locator)));
                 registry = registry->ice_router(communicator->getDefaultRouter());
             }
 
@@ -566,7 +566,7 @@ run(const Ice::StringSeq& args)
                     {
                         return 1;
                     }
-                    id = IceUtilInternal::trim(id);
+                    id = IceInternal::trim(id);
                 }
 
                 if (password.empty())

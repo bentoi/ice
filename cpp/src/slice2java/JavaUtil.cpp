@@ -3,10 +3,10 @@
 //
 
 #include "JavaUtil.h"
+#include "../Ice/FileUtil.h"
 #include "../Slice/FileTracker.h"
 #include "../Slice/Util.h"
-#include "IceUtil/FileUtil.h"
-#include "IceUtil/StringUtil.h"
+#include "Ice/StringUtil.h"
 
 #include <algorithm>
 #include <cassert>
@@ -23,19 +23,10 @@
 
 using namespace std;
 using namespace Slice;
-using namespace IceUtil;
-using namespace IceUtilInternal;
+using namespace IceInternal;
 
 namespace
 {
-    void hashAdd(long& hashCode, const std::string& value)
-    {
-        for (std::string::const_iterator p = value.begin(); p != value.end(); ++p)
-        {
-            hashCode = ((hashCode << 5) + hashCode) ^ *p;
-        }
-    }
-
     string typeToBufferString(const TypePtr& type)
     {
         static const char* builtinBufferTable[] = {
@@ -527,46 +518,83 @@ namespace
     };
 }
 
-long
-Slice::computeSerialVersionUUID(const ClassDefPtr& p)
+string
+Slice::getSerialVersionUID(const ContainedPtr& p)
 {
-    ostringstream os;
-    os << "Name: " << p->scoped();
+    optional<std::int64_t> serialVersionUID = nullopt;
 
-    os << " Base: [";
-    if (p->base())
+    // Check if the user provided their own UID value with metadata.
+    string metadata;
+    if (p->findMetaData("java:serialVersionUID", metadata))
     {
-        os << p->base()->scoped();
-    }
-    os << "]";
-
-    os << " Members: [";
-    DataMemberList members = p->dataMembers();
-    for (DataMemberList::const_iterator i = members.begin(); i != members.end();)
-    {
-        os << (*i)->name() << ":" << (*i)->type();
-        i++;
-        if (i != members.end())
+        string::size_type pos = metadata.rfind(":") + 1;
+        if (pos == string::npos)
         {
-            os << ", ";
+            ostringstream os;
+            os << "missing serialVersionUID value for " << p->kindOf() << " `" << p->scoped()
+               << "'; generating default value";
+            const DefinitionContextPtr dc = p->unit()->findDefinitionContext(p->file());
+            dc->warning(InvalidMetaData, "", "", os.str());
+        }
+        else
+        {
+            try
+            {
+                metadata = metadata.substr(pos);
+                serialVersionUID = std::stoll(metadata, nullptr, 0);
+            }
+            catch (const std::exception&)
+            {
+                ostringstream os;
+                os << "ignoring invalid serialVersionUID for " << p->kindOf() << " `" << p->scoped()
+                   << "'; generating default value";
+                const DefinitionContextPtr dc = p->unit()->findDefinitionContext(p->file());
+                dc->warning(InvalidMetaData, "", "", os.str());
+            }
         }
     }
-    os << "]";
 
-    const string data = os.str();
-    long hashCode = 5381;
-    hashAdd(hashCode, data);
-    return hashCode;
+    // If the user didn't specify a UID through metadata (or it was malformed), compute a default UID instead.
+    if (!serialVersionUID)
+    {
+        serialVersionUID = computeDefaultSerialVersionUID(p);
+    }
+
+    ostringstream os;
+    os << "private static final long serialVersionUID = " << *serialVersionUID << "L;";
+    return os.str();
 }
 
-long
-Slice::computeSerialVersionUUID(const StructPtr& p)
+int64_t
+Slice::computeDefaultSerialVersionUID(const ContainedPtr& p)
 {
-    ostringstream os;
+    string name = p->scoped();
+    DataMemberList members;
+    optional<string> baseName;
+    if (ClassDefPtr cl = dynamic_pointer_cast<ClassDef>(p))
+    {
+        members = cl->dataMembers();
+        baseName = (cl->base()) ? cl->base()->scoped() : "";
+    }
+    if (ExceptionPtr ex = dynamic_pointer_cast<Exception>(p))
+    {
+        members = ex->dataMembers();
+        baseName = nullopt;
+    }
+    if (StructPtr st = dynamic_pointer_cast<Struct>(p))
+    {
+        members = st->dataMembers();
+        baseName = nullopt;
+    }
 
-    os << "Name: " << p->scoped();
+    // Actually compute the `SerialVersionUID` value.
+    ostringstream os;
+    os << "Name: " << name;
+    if (baseName)
+    {
+        os << " Base: [" << *baseName << "]";
+    }
     os << " Members: [";
-    DataMemberList members = p->dataMembers();
     for (DataMemberList::const_iterator i = members.begin(); i != members.end();)
     {
         os << (*i)->name() << ":" << (*i)->type();
@@ -578,34 +606,13 @@ Slice::computeSerialVersionUUID(const StructPtr& p)
     }
     os << "]";
 
+    // We use a custom hash instead of relying on `std::hash` to ensure cross-platform consistency.
     const string data = os.str();
-    long hashCode = 5381;
-    hashAdd(hashCode, data);
-    return hashCode;
-}
-
-long
-Slice::computeSerialVersionUUID(const ExceptionPtr& p)
-{
-    ostringstream os;
-
-    os << "Name: " << p->scoped();
-    os << " Members: [";
-    DataMemberList members = p->dataMembers();
-    for (DataMemberList::const_iterator i = members.begin(); i != members.end();)
+    int64_t hashCode = 5381;
+    for (const auto& c : data)
     {
-        os << (*i)->name() << ":" << (*i)->type();
-        i++;
-        if (i != members.end())
-        {
-            os << ", ";
-        }
+        hashCode = ((hashCode << 5) + hashCode) ^ c;
     }
-    os << "]";
-
-    const string data = os.str();
-    long hashCode = 5381;
-    hashAdd(hashCode, data);
     return hashCode;
 }
 
@@ -673,8 +680,8 @@ Slice::JavaOutput::openClass(const string& cls, const string& prefix, const stri
                 path += dir.substr(start);
             }
 
-            IceUtilInternal::structstat st;
-            if (!IceUtilInternal::stat(path, &st))
+            IceInternal::structstat st;
+            if (!IceInternal::stat(path, &st))
             {
                 if (!(st.st_mode & S_IFDIR))
                 {
@@ -686,17 +693,17 @@ Slice::JavaOutput::openClass(const string& cls, const string& prefix, const stri
                 continue;
             }
 
-            int err = IceUtilInternal::mkdir(path, 0777);
+            int err = IceInternal::mkdir(path, 0777);
             // If slice2java is run concurrently, it's possible that another instance of slice2java has already
             // created the directory.
-            if (err == 0 || (errno == EEXIST && IceUtilInternal::directoryExists(path)))
+            if (err == 0 || (errno == EEXIST && IceInternal::directoryExists(path)))
             {
                 // Directory successfully created or already exists.
             }
             else
             {
                 ostringstream os;
-                os << "cannot create directory `" << path << "': " << IceUtilInternal::errorToString(errno);
+                os << "cannot create directory `" << path << "': " << IceInternal::errorToString(errno);
                 throw FileException(__FILE__, __LINE__, os.str());
             }
             FileTracker::instance()->addDirectory(path);
@@ -734,7 +741,7 @@ Slice::JavaOutput::openClass(const string& cls, const string& prefix, const stri
     else
     {
         ostringstream os;
-        os << "cannot open file `" << path << "': " << IceUtilInternal::errorToString(errno);
+        os << "cannot open file `" << path << "': " << IceInternal::errorToString(errno);
         throw FileException(__FILE__, __LINE__, os.str());
     }
 }

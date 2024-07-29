@@ -4,8 +4,9 @@
 
 import { HashMap } from "./HashMap.js";
 import { Promise } from "./Promise.js";
-import { NoEndpointException } from "./LocalException.js";
+import { NoEndpointException } from "./LocalExceptions.js";
 import { Debug } from "./Debug.js";
+import { ObjectPrx } from "./ObjectPrx.js";
 
 export class RouterInfo {
     constructor(router) {
@@ -53,36 +54,33 @@ export class RouterInfo {
         } else {
             this._router
                 .getClientProxy()
-                .then((result) =>
-                    this.setClientEndpoints(result[0], result[1] !== undefined ? result[1] : true, promise),
-                )
+                .then(result => this.setClientEndpoints(result[0], result[1] !== undefined ? result[1] : true, promise))
                 .catch(promise.reject);
         }
         return promise;
     }
 
     getServerEndpoints() {
-        return this._router.getServerProxy().then((serverProxy) => {
+        return this._router.getServerProxy().then(serverProxy => {
             if (serverProxy === null) {
-                throw new NoEndpointException();
+                throw new NoEndpointException("Router::getServerProxy returned a null proxy.");
             }
             serverProxy = serverProxy.ice_router(null); // The server proxy cannot be routed.
             return serverProxy._getReference().getEndpoints();
         });
     }
 
-    addProxy(proxy) {
-        Debug.assert(proxy !== null);
+    addProxy(reference) {
+        const identity = reference.getIdentity();
+        Debug.assert(reference !== null);
         if (!this._hasRoutingTable) {
             return Promise.resolve(); // The router implementation doesn't maintain a routing table.
-        } else if (this._identities.has(proxy.ice_getIdentity())) {
-            //
+        } else if (this._identities.has(identity)) {
             // Only add the proxy to the router if it's not already in our local map.
-            //
             return Promise.resolve();
         } else {
-            return this._router.addProxies([proxy]).then((evictedProxies) => {
-                this.addAndEvictProxies(proxy, evictedProxies);
+            return this._router.addProxies([new ObjectPrx(reference)]).then(evictedProxies => {
+                this.addAndEvictProxies(identity, evictedProxies);
             });
         }
     }
@@ -102,40 +100,21 @@ export class RouterInfo {
     setClientEndpoints(clientProxy, hasRoutingTable, promise) {
         if (this._clientEndpoints === null) {
             this._hasRoutingTable = hasRoutingTable;
-            if (clientProxy === null) {
-                //
-                // If getClientProxy() return nil, use router endpoints.
-                //
-                this._clientEndpoints = this._router._getReference().getEndpoints();
-                promise.resolve(this._clientEndpoints);
-            } else {
-                clientProxy = clientProxy.ice_router(null); // The client proxy cannot be routed.
-
-                //
-                // In order to avoid creating a new connection to the
-                // router, we must use the same timeout as the already
-                // existing connection.
-                //
-                this._router
-                    .ice_getConnection()
-                    .then((con) => {
-                        this._clientEndpoints = clientProxy.ice_timeout(con.timeout())._getReference().getEndpoints();
-                        promise.resolve(this._clientEndpoints);
-                    })
-                    .catch(promise.reject);
-            }
-        } else {
-            promise.resolve(this._clientEndpoints);
+            this._clientEndpoints =
+                clientProxy === null
+                    ? this._router._getReference().getEndpoints()
+                    : clientProxy._getReference().getEndpoints();
         }
+        promise.resolve(this._clientEndpoints);
     }
 
-    addAndEvictProxies(proxy, evictedProxies) {
+    addAndEvictProxies(identity, evictedProxies) {
         //
         // Check if the proxy hasn't already been evicted by a
         // concurrent addProxies call. If it's the case, don't
         // add it to our local map.
         //
-        const index = this._evictedIdentities.findIndex((e) => e.equals(proxy.ice_getIdentity()));
+        const index = this._evictedIdentities.findIndex(e => e.equals(identity));
         if (index >= 0) {
             this._evictedIdentities.splice(index, 1);
         } else {
@@ -143,13 +122,13 @@ export class RouterInfo {
             // If we successfully added the proxy to the router,
             // we add it to our local map.
             //
-            this._identities.set(proxy.ice_getIdentity(), 1);
+            this._identities.set(identity, 1);
         }
 
         //
         // We also must remove whatever proxies the router evicted.
         //
-        evictedProxies.forEach((proxy) => {
+        evictedProxies.forEach(proxy => {
             this._identities.delete(proxy.ice_getIdentity());
         });
     }

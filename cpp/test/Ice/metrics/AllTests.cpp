@@ -391,13 +391,13 @@ allTests(Test::TestHelper* helper, const CommunicatorObserverIPtr& obsv)
     optional<Ice::ObjectPrx> admin = communicator->getAdmin();
     test(admin);
 
-    Ice::PropertiesAdminPrx clientProps = Ice::PropertiesAdminPrx(admin->ice_facet("Properties"));
-    IceMX::MetricsAdminPrx clientMetrics = IceMX::MetricsAdminPrx(admin->ice_facet("Metrics"));
+    auto clientProps = Ice::uncheckedCast<Ice::PropertiesAdminPrx>(admin->ice_facet("Properties"));
+    auto clientMetrics = Ice::uncheckedCast<IceMX::MetricsAdminPrx>(admin->ice_facet("Metrics"));
 
     admin = metrics->getAdmin();
 
-    Ice::PropertiesAdminPrx serverProps = Ice::PropertiesAdminPrx(admin->ice_facet("Properties"));
-    IceMX::MetricsAdminPrx serverMetrics = IceMX::MetricsAdminPrx(admin->ice_facet("Metrics"));
+    auto serverProps = Ice::uncheckedCast<Ice::PropertiesAdminPrx>(admin->ice_facet("Properties"));
+    auto serverMetrics = Ice::uncheckedCast<IceMX::MetricsAdminPrx>(admin->ice_facet("Metrics"));
 
     UpdateCallbackIPtr update = make_shared<UpdateCallbackI>(serverProps);
 
@@ -878,7 +878,7 @@ allTests(Test::TestHelper* helper, const CommunicatorObserverIPtr& obsv)
     dm1 = dynamic_pointer_cast<IceMX::DispatchMetrics>(map["opWithUnknownException"]);
     test(dm1->current <= 1 && dm1->total == 1 && dm1->failures == 1 && dm1->userException == 0);
     checkFailure(serverMetrics, "Dispatch", dm1->id, "unknown", 1);
-    test(dm1->size == 41 && dm1->replySize == 24);
+    test(dm1->size == 41 && dm1->replySize == 45);
 
     InvokeOp op(metrics);
 
@@ -1195,7 +1195,7 @@ allTests(Test::TestHelper* helper, const CommunicatorObserverIPtr& obsv)
     test(collocated ? (im1->collocated.size() == 1) : (im1->remotes.size() == 1));
     rim1 = dynamic_pointer_cast<IceMX::ChildInvocationMetrics>(collocated ? im1->collocated[0] : im1->remotes[0]);
     test(rim1->current == 0 && rim1->total == 3 && rim1->failures == 0);
-    test(rim1->size == 123 && rim1->replySize == 72);
+    test(rim1->size == 123 && rim1->replySize == 135);
 
     checkFailure(clientMetrics, "Invocation", im1->id, "::Ice::UnknownException", 3);
 

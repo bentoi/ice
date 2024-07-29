@@ -4,7 +4,7 @@
 
 #include "PythonUtil.h"
 #include "../Slice/Util.h"
-#include "IceUtil/StringUtil.h"
+#include "Ice/StringUtil.h"
 #include <algorithm>
 #include <cassert>
 #include <climits>
@@ -12,8 +12,7 @@
 
 using namespace std;
 using namespace Slice;
-using namespace IceUtil;
-using namespace IceUtilInternal;
+using namespace IceInternal;
 
 namespace
 {
@@ -30,6 +29,8 @@ namespace
         }
         return name;
     }
+
+    const string tripleQuotes = "\"\"\"";
 }
 
 namespace Slice
@@ -95,7 +96,7 @@ namespace Slice
         class CodeVisitor final : public ParserVisitor
         {
         public:
-            CodeVisitor(IceUtilInternal::Output&, set<string>&);
+            CodeVisitor(IceInternal::Output&, set<string>&);
 
             bool visitModuleStart(const ModulePtr&) final;
             void visitModuleEnd(const ModulePtr&) final;
@@ -407,58 +408,58 @@ Slice::Python::CodeVisitor::visitInterfaceDecl(const InterfaceDeclPtr& p)
 void
 Slice::Python::CodeVisitor::writeOperations(const InterfaceDefPtr& p)
 {
-    OperationList ops = p->operations();
-    if (!ops.empty())
+    OperationList operations = p->operations();
+    //
+    // Emit a placeholder for each operation.
+    //
+    for (const auto& operation : operations)
     {
-        //
-        // Emit a placeholder for each operation.
-        //
-        for (OperationList::iterator oli = ops.begin(); oli != ops.end(); ++oli)
+        string fixedOpName = fixIdent(operation->name());
+
+        if (operation->hasMarshaledResult())
         {
-            string fixedOpName = fixIdent((*oli)->name());
-
-            if ((*oli)->hasMarshaledResult())
-            {
-                string name = (*oli)->name();
-                name[0] = static_cast<char>(toupper(static_cast<unsigned char>(name[0])));
-                _out << sp;
-                _out << nl << "\"\"\"";
-                _out << nl << "Immediately marshals the result of an invocation of " << (*oli)->name() << nl
-                     << "and returns an object that the servant implementation must return" << nl << "as its result."
-                     << nl << "Arguments:" << nl << "result -- The result (or result tuple) of the invocation." << nl
-                     << "current -- The Current object passed to the invocation." << nl
-                     << "Returns: An object containing the marshaled result.";
-                _out << nl << "\"\"\"";
-                _out << nl << "@staticmethod";
-                _out << nl << "def " << name << "MarshaledResult(result, current):";
-                _out.inc();
-                _out << nl << "return IcePy.MarshaledResult(result, _M_" << getAbsolute(p) << "._op_" << (*oli)->name()
-                     << ", current.adapter.getCommunicator().getImpl(), current.encoding)";
-                _out.dec();
-            }
-
-            _out << sp << nl << "def " << fixedOpName << "(self";
-
-            ParamDeclList params = (*oli)->parameters();
-
-            for (ParamDeclList::iterator pli = params.begin(); pli != params.end(); ++pli)
-            {
-                if (!(*pli)->isOutParam())
-                {
-                    _out << ", " << fixIdent((*pli)->name());
-                }
-            }
-
-            const string currentParamName = getEscapedParamName(*oli, "current");
-            _out << ", " << currentParamName << "=None";
-            _out << "):";
+            string name = operation->name();
+            name[0] = static_cast<char>(toupper(static_cast<unsigned char>(name[0])));
+            _out << sp;
+            _out << nl << "@staticmethod";
+            _out << nl << "def " << name << "MarshaledResult(result, current):";
             _out.inc();
-
-            writeDocstring(*oli, DocAsyncDispatch);
-
-            _out << nl << "raise NotImplementedError(\"servant method '" << fixedOpName << "' not implemented\")";
+            _out << nl << tripleQuotes;
+            _out << nl << "Immediately marshals the result of an invocation of " << name;
+            _out << nl << "and returns an object that the servant implementation must return";
+            _out << nl << "as its result.";
+            _out << nl;
+            _out << nl << "Args:";
+            _out << nl << "  result: The result (or result tuple) of the invocation.";
+            _out << nl << "  current: The Current object passed to the invocation.";
+            _out << nl;
+            _out << nl << "Returns";
+            _out << nl << "  An object containing the marshaled result.";
+            _out << nl << tripleQuotes;
+            _out << nl << "return IcePy.MarshaledResult(result, _M_" << getAbsolute(p) << "._op_" << fixedOpName
+                 << ", current.adapter.getCommunicator()._getImpl(), current.encoding)";
             _out.dec();
         }
+
+        _out << sp << nl << "def " << fixedOpName << "(self";
+
+        for (const auto& param : operation->parameters())
+        {
+            if (!param->isOutParam())
+            {
+                _out << ", " << fixIdent(param->name());
+            }
+        }
+
+        const string currentParamName = getEscapedParamName(operation, "current");
+        _out << ", " << currentParamName << "=None";
+        _out << "):";
+        _out.inc();
+
+        writeDocstring(operation, DocAsyncDispatch);
+
+        _out << nl << "raise NotImplementedError(\"servant method '" << fixedOpName << "' not implemented\")";
+        _out.dec();
     }
 }
 
@@ -474,7 +475,7 @@ Slice::Python::CodeVisitor::visitClassDefStart(const ClassDefPtr& p)
 
     _out << sp << nl << "if " << getDictLookup(p) << ':';
     _out.inc();
-    _out << nl << "_M_" << abs << " = Ice.createTempClass()";
+    _out << nl << "_M_" << abs << " = None";
     _out << nl << "class " << valueName << '(';
     if (!base)
     {
@@ -646,16 +647,11 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
     string prxType = getAbsolute(p, "_t_", "Prx");
     InterfaceList bases = p->bases();
 
-    // TODO: remove this interface-by-value.
-    _out << sp << nl << "_M_" << type << " = IcePy.defineValue('" << scoped << "', Ice.Value, -1, ";
-    writeMetaData(p->getMetaData());
-    _out << ", True, None, ())";
-
     _out << sp << nl << "if " << getDictLookup(p, "", "Prx") << ':';
     _out.inc();
 
     // Define the proxy class
-    _out << nl << "_M_" << prxAbs << " = Ice.createTempClass()";
+    _out << nl << "_M_" << prxAbs << " = None";
     _out << nl << "class " << prxName << '(';
 
     {
@@ -687,21 +683,42 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
     _out << "):";
     _out.inc();
 
-    OperationList ops = p->operations();
-    for (OperationList::iterator oli = ops.begin(); oli != ops.end(); ++oli)
+    _out << sp;
+    _out << nl << "def __init__(self, communicator, proxyString):";
+    _out.inc();
+    _out << nl << tripleQuotes;
+    _out << nl << "Creates a new " << prxName << " proxy";
+    _out << nl;
+    _out << nl << "Parameters";
+    _out << nl << "----------";
+    _out << nl << "communicator : Ice.Communicator";
+    _out << nl << "    The communicator of the new proxy.";
+    _out << nl << "proxyString : str";
+    _out << nl << "    The string representation of the proxy.";
+    _out << nl;
+    _out << nl << "Raises";
+    _out << nl << "------";
+    _out << nl << "ParseException";
+    _out << nl << "    Thrown when proxyString is not a valid proxy string.";
+    _out << nl << tripleQuotes;
+    _out << nl << "super().__init__(communicator, proxyString)";
+    _out.dec();
+
+    OperationList operations = p->operations();
+    for (const auto& operation : operations)
     {
-        string fixedOpName = fixIdent((*oli)->name());
+        string fixedOpName = fixIdent(operation->name());
         if (fixedOpName == "checkedCast" || fixedOpName == "uncheckedCast")
         {
             fixedOpName.insert(0, "_");
         }
-        TypePtr ret = (*oli)->returnType();
-        ParamDeclList paramList = (*oli)->parameters();
+        TypePtr ret = operation->returnType();
+        ParamDeclList paramList = operation->parameters();
         string inParams;
         string inParamsDecl;
 
         // Find the last required parameter, all optional parameters after the last required parameter will use
-        // Ice.Unset as the default.
+        // None as the default.
         ParamDeclPtr lastRequiredParameter;
         for (ParamDeclList::const_iterator q = paramList.begin(); q != paramList.end(); ++q)
         {
@@ -725,7 +742,7 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
                 inParams.append(param);
                 if (afterLastRequiredParameter)
                 {
-                    param += "=Ice.Unset";
+                    param += "=None";
                 }
                 inParamsDecl.append(param);
 
@@ -737,16 +754,16 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
         }
 
         _out << sp;
-        writeDocstring(*oli, DocSync);
         _out << nl << "def " << fixedOpName << "(self";
         if (!inParamsDecl.empty())
         {
             _out << ", " << inParamsDecl;
         }
-        const string contextParamName = getEscapedParamName(*oli, "context");
+        const string contextParamName = getEscapedParamName(operation, "context");
         _out << ", " << contextParamName << "=None):";
         _out.inc();
-        _out << nl << "return _M_" << classAbs << "._op_" << (*oli)->name() << ".invoke(self, ((" << inParams;
+        writeDocstring(operation, DocSync);
+        _out << nl << "return _M_" << classAbs << "._op_" << operation->name() << ".invoke(self, ((" << inParams;
         if (!inParams.empty() && inParams.find(',') == string::npos)
         {
             _out << ", ";
@@ -758,15 +775,15 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
         // Async operations.
         //
         _out << sp;
-        writeDocstring(*oli, DocAsync);
-        _out << nl << "def " << (*oli)->name() << "Async(self";
+        _out << nl << "def " << operation->name() << "Async(self";
         if (!inParams.empty())
         {
             _out << ", " << inParams;
         }
         _out << ", " << contextParamName << "=None):";
         _out.inc();
-        _out << nl << "return _M_" << classAbs << "._op_" << (*oli)->name() << ".invokeAsync(self, ((" << inParams;
+        writeDocstring(operation, DocAsync);
+        _out << nl << "return _M_" << classAbs << "._op_" << operation->name() << ".invokeAsync(self, ((" << inParams;
         if (!inParams.empty() && inParams.find(',') == string::npos)
         {
             _out << ", ";
@@ -803,7 +820,7 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
     registerName(prxName);
 
     // Define the servant class
-    _out << sp << nl << "_M_" << classAbs << " = Ice.createTempClass()";
+    _out << sp << nl << "_M_" << classAbs << " = None";
     _out << nl << "class " << className << '(';
     {
         vector<string> baseClasses;
@@ -912,17 +929,17 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
     // where InParams and OutParams are tuples of type descriptions, and Exceptions
     // is a tuple of exception type ids.
     //
-    if (!ops.empty())
+    if (!operations.empty())
     {
         _out << sp;
     }
-    for (OperationList::iterator s = ops.begin(); s != ops.end(); ++s)
+    for (const auto& operation : operations)
     {
-        ParamDeclList params = (*s)->parameters();
+        ParamDeclList params = operation->parameters();
         ParamDeclList::iterator t;
         int count;
         string format;
-        switch ((*s)->format())
+        switch (operation->format())
         {
             case DefaultFormat:
                 format = "None";
@@ -935,10 +952,10 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
                 break;
         }
 
-        _out << nl << className << "._op_" << (*s)->name() << " = IcePy.Operation('" << (*s)->name() << "', "
-             << getOperationMode((*s)->mode()) << ", "
-             << ((p->hasMetaData("amd") || (*s)->hasMetaData("amd")) ? "True" : "False") << ", " << format << ", ";
-        writeMetaData((*s)->getMetaData());
+        _out << nl << className << "._op_" << operation->name() << " = IcePy.Operation('" << operation->name() << "', "
+             << getOperationMode(operation->mode()) << ", "
+             << ((p->hasMetaData("amd") || operation->hasMetaData("amd")) ? "True" : "False") << ", " << format << ", ";
+        writeMetaData(operation->getMetaData());
         _out << ", (";
         for (t = params.begin(), count = 0; t != params.end(); ++t)
         {
@@ -984,7 +1001,7 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
             _out << ',';
         }
         _out << "), ";
-        TypePtr returnType = (*s)->returnType();
+        TypePtr returnType = operation->returnType();
         if (returnType)
         {
             //
@@ -994,15 +1011,15 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
             //
             _out << "((), ";
             writeType(returnType);
-            _out << ", " << ((*s)->returnIsOptional() ? "True" : "False") << ", "
-                 << ((*s)->returnIsOptional() ? (*s)->returnTag() : 0) << ')';
+            _out << ", " << (operation->returnIsOptional() ? "True" : "False") << ", "
+                 << (operation->returnIsOptional() ? operation->returnTag() : 0) << ')';
         }
         else
         {
             _out << "None";
         }
         _out << ", (";
-        ExceptionList exceptions = (*s)->throws();
+        ExceptionList exceptions = operation->throws();
         for (ExceptionList::iterator u = exceptions.begin(); u != exceptions.end(); ++u)
         {
             if (u != exceptions.begin())
@@ -1017,11 +1034,11 @@ Slice::Python::CodeVisitor::visitInterfaceDefStart(const InterfaceDefPtr& p)
         }
         _out << "))";
 
-        if ((*s)->isDeprecated(true))
+        if (operation->isDeprecated(true))
         {
             // Get the deprecation reason if present, or default to an empty string.
-            string reason = (*s)->getDeprecationReason(true).value_or("");
-            _out << nl << className << "._op_" << (*s)->name() << ".deprecate(\"" << reason << "\")";
+            string reason = operation->getDeprecationReason(true).value_or("");
+            _out << nl << className << "._op_" << operation->name() << ".deprecate(\"" << reason << "\")";
         }
     }
 
@@ -1045,7 +1062,7 @@ Slice::Python::CodeVisitor::visitExceptionStart(const ExceptionPtr& p)
 
     _out << sp << nl << "if " << getDictLookup(p) << ':';
     _out.inc();
-    _out << nl << "_M_" << abs << " = Ice.createTempClass()";
+    _out << nl << "_M_" << abs << " = None";
     _out << nl << "class " << name << '(';
     ExceptionPtr base = p->base();
     string baseName;
@@ -1199,7 +1216,7 @@ Slice::Python::CodeVisitor::visitStructStart(const StructPtr& p)
 
     _out << sp << nl << "if " << getDictLookup(p) << ':';
     _out.inc();
-    _out << nl << "_M_" << abs << " = Ice.createTempClass()";
+    _out << nl << "_M_" << abs << " = None";
     _out << nl << "class " << name << "(object):";
     _out.inc();
 
@@ -1454,44 +1471,16 @@ Slice::Python::CodeVisitor::visitStructStart(const StructPtr& p)
 void
 Slice::Python::CodeVisitor::visitSequence(const SequencePtr& p)
 {
-    static const string protobuf = "python:protobuf:";
-    StringList metaData = p->getMetaData();
-    bool isCustom = false;
-    string customType;
-    for (const auto& q : metaData)
-    {
-        if (q.find(protobuf) == 0)
-        {
-            BuiltinPtr builtin = dynamic_pointer_cast<Builtin>(p->type());
-            if (!builtin || builtin->kind() != Builtin::KindByte)
-            {
-                continue;
-            }
-            isCustom = true;
-            customType = q.substr(protobuf.size());
-            break;
-        }
-    }
-
     // Emit the type information.
+    StringList metaData = p->getMetaData();
     string scoped = p->scoped();
     _out << sp << nl << "if " << getDictLookup(p, "_t_") << ':';
     _out.inc();
-    if (isCustom)
-    {
-        string package = customType.substr(0, customType.find('.'));
-        _out << nl << "import " << package;
-        _out << nl << "_M_" << getAbsolute(p, "_t_") << " = IcePy.defineCustom('" << scoped << "', " << customType
-             << ")";
-    }
-    else
-    {
-        _out << nl << "_M_" << getAbsolute(p, "_t_") << " = IcePy.defineSequence('" << scoped << "', ";
-        writeMetaData(metaData);
-        _out << ", ";
-        writeType(p->type());
-        _out << ")";
-    }
+    _out << nl << "_M_" << getAbsolute(p, "_t_") << " = IcePy.defineSequence('" << scoped << "', ";
+    writeMetaData(metaData);
+    _out << ", ";
+    writeType(p->type());
+    _out << ")";
     _out.dec();
 }
 
@@ -1523,7 +1512,7 @@ Slice::Python::CodeVisitor::visitEnum(const EnumPtr& p)
 
     _out << sp << nl << "if " << getDictLookup(p) << ':';
     _out.inc();
-    _out << nl << "_M_" << abs << " = Ice.createTempClass()";
+    _out << nl << "_M_" << abs << " = None";
     _out << nl << "class " << name << "(Ice.EnumBase):";
     _out.inc();
 
@@ -1731,19 +1720,6 @@ Slice::Python::CodeVisitor::writeInitializer(const DataMemberPtr& m)
         return;
     }
 
-    StructPtr st = dynamic_pointer_cast<Struct>(p);
-    if (st)
-    {
-        //
-        // We cannot emit a call to the struct's constructor here because Python
-        // only evaluates this expression once (see bug 3676). Instead, we emit
-        // a marker that allows us to determine whether the application has
-        // supplied a value.
-        //
-        _out << "Ice._struct_marker";
-        return;
-    }
-
     _out << "None";
 }
 
@@ -1785,7 +1761,7 @@ Slice::Python::CodeVisitor::writeHash(const string& name, const TypePtr& p, int&
         return;
     }
 
-    _out << nl << "_h = 5 * _h + Ice.getHash(" << name << ")";
+    _out << nl << "_h = 5 * _h + _builtins.hash(" << name << ")";
 }
 
 void
@@ -1824,14 +1800,8 @@ Slice::Python::CodeVisitor::writeAssign(const MemberInfo& info)
     StructPtr st = dynamic_pointer_cast<Struct>(info.dataMember->type());
     if (st && !info.dataMember->optional())
     {
-        _out << nl << "if " << paramName << " is Ice._struct_marker:";
-        _out.inc();
-        _out << nl << "self." << memberName << " = " << getSymbol(st) << "()";
-        _out.dec();
-        _out << nl << "else:";
-        _out.inc();
-        _out << nl << "self." << memberName << " = " << paramName;
-        _out.dec();
+        _out << nl << "self." << memberName << " = " << paramName << " if " << paramName << " is not None else "
+             << getSymbol(st) << "()";
     }
     else
     {
@@ -1914,7 +1884,7 @@ Slice::Python::CodeVisitor::writeConstructorParams(const MemberInfoList& members
         }
         else if (member->optional())
         {
-            _out << "Ice.Unset";
+            _out << "None";
         }
         else
         {
@@ -2172,14 +2142,14 @@ Slice::Python::CodeVisitor::writeDocstring(const string& comment, const string& 
         return;
     }
 
-    _out << nl << prefix << "\"\"\"";
+    _out << nl << prefix << tripleQuotes;
 
     for (StringVec::const_iterator q = lines.begin(); q != lines.end(); ++q)
     {
         _out << nl << *q;
     }
 
-    _out << nl << "\"\"\"";
+    _out << nl << tripleQuotes;
 }
 
 void
@@ -2191,7 +2161,7 @@ Slice::Python::CodeVisitor::writeDocstring(const string& comment, const DataMemb
         return;
     }
 
-    _out << nl << "\"\"\"";
+    _out << nl << tripleQuotes;
 
     for (StringVec::const_iterator q = lines.begin(); q != lines.end(); ++q)
     {
@@ -2237,7 +2207,7 @@ Slice::Python::CodeVisitor::writeDocstring(const string& comment, const DataMemb
         }
     }
 
-    _out << nl << "\"\"\"";
+    _out << nl << tripleQuotes;
 }
 
 void
@@ -2249,7 +2219,7 @@ Slice::Python::CodeVisitor::writeDocstring(const string& comment, const Enumerat
         return;
     }
 
-    _out << nl << "\"\"\"";
+    _out << nl << tripleQuotes;
 
     for (StringVec::const_iterator q = lines.begin(); q != lines.end(); ++q)
     {
@@ -2295,7 +2265,7 @@ Slice::Python::CodeVisitor::writeDocstring(const string& comment, const Enumerat
         }
     }
 
-    _out << nl << "\"\"\"";
+    _out << nl << tripleQuotes;
 }
 
 bool
@@ -2713,7 +2683,7 @@ Slice::Python::getImportFileName(const string& file, const UnitPtr& ut, const ve
         // The metadata is present, so the generated file was placed in the specified directory.
         //
         vector<string> names;
-        IceUtilInternal::splitString(pkgdir, "/", names);
+        IceInternal::splitString(pkgdir, "/", names);
         assert(!names.empty());
         pkgdir = "";
         for (vector<string>::iterator p = names.begin(); p != names.end(); ++p)
@@ -2752,7 +2722,9 @@ Slice::Python::generate(const UnitPtr& un, bool all, const vector<string>& inclu
     Slice::Python::MetaDataVisitor visitor;
     un->visit(&visitor, false);
 
-    out << nl << "import Ice, IcePy";
+    out << nl << "import Ice";
+    out << nl << "import IcePy";
+    out << nl << "import builtins as _builtins";
 
     if (!all)
     {
@@ -2886,7 +2858,7 @@ Slice::Python::getAbsolute(const ContainedPtr& cont, const string& suffix, const
 }
 
 void
-Slice::Python::printHeader(IceUtilInternal::Output& out)
+Slice::Python::printHeader(IceInternal::Output& out)
 {
     static const char* header = "#\n"
                                 "# Copyright (c) ZeroC, Inc. All rights reserved.\n"

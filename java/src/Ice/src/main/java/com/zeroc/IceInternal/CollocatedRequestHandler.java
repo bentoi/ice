@@ -10,11 +10,11 @@ import com.zeroc.Ice.LocalException;
 import com.zeroc.Ice.Object;
 import com.zeroc.Ice.OutgoingResponse;
 import com.zeroc.Ice.OutputStream;
-import com.zeroc.Ice.UserException;
+import com.zeroc.Ice.UnknownException;
 import java.util.concurrent.CompletionStage;
 
-public class CollocatedRequestHandler implements RequestHandler {
-  private class InvokeAllAsync extends DispatchWorkItem {
+public final class CollocatedRequestHandler implements RequestHandler {
+  private class InvokeAllAsync extends RunnableThreadPoolWorkItem {
     private InvokeAllAsync(
         OutgoingAsyncBase outAsync,
         com.zeroc.Ice.OutputStream os,
@@ -39,21 +39,16 @@ public class CollocatedRequestHandler implements RequestHandler {
     private final int _batchRequestNum;
   }
 
-  public CollocatedRequestHandler(Reference ref, com.zeroc.Ice.ObjectAdapter adapter) {
-    _reference = ref;
-    _dispatcher = ref.getInstance().initializationData().dispatcher != null;
-    _adapter = (com.zeroc.Ice.ObjectAdapterI) adapter;
-    _response = _reference.getMode() == Reference.ModeTwoway;
+  public CollocatedRequestHandler(Reference reference, com.zeroc.Ice.ObjectAdapter adapter) {
+    _reference = reference;
+    _executor = reference.getInstance().initializationData().executor != null;
+    _adapter = adapter;
+    _response = _reference.isTwoway();
 
     _logger =
         _reference.getInstance().initializationData().logger; // Cached for better performance.
     _traceLevels = _reference.getInstance().traceLevels(); // Cached for better performance.
     _requestId = 0;
-  }
-
-  @Override
-  public RequestHandler update(RequestHandler previousHandler, RequestHandler newHandler) {
-    return previousHandler == this ? newHandler : this;
   }
 
   @Override
@@ -87,11 +82,6 @@ public class CollocatedRequestHandler implements RequestHandler {
         }
       }
     }
-  }
-
-  @Override
-  public Reference getReference() {
-    return _reference;
   }
 
   @Override
@@ -132,12 +122,12 @@ public class CollocatedRequestHandler implements RequestHandler {
       _adapter
           .getThreadPool()
           .dispatch(new InvokeAllAsync(outAsync, outAsync.getOs(), requestId, batchRequestNum));
-    } else if (_dispatcher) {
+    } else if (_executor) {
       _adapter
           .getThreadPool()
-          .dispatchFromThisThread(
+          .executeFromThisThread(
               new InvokeAllAsync(outAsync, outAsync.getOs(), requestId, batchRequestNum));
-    } else // Optimization: directly call dispatchAll if there's no dispatcher.
+    } else // Optimization: directly call dispatchAll if there's no executor.
     {
       if (sentAsync(outAsync)) {
         dispatchAll(outAsync.getOs(), requestId, batchRequestNum);
@@ -211,20 +201,17 @@ public class CollocatedRequestHandler implements RequestHandler {
         CompletionStage<OutgoingResponse> response = null;
         try {
           response = dispatcher.dispatch(request);
-        } catch (RuntimeException | UserException ex) {
-          sendResponse(request.current.createOutgoingResponse(ex), requestId, false);
-        } catch (java.lang.Error ex) {
-          // TODO: should we catch/handle Errors at all? Only some errors?
+        } catch (Throwable ex) { // UserException or an unchecked exception
           sendResponse(request.current.createOutgoingResponse(ex), requestId, false);
         }
 
         if (response != null) {
           response.whenComplete(
-              (r, ex) -> {
-                if (ex != null) {
-                  sendResponse(request.current.createOutgoingResponse(ex), requestId, true);
+              (result, exception) -> {
+                if (exception != null) {
+                  sendResponse(request.current.createOutgoingResponse(exception), requestId, true);
                 } else {
-                  sendResponse(r, requestId, true);
+                  sendResponse(result, requestId, true);
                 }
                 // Any exception thrown by this closure is effectively ignored.
               });
@@ -235,30 +222,17 @@ public class CollocatedRequestHandler implements RequestHandler {
       is.clear();
     } catch (com.zeroc.Ice.LocalException ex) {
       dispatchException(ex, requestId, false); // Fatal dispatch exception
-    } catch (java.lang.Error ex) {
-      //
-      // An Error was raised outside of servant code (i.e., by Ice code).
-      // Attempt to log the error and clean up. This may still fail
-      // depending on the severity of the error.
-      //
-      // Note that this does NOT send a response to the client.
-      //
-      com.zeroc.Ice.UnknownException uex = new com.zeroc.Ice.UnknownException(ex);
-      java.io.StringWriter sw = new java.io.StringWriter();
-      java.io.PrintWriter pw = new java.io.PrintWriter(sw);
+    } catch (RuntimeException | java.lang.Error ex) {
+      // A runtime exception or an error was thrown outside of servant code (i.e., by Ice code).
+      // Note that this code does NOT send a response to the client.
+      var uex = new UnknownException(ex);
+      var sw = new java.io.StringWriter();
+      var pw = new java.io.PrintWriter(sw);
       ex.printStackTrace(pw);
       pw.flush();
       uex.unknown = sw.toString();
       _logger.error(uex.unknown);
       dispatchException(uex, requestId, false);
-      //
-      // Suppress AssertionError and OutOfMemoryError, rethrow everything else.
-      //
-      if (!(ex instanceof java.lang.AssertionError
-          || ex instanceof java.lang.OutOfMemoryError
-          || ex instanceof java.lang.StackOverflowError)) {
-        throw ex;
-      }
     } finally {
       _adapter.decDirectCount();
     }
@@ -342,14 +316,14 @@ public class CollocatedRequestHandler implements RequestHandler {
     }
   }
 
-  private void fillInValue(com.zeroc.Ice.OutputStream os, int pos, int value) {
+  private static void fillInValue(com.zeroc.Ice.OutputStream os, int pos, int value) {
     os.rewriteInt(value, pos);
   }
 
   private final Reference _reference;
-  private final boolean _dispatcher;
+  private final boolean _executor;
   private final boolean _response;
-  private final com.zeroc.Ice.ObjectAdapterI _adapter;
+  private final com.zeroc.Ice.ObjectAdapter _adapter;
   private final com.zeroc.Ice.Logger _logger;
   private final TraceLevels _traceLevels;
 
@@ -358,7 +332,9 @@ public class CollocatedRequestHandler implements RequestHandler {
   // A map of outstanding requests that can be canceled. A request
   // can be canceled if it has an invocation timeout, or we support
   // interrupts.
-  private java.util.Map<OutgoingAsyncBase, Integer> _sendAsyncRequests = new java.util.HashMap<>();
+  private final java.util.Map<OutgoingAsyncBase, Integer> _sendAsyncRequests =
+      new java.util.HashMap<>();
 
-  private java.util.Map<Integer, OutgoingAsyncBase> _asyncRequests = new java.util.HashMap<>();
+  private final java.util.Map<Integer, OutgoingAsyncBase> _asyncRequests =
+      new java.util.HashMap<>();
 }

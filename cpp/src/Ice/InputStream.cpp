@@ -4,7 +4,10 @@
 
 #include "Ice/InputStream.h"
 #include "DefaultsAndOverrides.h"
-#include "Ice/LocalException.h"
+#include "DisableWarnings.h"
+#include "Endian.h"
+#include "Ice/FactoryTable.h"
+#include "Ice/LocalExceptions.h"
 #include "Ice/LoggerUtil.h"
 #include "Ice/Object.h"
 #include "Ice/Proxy.h"
@@ -12,21 +15,12 @@
 #include "Ice/StringConverter.h"
 #include "Ice/UserExceptionFactory.h"
 #include "Ice/ValueFactory.h"
-#include "IceUtil/DisableWarnings.h"
 #include "Instance.h"
+#include "ReferenceFactory.h"
 #include "TraceLevels.h"
 #include "TraceUtil.h"
 
-#include "Endian.h"
-#include "Ice/FactoryTable.h"
-#include "ReferenceFactory.h"
 #include <iterator>
-
-#ifndef ICE_UNALIGNED
-#    if defined(__i386) || defined(_M_IX86) || defined(__x86_64) || defined(_M_X64)
-#        define ICE_UNALIGNED
-#    endif
-#endif
 
 using namespace std;
 using namespace Ice;
@@ -36,6 +30,49 @@ namespace
 {
     // Make sure the global factory table is initialized before we use it.
     const FactoryTableInit factoryTableInit;
+
+    const char* endOfBufferMessage = "attempting to unmarshal past the end of the buffer";
+}
+
+void
+IceInternal::Ex::throwUOE(const char* file, int line, const string& expectedType, const ValuePtr& v)
+{
+    //
+    // If the object is an unknown sliced object, we didn't find a
+    // value factory, in this case raise a MarshalException instead.
+    //
+    UnknownSlicedValue* usv = dynamic_cast<UnknownSlicedValue*>(v.get());
+    if (usv)
+    {
+        throw MarshalException{
+            file,
+            line,
+            "cannot find value factory to unmarshal class with type ID '" + string{usv->ice_id()} + "'"};
+    }
+
+    string type = v->ice_id();
+
+    throw MarshalException{
+        file,
+        line,
+        "failed to unmarshal class with type ID '" + expectedType + "': value factory returned a class with type ID '" +
+            type + "'"};
+}
+
+void
+IceInternal::Ex::throwMemoryLimitException(const char* file, int line, size_t requested, size_t maximum)
+{
+    throw MarshalException{
+        file,
+        line,
+        "cannot unmarshal Ice message: the message size of " + to_string(requested) +
+            " bytes exceeds the maximum allowed of " + to_string(maximum) + " bytes (see Ice.MessageSizeMax)."};
+}
+
+void
+IceInternal::Ex::throwMarshalException(const char* file, int line, string reason)
+{
+    throw Ice::MarshalException{file, line, std::move(reason)};
 }
 
 Ice::InputStream::InputStream() { initialize(currentEncoding); }
@@ -133,7 +170,6 @@ Ice::InputStream::InputStream(InputStream&& other) noexcept
       _traceSlicing(other._traceSlicing),
       _classGraphDepthMax(other._classGraphDepthMax),
       _closure(other._closure),
-      _sliceValues(other._sliceValues),
       _startSeq(other._startSeq),
       _minSeqSize(other._minSeqSize),
       _valueFactoryManager(std::move(other._valueFactoryManager)),
@@ -158,7 +194,6 @@ Ice::InputStream::operator=(InputStream&& other) noexcept
         _traceSlicing = other._traceSlicing;
         _classGraphDepthMax = other._classGraphDepthMax;
         _closure = other._closure;
-        _sliceValues = other._sliceValues;
         _startSeq = other._startSeq;
         _minSeqSize = other._minSeqSize;
         _valueFactoryManager = std::move(other._valueFactoryManager);
@@ -206,7 +241,6 @@ Ice::InputStream::initialize(const EncodingVersion& encoding)
     _traceSlicing = false;
     _classGraphDepthMax = 0x7fffffff;
     _closure = nullptr;
-    _sliceValues = true;
     _startSeq = -1;
     _minSeqSize = 0;
 }
@@ -222,7 +256,6 @@ Ice::InputStream::clear()
     }
 
     _startSeq = -1;
-    _sliceValues = true;
 }
 
 void
@@ -241,12 +274,6 @@ void
 Ice::InputStream::setCompactIdResolver(std::function<std::string(int)> r)
 {
     _compactIdResolver = r;
-}
-
-void
-Ice::InputStream::setSliceValues(bool on)
-{
-    _sliceValues = on;
 }
 
 void
@@ -292,7 +319,6 @@ Ice::InputStream::swap(InputStream& other)
     std::swap(_traceSlicing, other._traceSlicing);
     std::swap(_classGraphDepthMax, other._classGraphDepthMax);
     std::swap(_closure, other._closure);
-    std::swap(_sliceValues, other._sliceValues);
 
     //
     // Swap is never called for streams that have encapsulations being read. However,
@@ -373,14 +399,14 @@ Ice::InputStream::endEncapsulation()
         skipOptionals();
         if (i != b.begin() + _currentEncaps->start + _currentEncaps->sz)
         {
-            throwEncapsulationException(__FILE__, __LINE__);
+            throw MarshalException{__FILE__, __LINE__, "failed to unmarshal encapsulation"};
         }
     }
     else if (i != b.begin() + _currentEncaps->start + _currentEncaps->sz)
     {
         if (i + 1 != b.begin() + _currentEncaps->start + _currentEncaps->sz)
         {
-            throwEncapsulationException(__FILE__, __LINE__);
+            throw MarshalException{__FILE__, __LINE__, "failed to unmarshal encapsulation"};
         }
 
         //
@@ -411,7 +437,7 @@ Ice::InputStream::skipEmptyEncapsulation()
     read(sz);
     if (sz < 6)
     {
-        throwEncapsulationException(__FILE__, __LINE__);
+        throw MarshalException{__FILE__, __LINE__, to_string(sz) + " is not a valid encapsulation size"};
     }
     if (i - sizeof(std::int32_t) + sz > b.end())
     {
@@ -425,7 +451,10 @@ Ice::InputStream::skipEmptyEncapsulation()
     {
         if (sz != static_cast<std::int32_t>(sizeof(std::int32_t)) + 2)
         {
-            throwEncapsulationException(__FILE__, __LINE__);
+            throw MarshalException{
+                __FILE__,
+                __LINE__,
+                to_string(sz) + " is not a valid encapsulation size for a 1.0 empty encapsulation"};
         }
     }
     else
@@ -445,7 +474,7 @@ Ice::InputStream::readEncapsulation(const std::byte*& v, std::int32_t& sz)
     read(sz);
     if (sz < 6)
     {
-        throwEncapsulationException(__FILE__, __LINE__);
+        throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
     }
     if (i - sizeof(std::int32_t) + sz > b.end())
     {
@@ -471,11 +500,11 @@ Ice::InputStream::skipEncapsulation()
     read(sz);
     if (sz < 6)
     {
-        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+        throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
     }
     if (i - sizeof(int32_t) + sz > b.end())
     {
-        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+        throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
     }
     EncodingVersion encoding;
     read(encoding.major);
@@ -550,7 +579,7 @@ Ice::InputStream::readAndCheckSeqSize(int minSize)
     //
     if (_startSeq + _minSeqSize > static_cast<int>(b.size()))
     {
-        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+        throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
     }
 
     return sz;
@@ -563,7 +592,7 @@ Ice::InputStream::readBlob(vector<byte>& v, int32_t sz)
     {
         if (b.end() - i < sz)
         {
-            throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+            throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
         }
         vector<byte>(i, i + sz).swap(v);
         i += sz;
@@ -674,7 +703,7 @@ Ice::InputStream::read(int16_t& v)
 {
     if (b.end() - i < static_cast<int>(sizeof(int16_t)))
     {
-        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+        throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
     }
     const byte* src = &(*i);
     i += sizeof(int16_t);
@@ -720,48 +749,6 @@ Ice::InputStream::read(vector<int16_t>& v)
     else
     {
         v.clear();
-    }
-}
-
-void
-Ice::InputStream::read(pair<const short*, const short*>& v)
-{
-    int32_t sz = readAndCheckSeqSize(static_cast<int>(sizeof(int16_t)));
-    if (sz > 0)
-    {
-#ifdef ICE_UNALIGNED
-        v.first = reinterpret_cast<int16_t*>(i);
-        i += sz * static_cast<int>(sizeof(int16_t));
-        v.second = reinterpret_cast<int16_t*>(i);
-#else
-
-        auto result = new short[static_cast<size_t>(sz)];
-        _deleters.push_back([result] { delete[] result; });
-        v.first = result;
-        v.second = result + sz;
-
-        Container::iterator begin = i;
-        i += sz * static_cast<int>(sizeof(int16_t));
-        if constexpr (endian::native == endian::big)
-        {
-            const byte* src = &(*begin);
-            byte* dest = reinterpret_cast<byte*>(&result[0]) + sizeof(int16_t) - 1;
-            for (int j = 0; j < sz; ++j)
-            {
-                *dest-- = *src++;
-                *dest-- = *src++;
-                dest += 2 * sizeof(int16_t);
-            }
-        }
-        else
-        {
-            copy(begin, i, reinterpret_cast<byte*>(&result[0]));
-        }
-#endif
-    }
-    else
-    {
-        v.first = v.second = 0;
     }
 }
 
@@ -826,54 +813,11 @@ Ice::InputStream::read(vector<int32_t>& v)
 }
 
 void
-Ice::InputStream::read(pair<const int32_t*, const int32_t*>& v)
-{
-    int32_t sz = readAndCheckSeqSize(static_cast<int>(sizeof(int32_t)));
-    if (sz > 0)
-    {
-#ifdef ICE_UNALIGNED
-        v.first = reinterpret_cast<int32_t*>(i);
-        i += sz * static_cast<int>(sizeof(int32_t));
-        v.second = reinterpret_cast<int32_t*>(i);
-#else
-        auto result = new int[static_cast<size_t>(sz)];
-        _deleters.push_back([result] { delete[] result; });
-        v.first = result;
-        v.second = result + sz;
-
-        Container::iterator begin = i;
-        i += sz * static_cast<int>(sizeof(int32_t));
-        if constexpr (endian::native == endian::big)
-        {
-            const byte* src = &(*begin);
-            byte* dest = reinterpret_cast<byte*>(&result[0]) + sizeof(int32_t) - 1;
-            for (int j = 0; j < sz; ++j)
-            {
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                dest += 2 * sizeof(int32_t);
-            }
-        }
-        else
-        {
-            copy(begin, i, reinterpret_cast<byte*>(&result[0]));
-        }
-#endif
-    }
-    else
-    {
-        v.first = v.second = 0;
-    }
-}
-
-void
 Ice::InputStream::read(int64_t& v)
 {
     if (b.end() - i < static_cast<int>(sizeof(int64_t)))
     {
-        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+        throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
     }
     const byte* src = &(*i);
     i += sizeof(int64_t);
@@ -941,59 +885,11 @@ Ice::InputStream::read(vector<int64_t>& v)
 }
 
 void
-Ice::InputStream::read(pair<const int64_t*, const int64_t*>& v)
-{
-    int32_t sz = readAndCheckSeqSize(static_cast<int>(sizeof(int64_t)));
-    if (sz > 0)
-    {
-#ifdef ICE_UNALIGNED
-        v.first = reinterpret_cast<int64_t*>(i);
-        i += sz * static_cast<int>(sizeof(int64_t));
-        v.second = reinterpret_cast<int64_t*>(i);
-#else
-
-        auto result = new int64_t[static_cast<size_t>(sz)];
-        _deleters.push_back([result] { delete[] result; });
-        v.first = result;
-        v.second = result + sz;
-
-        Container::iterator begin = i;
-        i += sz * static_cast<int>(sizeof(int64_t));
-        if constexpr (endian::native == endian::big)
-        {
-            const byte* src = &(*begin);
-            byte* dest = reinterpret_cast<byte*>(&result[0]) + sizeof(int64_t) - 1;
-            for (int j = 0; j < sz; ++j)
-            {
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                dest += 2 * sizeof(int64_t);
-            }
-        }
-        else
-        {
-            copy(begin, i, reinterpret_cast<byte*>(&result[0]));
-        }
-#endif
-    }
-    else
-    {
-        v.first = v.second = 0;
-    }
-}
-
-void
 Ice::InputStream::read(float& v)
 {
     if (b.end() - i < static_cast<int>(sizeof(float)))
     {
-        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+        throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
     }
     const byte* src = &(*i);
     i += sizeof(float);
@@ -1049,55 +945,11 @@ Ice::InputStream::read(vector<float>& v)
 }
 
 void
-Ice::InputStream::read(pair<const float*, const float*>& v)
-{
-    int32_t sz = readAndCheckSeqSize(static_cast<int>(sizeof(float)));
-    if (sz > 0)
-    {
-#ifdef ICE_UNALIGNED
-        v.first = reinterpret_cast<float*>(i);
-        i += sz * static_cast<int>(sizeof(float));
-        v.second = reinterpret_cast<float*>(i);
-#else
-
-        auto result = new float[static_cast<size_t>(sz)];
-        _deleters.push_back([result] { delete[] result; });
-        v.first = result;
-        v.second = result + sz;
-
-        Container::iterator begin = i;
-        i += sz * static_cast<int>(sizeof(float));
-        if constexpr (endian::native == endian::big)
-        {
-            const byte* src = &(*begin);
-            byte* dest = reinterpret_cast<byte*>(&result[0]) + sizeof(float) - 1;
-            for (int j = 0; j < sz; ++j)
-            {
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                dest += 2 * sizeof(float);
-            }
-        }
-        else
-        {
-            copy(begin, i, reinterpret_cast<byte*>(&result[0]));
-        }
-#endif
-    }
-    else
-    {
-        v.first = v.second = 0;
-    }
-}
-
-void
 Ice::InputStream::read(double& v)
 {
     if (b.end() - i < static_cast<int>(sizeof(double)))
     {
-        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+        throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
     }
     const byte* src = &(*i);
     i += sizeof(double);
@@ -1161,53 +1013,6 @@ Ice::InputStream::read(vector<double>& v)
     else
     {
         v.clear();
-    }
-}
-
-void
-Ice::InputStream::read(pair<const double*, const double*>& v)
-{
-    int32_t sz = readAndCheckSeqSize(static_cast<int>(sizeof(double)));
-    if (sz > 0)
-    {
-#ifdef ICE_UNALIGNED
-        v.first = reinterpret_cast<double*>(i);
-        i += sz * static_cast<int>(sizeof(double));
-        v.second = reinterpret_cast<double*>(i);
-#else
-        auto result = new double[static_cast<size_t>(sz)];
-        _deleters.push_back([result] { delete[] result; });
-        v.first = result;
-        v.second = result + sz;
-
-        Container::iterator begin = i;
-        i += sz * static_cast<int>(sizeof(double));
-        if constexpr (endian::native == endian::big)
-        {
-            const byte* src = &(*begin);
-            byte* dest = reinterpret_cast<byte*>(&result[0]) + sizeof(double) - 1;
-            for (int j = 0; j < sz; ++j)
-            {
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                *dest-- = *src++;
-                dest += 2 * sizeof(double);
-            }
-        }
-        else
-        {
-            copy(begin, i, reinterpret_cast<byte*>(&result[0]));
-        }
-#endif
-    }
-    else
-    {
-        v.first = v.second = 0;
     }
 }
 
@@ -1323,7 +1128,7 @@ Ice::InputStream::readConverted(string& v, int sz)
     }
     catch (const IllegalConversionException& ex)
     {
-        throw StringConversionException(__FILE__, __LINE__, ex.reason());
+        throw MarshalException{__FILE__, __LINE__, string{"failed to unmarshal a string:\n"} + ex.what()};
     }
 }
 
@@ -1373,7 +1178,7 @@ Ice::InputStream::read(wstring& v)
         }
         catch (const IllegalConversionException& ex)
         {
-            throw StringConversionException(__FILE__, __LINE__, ex.reason());
+            throw MarshalException{__FILE__, __LINE__, string{"failed to unmarshal a string:\n"} + ex.what()};
         }
     }
     else
@@ -1551,7 +1356,7 @@ Ice::InputStream::skipOptional(OptionalFormat type)
             read(sz);
             if (sz < 0)
             {
-                throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+                throwUnmarshalOutOfBoundsException(__FILE__, __LINE__);
             }
             skip(static_cast<size_t>(sz));
             break;
@@ -1595,13 +1400,7 @@ Ice::InputStream::skipOptionals()
 void
 Ice::InputStream::throwUnmarshalOutOfBoundsException(const char* file, int line)
 {
-    throw UnmarshalOutOfBoundsException(file, line);
-}
-
-void
-Ice::InputStream::throwEncapsulationException(const char* file, int line)
-{
-    throw EncapsulationException(file, line);
+    throw MarshalException{file, line, endOfBufferMessage};
 }
 
 string
@@ -1737,11 +1536,11 @@ Ice::InputStream::initEncaps()
         ValueFactoryManagerPtr vfm = valueFactoryManager();
         if (_currentEncaps->encoding == Encoding_1_0)
         {
-            _currentEncaps->decoder = new EncapsDecoder10(this, _currentEncaps, _sliceValues, _classGraphDepthMax, vfm);
+            _currentEncaps->decoder = new EncapsDecoder10(this, _currentEncaps, _classGraphDepthMax, vfm);
         }
         else
         {
-            _currentEncaps->decoder = new EncapsDecoder11(this, _currentEncaps, _sliceValues, _classGraphDepthMax, vfm);
+            _currentEncaps->decoder = new EncapsDecoder11(this, _currentEncaps, _classGraphDepthMax, vfm);
         }
     }
 }
@@ -1760,7 +1559,7 @@ Ice::InputStream::EncapsDecoder::readTypeId(bool isIndex)
         TypeIdMap::const_iterator k = _typeIdMap.find(index);
         if (k == _typeIdMap.end())
         {
-            throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+            throw MarshalException{__FILE__, __LINE__, endOfBufferMessage};
         }
         return k->second;
     }
@@ -2003,6 +1802,7 @@ Ice::InputStream::EncapsDecoder10::throwException(UserExceptionFactory factory)
 
         //
         // We found a factory, we get out of this loop.
+        // A factory that doesn't throw is equivalent to a null factory.
         //
         if (exceptionFactory)
         {
@@ -2023,8 +1823,6 @@ Ice::InputStream::EncapsDecoder10::throwException(UserExceptionFactory factory)
                     readPendingValues();
                 }
                 throw;
-
-                // Never reached.
             }
         }
 
@@ -2036,18 +1834,14 @@ Ice::InputStream::EncapsDecoder10::throwException(UserExceptionFactory factory)
         {
             startSlice();
         }
-        catch (UnmarshalOutOfBoundsException& ex)
+        catch (const MarshalException&)
         {
             //
             // An oversight in the 1.0 encoding means there is no marker to indicate
             // the last slice of an exception. As a result, we just try to read the
-            // next type ID, which raises UnmarshalOutOfBoundsException when the
+            // next type ID, which raises MarshalException when the
             // input buffer underflows.
-            //
-            // Set the reason member to a more helpful message.
-            //
-            ex.reason = "unknown exception type `" + mostDerivedId + "'";
-            throw;
+            throw MarshalException{__FILE__, __LINE__, "unknown exception type '" + mostDerivedId + "'"};
         }
     }
 }
@@ -2116,7 +1910,7 @@ Ice::InputStream::EncapsDecoder10::startSlice()
     _stream->read(_sliceSize);
     if (_sliceSize < 4)
     {
-        throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+        throw MarshalException{__FILE__, __LINE__, endOfBufferMessage};
     }
     return _typeId;
 }
@@ -2185,7 +1979,7 @@ Ice::InputStream::EncapsDecoder10::readInstance()
         //
         if (_typeId == Value::ice_staticId())
         {
-            throw NoValueFactoryException(__FILE__, __LINE__, "", mostDerivedId);
+            throw MarshalException{__FILE__, __LINE__, "cannot find value factory for type ID '" + mostDerivedId + "'"};
         }
 
         v = newInstance(_typeId);
@@ -2196,18 +1990,6 @@ Ice::InputStream::EncapsDecoder10::readInstance()
         if (v)
         {
             break;
-        }
-
-        //
-        // If value slicing is disabled, stop unmarshaling.
-        //
-        if (!_sliceValues)
-        {
-            throw NoValueFactoryException(
-                __FILE__,
-                __LINE__,
-                "no value factory found and value slicing is disabled",
-                _typeId);
         }
 
         //
@@ -2315,6 +2097,7 @@ Ice::InputStream::EncapsDecoder11::throwException(UserExceptionFactory factory)
 
         //
         // We found a factory, we get out of this loop.
+        // A factory that doesn't throw is equivalent to a null factory.
         //
         if (exceptionFactory)
         {
@@ -2331,8 +2114,6 @@ Ice::InputStream::EncapsDecoder11::throwException(UserExceptionFactory factory)
             {
                 ex._read(_stream);
                 throw;
-
-                // Never reached.
             }
         }
 
@@ -2346,7 +2127,10 @@ Ice::InputStream::EncapsDecoder11::throwException(UserExceptionFactory factory)
         //
         if (_current->sliceFlags & FLAG_IS_LAST_SLICE)
         {
-            throw UnknownUserException(__FILE__, __LINE__, mostDerivedId);
+            throw MarshalException{
+                __FILE__,
+                __LINE__,
+                "cannot unmarshal exception with type ID '" + mostDerivedId + "'"};
         }
 
         startSlice();
@@ -2426,7 +2210,7 @@ Ice::InputStream::EncapsDecoder11::startSlice()
         _stream->read(_current->sliceSize);
         if (_current->sliceSize < 4)
         {
-            throw UnmarshalOutOfBoundsException(__FILE__, __LINE__);
+            throw MarshalException{__FILE__, __LINE__, endOfBufferMessage};
         }
     }
     else
@@ -2503,16 +2287,17 @@ Ice::InputStream::EncapsDecoder11::skipSlice()
     {
         if (_current->sliceType == ValueSlice)
         {
-            throw NoValueFactoryException(
+            throw MarshalException{
                 __FILE__,
                 __LINE__,
-                "no value factory found and compact format prevents "
-                "slicing (the sender should use the sliced format instead)",
-                _current->typeId);
+                "cannot find value factory for type ID '" + _current->typeId + "' and compact format prevents slicing"};
         }
         else
         {
-            throw UnknownUserException(__FILE__, __LINE__, _current->typeId);
+            throw MarshalException{
+                __FILE__,
+                __LINE__,
+                "cannot find user exception for type ID '" + _current->typeId + "'"};
         }
     }
 
@@ -2521,23 +2306,28 @@ Ice::InputStream::EncapsDecoder11::skipSlice()
     //
     if (_current->sliceType == ValueSlice)
     {
-        SliceInfoPtr info = make_shared<SliceInfo>();
-        info->typeId = _current->typeId;
-        info->compactId = _current->compactId;
-        info->hasOptionalMembers = _current->sliceFlags & FLAG_HAS_OPTIONAL_MEMBERS;
-        info->isLastSlice = _current->sliceFlags & FLAG_IS_LAST_SLICE;
-        if (info->hasOptionalMembers)
+        bool hasOptionalMembers = _current->sliceFlags & FLAG_HAS_OPTIONAL_MEMBERS;
+        vector<byte> bytes;
+        if (hasOptionalMembers)
         {
             //
             // Don't include the optional member end marker. It will be re-written by
             // endSlice when the sliced data is re-written.
             //
-            vector<byte>(start, _stream->i - 1).swap(info->bytes);
+            bytes = vector<byte>(start, _stream->i - 1);
         }
         else
         {
-            vector<byte>(start, _stream->i).swap(info->bytes);
+            bytes = vector<byte>(start, _stream->i);
         }
+
+        SliceInfoPtr info = make_shared<SliceInfo>(
+            _current->typeId,
+            _current->compactId,
+            std::move(bytes),
+            hasOptionalMembers,
+            _current->sliceFlags & FLAG_IS_LAST_SLICE);
+
         _current->slices.push_back(info);
     }
 
@@ -2627,18 +2417,6 @@ Ice::InputStream::EncapsDecoder11::readInstance(int32_t index, PatchFunc patchFu
             {
                 break;
             }
-        }
-
-        //
-        // If value slicing is disabled, stop unmarshaling.
-        //
-        if (!_sliceValues)
-        {
-            throw NoValueFactoryException(
-                __FILE__,
-                __LINE__,
-                "no value factory found and value slicing is disabled",
-                _current->typeId);
         }
 
         //

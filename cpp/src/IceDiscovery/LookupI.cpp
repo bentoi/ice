@@ -5,7 +5,7 @@
 #include "Ice/Communicator.h"
 #include "Ice/Connection.h"
 #include "Ice/Initialize.h"
-#include "Ice/LocalException.h"
+#include "Ice/LocalExceptions.h"
 #include "Ice/LoggerUtil.h"
 #include "Ice/ObjectAdapter.h"
 #include "Ice/UUID.h"
@@ -42,7 +42,7 @@ IceDiscovery::Request::invoke(const string& domainId, const vector<pair<LookupPr
 
     for (const auto& p : lookups)
     {
-        invokeWithLookup(domainId, p.first, LookupReplyPrx(p.second->ice_identity(id)));
+        invokeWithLookup(domainId, p.first, p.second->ice_identity<LookupReplyPrx>(id));
     }
 }
 

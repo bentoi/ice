@@ -17,9 +17,7 @@ def connect(prx)
 end
 
 def allTests(helper, communicator)
-    controller = Test::ControllerPrx::checkedCast(
-        communicator.stringToProxy("controller:#{helper.getTestEndpoint(num:1)}"))
-    test(controller)
+    controller = Test::ControllerPrx.new(communicator, "controller:#{helper.getTestEndpoint(num:1)}")
     begin
         allTestsWithController(helper, communicator, controller)
     rescue
@@ -32,16 +30,12 @@ end
 
 def allTestsWithController(helper, communicator, controller)
     sref = "timeout:#{helper.getTestEndpoint()}"
-    obj = communicator.stringToProxy(sref)
-    test(obj)
-
-    timeout = Test::TimeoutPrx::checkedCast(obj)
-    test(timeout)
+    timeout = Test::TimeoutPrx.new(communicator, sref)
 
     print "testing invocation timeout... "
     STDOUT.flush
-    connection = obj.ice_getConnection()
-    to = Test::TimeoutPrx.uncheckedCast(obj.ice_invocationTimeout(100))
+    connection = timeout.ice_getConnection()
+    to = timeout.ice_invocationTimeout(100)
     test(connection == to.ice_getConnection())
     begin
         to.sleep(1000)
@@ -49,9 +43,9 @@ def allTestsWithController(helper, communicator, controller)
     rescue Ice::InvocationTimeoutException
         # Expected
     end
-    obj.ice_ping();
+    timeout.ice_ping();
 
-    to = Test::TimeoutPrx.uncheckedCast(obj.ice_invocationTimeout(1000))
+    to = timeout.ice_invocationTimeout(1000)
     test(connection == to.ice_getConnection())
     begin
         to.sleep(100)

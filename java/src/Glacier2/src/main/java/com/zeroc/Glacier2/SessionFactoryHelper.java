@@ -156,7 +156,7 @@ public class SessionFactoryHelper {
         && !protocol.equals("ssl")
         && !protocol.equals("wss")
         && !protocol.equals("ws")) {
-      throw new IllegalArgumentException("Unknow protocol `" + protocol + "'");
+      throw new IllegalArgumentException("Unknown protocol `" + protocol + "'");
     }
 
     _protocol = protocol;
@@ -169,25 +169,6 @@ public class SessionFactoryHelper {
    */
   public synchronized String getProtocol() {
     return _protocol;
-  }
-
-  /**
-   * Sets the connect and connection timeout for the Glacier2 router.
-   *
-   * @param timeoutMillisecs The timeout in milliseconds. A zero or negative timeout value indicates
-   *     that the router proxy has no associated timeout.
-   */
-  public synchronized void setTimeout(int timeoutMillisecs) {
-    _timeout = timeoutMillisecs;
-  }
-
-  /**
-   * Returns the connect and connection timeout associated with the Glacier2 router.
-   *
-   * @return The timeout.
-   */
-  public synchronized int getTimeout() {
-    return _timeout;
   }
 
   /**
@@ -295,7 +276,7 @@ public class SessionFactoryHelper {
     InitializationData initData = _initData.clone();
     initData.properties = initData.properties._clone();
 
-    if (initData.properties.getProperty("Ice.Default.Router").length() == 0 && _identity != null) {
+    if (initData.properties.getProperty("Ice.Default.Router").isEmpty() && _identity != null) {
       initData.properties.setProperty("Ice.Default.Router", getProxyStr(_identity));
     }
     return initData;
@@ -316,10 +297,6 @@ public class SessionFactoryHelper {
     sb.append(" -h \"");
     sb.append(_routerHost);
     sb.append("\"");
-    if (_timeout > 0) {
-      sb.append(" -t ");
-      sb.append(_timeout);
-    }
     return sb.toString();
   }
 
@@ -329,7 +306,6 @@ public class SessionFactoryHelper {
   private com.zeroc.Ice.Identity _identity = null;
   private String _protocol = "ssl";
   private int _port = 0;
-  private int _timeout = 10000;
   private java.util.Map<String, String> _context;
   private boolean _useCallbacks = true;
   private static final int GLACIER2_SSL_PORT = 4064;

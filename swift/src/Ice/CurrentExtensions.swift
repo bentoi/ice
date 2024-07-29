@@ -60,8 +60,9 @@ extension Current {
         }
 
         var replyStatus: ReplyStatus
-        var exceptionId: String?
-        var exceptionMessage: String?
+        var exceptionId: String
+        var exceptionDetails: String? = nil
+        var unknownExceptionMessage: String? = nil
 
         switch error {
         case let rfe as RequestFailedException:
@@ -79,35 +80,37 @@ extension Current {
                     fatalError("Unexpected RequestFailedException subclass")
                 }
 
-            if rfe.id.name.isEmpty {
-                rfe.id = id
+            var id = rfe.id
+            var facet = rfe.facet
+            var operation = rfe.operation
+
+            if id.name.isEmpty {
+                id = self.id
+                facet = self.facet
             }
 
-            if rfe.facet.isEmpty {
-                rfe.facet = facet
+            if operation.isEmpty {
+                operation = self.operation
             }
 
-            if rfe.operation.isEmpty {
-                rfe.operation = operation
-            }
-
-            // We must call ice_print _after_ setting the properties above.
-            exceptionMessage = rfe.ice_print()
+            // [7..] to slice-off the "::Ice::" prefix
+            let typeName = String(exceptionId.dropFirst(7))
+            exceptionDetails = RequestFailedException.makeMessage(
+                typeName: typeName, id: id, facet: facet, operation: operation)
 
             if requestId != 0 {
                 ostr.write(replyStatus.rawValue)
-                ostr.write(rfe.id)
-                if rfe.facet.isEmpty {
+                ostr.write(id)
+                if facet.isEmpty {
                     ostr.write(size: 0)
                 } else {
-                    ostr.write([rfe.facet])
+                    ostr.write([facet])
                 }
-                ostr.write(rfe.operation)
+                ostr.write(operation)
             }
 
         case let ex as UserException:
             exceptionId = ex.ice_id()
-            exceptionMessage = "\(ex)"
             replyStatus = .userException
 
             if requestId != 0 {
@@ -120,32 +123,27 @@ extension Current {
         case let ex as UnknownLocalException:
             exceptionId = ex.ice_id()
             replyStatus = .unknownLocalException
-            exceptionMessage = ex.unknown
+            unknownExceptionMessage = ex.message
 
         case let ex as UnknownUserException:
             exceptionId = ex.ice_id()
             replyStatus = .unknownUserException
-            exceptionMessage = ex.unknown
+            unknownExceptionMessage = ex.message
 
         case let ex as UnknownException:
             exceptionId = ex.ice_id()
             replyStatus = .unknownException
-            exceptionMessage = ex.unknown
+            unknownExceptionMessage = ex.message
 
         case let ex as LocalException:
             exceptionId = ex.ice_id()
             replyStatus = .unknownLocalException
-            exceptionMessage = "\(ex)"
-
-        case let ex as Exception:
-            exceptionId = ex.ice_id()
-            replyStatus = .unknownException
-            exceptionMessage = "\(ex)"
+            unknownExceptionMessage = "dispatch failed with \(exceptionId): \(ex.message)"
 
         default:
             replyStatus = .unknownException
             exceptionId = "\(type(of: error))"
-            exceptionMessage = "\(error)"
+            unknownExceptionMessage = "dispatch failed with \(exceptionId)"
         }
 
         if requestId != 0,
@@ -153,11 +151,12 @@ extension Current {
                 || replyStatus == .unknownException
         {
             ostr.write(replyStatus.rawValue)
-            ostr.write(exceptionMessage!)
+            ostr.write(unknownExceptionMessage!)
         }
 
         return OutgoingResponse(
-            replyStatus: replyStatus, exceptionId: exceptionId, exceptionMessage: exceptionMessage, outputStream: ostr)
+            replyStatus: replyStatus, exceptionId: exceptionId, exceptionDetails: exceptionDetails ?? "\(error)",
+            outputStream: ostr)
     }
 
     /// Starts the output stream for a reply, with everything up to and including the reply status. When the request ID

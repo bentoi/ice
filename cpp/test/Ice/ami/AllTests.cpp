@@ -2,11 +2,13 @@
 // Copyright (c) ZeroC, Inc. All rights reserved.
 //
 
+#include "../../src/Ice/Random.h"
 #include "Ice/Ice.h"
-#include "IceUtil/Random.h"
 #include "Test.h"
 #include "TestHelper.h"
 
+#include <chrono>
+#include <future>
 #include <thread>
 
 using namespace std;
@@ -1101,7 +1103,7 @@ allTests(TestHelper* helper, bool collocated)
                 seq.resize(1024 * 10);
                 for (ByteSeq::iterator q = seq.begin(); q != seq.end(); ++q)
                 {
-                    *q = static_cast<byte>(IceUtilInternal::random(255));
+                    *q = static_cast<byte>(IceInternal::random(255));
                 }
 
                 //
@@ -1179,7 +1181,7 @@ allTests(TestHelper* helper, bool collocated)
                 //
                 // Local case: start an operation and then close the connection gracefully on the client side
                 // without waiting for the pending invocation to complete. There will be no retry and we expect the
-                // invocation to fail with ConnectionManuallyClosedException.
+                // invocation to fail with ConnectionClosedException.
                 //
                 p = p->ice_connectionId("CloseGracefully"); // Start with a new connection.
                 auto con = p->ice_getConnection();
@@ -1197,9 +1199,9 @@ allTests(TestHelper* helper, bool collocated)
                     f.get();
                     test(false);
                 }
-                catch (const ConnectionManuallyClosedException& ex)
+                catch (const ConnectionClosedException& ex)
                 {
-                    test(ex.graceful);
+                    test(ex.closedByApplication());
                 }
                 p->finishDispatch();
 
@@ -1231,7 +1233,7 @@ allTests(TestHelper* helper, bool collocated)
             {
                 //
                 // Local case: start a lengthy operation and then close the connection forcefully on the client side.
-                // There will be no retry and we expect the invocation to fail with ConnectionManuallyClosedException.
+                // There will be no retry and we expect the invocation to fail with ConnectionAbortedException.
                 //
                 p->ice_ping();
                 auto con = p->ice_getConnection();
@@ -1249,9 +1251,9 @@ allTests(TestHelper* helper, bool collocated)
                     f.get();
                     test(false);
                 }
-                catch (const ConnectionManuallyClosedException& ex)
+                catch (const ConnectionAbortedException& ex)
                 {
-                    test(!ex.graceful);
+                    test(ex.closedByApplication());
                 }
                 p->finishDispatch();
 
@@ -1311,10 +1313,31 @@ allTests(TestHelper* helper, bool collocated)
 
     if (p->ice_getConnection())
     {
+        cout << "testing back pressure... " << flush;
+        {
+            // Keep the 3 server thread pool threads busy.
+            auto sleep1Future = p->sleepAsync(1000);
+            auto sleep2Future = p->sleepAsync(1000);
+            auto sleep3Future = p->sleepAsync(1000);
+
+            auto onewayProxy = Ice::uncheckedCast<Test::TestIntfPrx>(p->ice_oneway());
+
+            // Sending should block because the TCP send/receive buffer size on the server is set to 50KB.
+            Ice::ByteSeq seq;
+            seq.resize(768 * 1024);
+            auto future = onewayProxy->opWithPayloadAsync(seq);
+
+            test(future.wait_for(200ms) == future_status::timeout && sleep1Future.wait_for(0s) != future_status::ready);
+            sleep1Future.wait();
+            sleep2Future.wait();
+            sleep3Future.wait();
+        }
+        cout << "ok" << endl;
+
         cout << "testing bidir... " << flush;
         auto adapter = communicator->createObjectAdapter("");
         auto replyI = make_shared<PingReplyI>();
-        auto reply = PingReplyPrx(adapter->addWithUUID(replyI));
+        auto reply = uncheckedCast<PingReplyPrx>(adapter->addWithUUID(replyI));
         adapter->activate();
 
         p->ice_getConnection()->setAdapter(adapter);

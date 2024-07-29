@@ -251,7 +251,6 @@ public class InputStream
         _traceSlicing = false;
         _classGraphDepthMax = 0x7fffffff;
         _closure = null;
-        _sliceValues = true;
         _startSeq = -1;
         _minSeqSize = 0;
     }
@@ -281,7 +280,6 @@ public class InputStream
         }
 
         _startSeq = -1;
-        _sliceValues = true;
     }
 
     /// <summary>
@@ -304,20 +302,6 @@ public class InputStream
     public void setLogger(Logger logger)
     {
         _logger = logger;
-    }
-
-    /// <summary>
-    /// Determines the behavior of the stream when extracting instances of Slice classes.
-    /// An instance is "sliced" when a factory cannot be found for a Slice type ID.
-    /// The stream's default behavior is to slice instances.
-    /// </summary>
-    /// <param name="b">If true (the default), slicing is enabled; if false,
-    /// slicing is disabled. If slicing is disabled and the stream encounters a Slice type ID
-    /// during decoding for which no value factory is installed, it raises NoValueFactoryException.
-    /// </param>
-    public void setSliceValues(bool b)
-    {
-        _sliceValues = b;
     }
 
     /// <summary>
@@ -391,10 +375,6 @@ public class InputStream
         object? tmpClosure = other._closure;
         other._closure = _closure;
         _closure = tmpClosure;
-
-        bool tmpSliceValues = other._sliceValues;
-        other._sliceValues = _sliceValues;
-        _sliceValues = tmpSliceValues;
 
         int tmpClassGraphDepthMax = other._classGraphDepthMax;
         other._classGraphDepthMax = _classGraphDepthMax;
@@ -511,11 +491,11 @@ public class InputStream
         int sz = readInt();
         if (sz < 6)
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         if (sz - 4 > _buf.b.remaining())
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         _encapsStack.sz = sz;
 
@@ -538,14 +518,14 @@ public class InputStream
             skipOptionals();
             if (_buf.b.position() != _encapsStack.start + _encapsStack.sz)
             {
-                throw new EncapsulationException();
+                throw new MarshalException("Failed to unmarshal encapsulation.");
             }
         }
         else if (_buf.b.position() != _encapsStack.start + _encapsStack.sz)
         {
             if (_buf.b.position() + 1 != _encapsStack.start + _encapsStack.sz)
             {
-                throw new EncapsulationException();
+                throw new MarshalException("Failed to unmarshal encapsulation.");
             }
 
             //
@@ -560,7 +540,7 @@ public class InputStream
             }
             catch (InvalidOperationException ex)
             {
-                throw new UnmarshalOutOfBoundsException(ex);
+                throw new MarshalException(endOfBufferMessage, ex);
             }
         }
 
@@ -580,11 +560,11 @@ public class InputStream
         int sz = readInt();
         if (sz < 6)
         {
-            throw new EncapsulationException();
+            throw new MarshalException($"{sz} is not a valid encapsulation size.");
         }
         if (sz - 4 > _buf.b.remaining())
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         var encoding = new EncodingVersion(this);
@@ -594,7 +574,7 @@ public class InputStream
         {
             if (sz != 6)
             {
-                throw new EncapsulationException();
+                throw new MarshalException($"{sz} is not a valid encapsulation size for a 1.0 empty encapsulation.");
             }
         }
         else
@@ -617,12 +597,12 @@ public class InputStream
         int sz = readInt();
         if (sz < 6)
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         if (sz - 4 > _buf.b.remaining())
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         encoding = new EncodingVersion(this);
@@ -636,7 +616,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -668,7 +648,7 @@ public class InputStream
         int sz = readInt();
         if (sz < 6)
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         EncodingVersion encoding = new EncodingVersion(this);
         try
@@ -677,7 +657,7 @@ public class InputStream
         }
         catch (ArgumentOutOfRangeException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
         return encoding;
     }
@@ -751,7 +731,7 @@ public class InputStream
                 int v = _buf.b.getInt();
                 if (v < 0)
                 {
-                    throw new UnmarshalOutOfBoundsException();
+                    throw new MarshalException(endOfBufferMessage);
                 }
                 return v;
             }
@@ -762,7 +742,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -813,7 +793,7 @@ public class InputStream
         //
         if (_startSeq + _minSeqSize > _buf.size())
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         return sz;
@@ -831,7 +811,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -844,7 +824,7 @@ public class InputStream
     {
         if (_buf.b.remaining() < sz)
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         byte[] v = new byte[sz];
         try
@@ -854,7 +834,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -889,7 +869,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -943,7 +923,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1051,7 +1031,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1105,7 +1085,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1213,7 +1193,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1267,7 +1247,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1377,7 +1357,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1431,7 +1411,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1466,7 +1446,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1493,7 +1473,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1561,7 +1541,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1615,7 +1595,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1650,7 +1630,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1677,7 +1657,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1745,7 +1725,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1799,7 +1779,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1834,7 +1814,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1861,7 +1841,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1929,7 +1909,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -1983,7 +1963,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -2018,7 +1998,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -2045,7 +2025,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
     }
 
@@ -2121,7 +2101,7 @@ public class InputStream
         //
         if (_buf.b.remaining() < len)
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
 
         try
@@ -2139,7 +2119,7 @@ public class InputStream
         }
         catch (InvalidOperationException ex)
         {
-            throw new UnmarshalOutOfBoundsException(ex);
+            throw new MarshalException(endOfBufferMessage, ex);
         }
         catch (ArgumentException ex)
         {
@@ -2452,7 +2432,7 @@ public class InputStream
     {
         if (size < 0 || size > _buf.b.remaining())
         {
-            throw new UnmarshalOutOfBoundsException();
+            throw new MarshalException(endOfBufferMessage);
         }
         _buf.b.position(_buf.b.position() + size);
     }
@@ -2633,9 +2613,9 @@ public class InputStream
         {
             return (UserException?)_instance!.getActivator().CreateInstance(id);
         }
-        catch (Exception ex)
+        catch (System.Exception ex)
         {
-            throw new MarshalException(ex);
+            throw new MarshalException($"Failed to create user exception with type ID '{id}'.", ex);
         }
     }
 
@@ -2660,12 +2640,10 @@ public class InputStream
             public int classGraphDepth;
         };
 
-        internal EncapsDecoder(InputStream stream, Encaps encaps, bool sliceValues,
-                               int classGraphDepthMax, ValueFactoryManager? f)
+        internal EncapsDecoder(InputStream stream, Encaps encaps, int classGraphDepthMax, ValueFactoryManager? f)
         {
             _stream = stream;
             _encaps = encaps;
-            _sliceValues = sliceValues;
             _classGraphDepthMax = classGraphDepthMax;
             _classGraphDepth = 0;
             _valueFactoryManager = f;
@@ -2703,7 +2681,7 @@ public class InputStream
                 int index = _stream.readSize();
                 if (!_typeIdMap.TryGetValue(index, out string? typeId))
                 {
-                    throw new UnmarshalOutOfBoundsException();
+                    throw new MarshalException(endOfBufferMessage);
                 }
                 return typeId;
             }
@@ -2749,9 +2727,9 @@ public class InputStream
                 {
                     v = (Value?)_stream._instance!.getActivator().CreateInstance(typeId);
                 }
-                catch (Exception ex)
+                catch (System.Exception ex)
                 {
-                    throw new NoValueFactoryException("no value factory", typeId, ex);
+                    throw new MarshalException($"Failed to create a class with type ID '{typeId}'.", ex);
                 }
             }
 
@@ -2883,7 +2861,6 @@ public class InputStream
 
         protected readonly InputStream _stream;
         protected readonly Encaps _encaps;
-        protected readonly bool _sliceValues;
         protected readonly int _classGraphDepthMax;
         protected int _classGraphDepth;
 
@@ -2902,9 +2879,8 @@ public class InputStream
 
     private sealed class EncapsDecoder10 : EncapsDecoder
     {
-        internal EncapsDecoder10(InputStream stream, Encaps encaps, bool sliceValues, int classGraphDepthMax,
-                                 ValueFactoryManager? f)
-            : base(stream, encaps, sliceValues, classGraphDepthMax, f)
+        internal EncapsDecoder10(InputStream stream, Encaps encaps, int classGraphDepthMax, ValueFactoryManager? f)
+            : base(stream, encaps, classGraphDepthMax, f)
         {
             _sliceType = SliceType.NoSlice;
         }
@@ -3000,18 +2976,12 @@ public class InputStream
                 {
                     startSlice();
                 }
-                catch (UnmarshalOutOfBoundsException ex)
+                catch (MarshalException)
                 {
-                    //
                     // An oversight in the 1.0 encoding means there is no marker to indicate
                     // the last slice of an exception. As a result, we just try to read the
-                    // next type ID, which raises UnmarshalOutOfBoundsException when the
-                    // input buffer underflows.
-                    //
-                    // Set the reason member to a more helpful message.
-                    //
-                    ex.reason = "unknown exception type `" + mostDerivedId + "'";
-                    throw;
+                    // next type ID, which raises MarshalException when the input buffer underflows.
+                    throw new MarshalException($"unknown exception type '{mostDerivedId}'");
                 }
             }
         }
@@ -3074,7 +3044,7 @@ public class InputStream
             _sliceSize = _stream.readInt();
             if (_sliceSize < 4)
             {
-                throw new UnmarshalOutOfBoundsException();
+                throw new MarshalException(endOfBufferMessage);
             }
 
             return _typeId;
@@ -3154,7 +3124,7 @@ public class InputStream
                 //
                 if (_typeId == Value.ice_staticId())
                 {
-                    throw new NoValueFactoryException("", mostDerivedId);
+                    throw new MarshalException($"Cannot find value factory for type ID '{mostDerivedId}'.");
                 }
 
                 v = newInstance(_typeId);
@@ -3165,14 +3135,6 @@ public class InputStream
                 if (v != null)
                 {
                     break;
-                }
-
-                //
-                // If slicing is disabled, stop unmarshaling.
-                //
-                if (!_sliceValues)
-                {
-                    throw new NoValueFactoryException("no value factory found and slicing is disabled", _typeId);
                 }
 
                 //
@@ -3222,9 +3184,8 @@ public class InputStream
 
     private sealed class EncapsDecoder11 : EncapsDecoder
     {
-        internal EncapsDecoder11(InputStream stream, Encaps encaps, bool sliceValues, int classGraphDepthMax,
-                                 ValueFactoryManager? f)
-            : base(stream, encaps, sliceValues, classGraphDepthMax, f)
+        internal EncapsDecoder11(InputStream stream, Encaps encaps, int classGraphDepthMax, ValueFactoryManager? f)
+            : base(stream, encaps, classGraphDepthMax, f)
         {
             _current = null;
             _valueIdIndex = 1;
@@ -3320,14 +3281,7 @@ public class InputStream
 
                 if ((_current.sliceFlags & Protocol.FLAG_IS_LAST_SLICE) != 0)
                 {
-                    if (mostDerivedId.StartsWith("::", StringComparison.Ordinal))
-                    {
-                        throw new UnknownUserException(mostDerivedId.Substring(2));
-                    }
-                    else
-                    {
-                        throw new UnknownUserException(mostDerivedId);
-                    }
+                    throw new MarshalException($"Cannot unmarshal exception with type ID '{mostDerivedId}'");
                 }
 
                 startSlice();
@@ -3411,7 +3365,7 @@ public class InputStream
                 _current.sliceSize = _stream.readInt();
                 if (_current.sliceSize < 4)
                 {
-                    throw new UnmarshalOutOfBoundsException();
+                    throw new MarshalException(endOfBufferMessage);
                 }
             }
             else
@@ -3505,20 +3459,12 @@ public class InputStream
             {
                 if (_current.sliceType == SliceType.ValueSlice)
                 {
-                    throw new NoValueFactoryException("no value factory found and compact format prevents " +
-                                                      "slicing (the sender should use the sliced format " +
-                                                      "instead)", _current.typeId);
+                    throw new MarshalException(
+                        $"Cannot find value factory for type ID '{_current.typeId}' and compact format prevents slicing.");
                 }
                 else
                 {
-                    if (_current.typeId!.StartsWith("::", StringComparison.Ordinal))
-                    {
-                        throw new UnknownUserException(_current.typeId.Substring(2));
-                    }
-                    else
-                    {
-                        throw new UnknownUserException(_current.typeId);
-                    }
+                    throw new MarshalException($"Cannot find user exception for type ID '{_current.typeId}'");
                 }
             }
 
@@ -3540,17 +3486,17 @@ public class InputStream
                     //
                     --dataEnd;
                 }
+                var bytes = new byte[dataEnd - start];
+                b.position(start);
+                b.get(bytes);
+                b.position(end);
 
                 var info = new SliceInfo(
                     typeId: _current.typeId!,
                     compactId: _current.compactId,
-                    bytes: new byte[dataEnd - start],
+                    bytes: bytes,
                     hasOptionalMembers: hasOptionalMembers,
                     isLastSlice: (_current.sliceFlags & Protocol.FLAG_IS_LAST_SLICE) != 0);
-
-                b.position(start);
-                b.get(info.bytes);
-                b.position(end);
 
                 if (_current.slices is null)
                 {
@@ -3638,14 +3584,6 @@ public class InputStream
                     {
                         break;
                     }
-                }
-
-                //
-                // If slicing is disabled, stop unmarshaling.
-                //
-                if (!_sliceValues)
-                {
-                    throw new NoValueFactoryException("no value factory found and slicing is disabled", typeId);
                 }
 
                 //
@@ -3844,18 +3782,17 @@ public class InputStream
         {
             if (_encapsStack.encoding_1_0)
             {
-                _encapsStack.decoder = new EncapsDecoder10(this, _encapsStack, _sliceValues, _classGraphDepthMax,
-                                                           _valueFactoryManager);
+                _encapsStack.decoder =
+                    new EncapsDecoder10(this, _encapsStack, _classGraphDepthMax, _valueFactoryManager);
             }
             else
             {
-                _encapsStack.decoder = new EncapsDecoder11(this, _encapsStack, _sliceValues, _classGraphDepthMax,
-                                                           _valueFactoryManager);
+                _encapsStack.decoder =
+                    new EncapsDecoder11(this, _encapsStack, _classGraphDepthMax, _valueFactoryManager);
             }
         }
     }
 
-    private bool _sliceValues;
     private bool _traceSlicing;
     private int _classGraphDepthMax;
 
@@ -3864,6 +3801,8 @@ public class InputStream
 
     private ValueFactoryManager? _valueFactoryManager;
     private Logger? _logger;
+
+    private const string endOfBufferMessage = "Attempting to unmarshal past the end of the buffer.";
 }
 
 /// <summary>

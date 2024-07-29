@@ -5,9 +5,8 @@
 import { Ice as Ice_OperationMode } from "./OperationMode.js";
 const { OperationMode } = Ice_OperationMode;
 import { FormatType } from "./FormatType.js";
-import { UnknownException, MarshalException, OperationNotExistException } from "./LocalException.js";
+import { UnknownException, MarshalException, OperationNotExistException } from "./LocalExceptions.js";
 import { ObjectPrx } from "./ObjectPrx.js";
-import { Object as Ice_Object } from "./Object.js";
 import { TypeRegistry } from "./TypeRegistry.js";
 
 import {
@@ -162,12 +161,12 @@ function unmarshalParams(is, retvalInfo, allParamInfo, optParamInfo, usesClasses
     const readParam = (p, optional) => {
         if (optional) {
             if (p.isObject) {
-                throw new Ice.MarshalException("cannot unmarshal an optional class");
+                throw new MarshalException("cannot unmarshal an optional class");
             } else {
                 params[p.pos + offset] = p.type.readOptional(is, p.tag);
             }
         } else if (p.isObject) {
-            is.readValue((obj) => {
+            is.readValue(obj => {
                 params[p.pos + offset] = obj;
             }, p.type);
         } else {
@@ -268,14 +267,14 @@ function dispatchImpl(servant, op, incomingAsync, current) {
     const marshalFn = function (params) {
         const numExpectedResults = op.outParams.length + (op.returns ? 1 : 0);
         if (numExpectedResults > 1 && !(params instanceof Array)) {
-            throw new MarshalException("operation `" + op.servantMethod + "' should return an array");
+            throw new MarshalException(`operation '${op.servantMethod}' should return an array`);
         } else if (numExpectedResults === 1) {
             params = [params]; // Wrap a single out parameter in an array.
         }
 
         if (op.returns === undefined && op.outParams.length === 0) {
             if (params && params.length > 0) {
-                throw new MarshalException("operation `" + op.servantMethod + "' shouldn't return any value");
+                throw new MarshalException(`operation '${op.servantMethod}' shouldn't return any value`);
             } else {
                 incomingAsync.writeEmptyParams();
             }
@@ -441,11 +440,7 @@ function addProxyOperation(proxyType, name, data) {
                         if (typeof p.type.validate === "function") {
                             if (!p.type.validate(v)) {
                                 throw new MarshalException(
-                                    "invalid value for argument " +
-                                        (i + 1) +
-                                        " in operation `" +
-                                        op.servantMethod +
-                                        "'",
+                                    `invalid value for argument ${i + 1} in operation '${op.servantMethod}'`,
                                 );
                             }
                         }

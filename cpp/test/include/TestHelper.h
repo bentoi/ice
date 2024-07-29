@@ -6,12 +6,12 @@
 #define TEST_HELPER_H
 
 #include "Ice/CommunicatorF.h"
+#include "Ice/Config.h"
 #include "Ice/CtrlCHandler.h"
 #include "Ice/Initialize.h"
-#include "Ice/LocalException.h"
+#include "Ice/LocalExceptions.h"
 #include "Ice/Logger.h"
 #include "Ice/ProxyF.h"
-#include "IceUtil/Config.h"
 
 #if defined(_MSC_VER) && !defined(TEST_API_EXPORTS)
 #    pragma comment(lib, ICE_LIBNAME("testcommon"))
@@ -22,6 +22,7 @@
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <typeinfo>
 
 #ifndef TEST_API
 #    if defined(ICE_STATIC_LIBS)
@@ -117,7 +118,7 @@ namespace Test
         ControllerHelper* _controllerHelper;
         Ice::CommunicatorPtr _communicator;
 #if !defined(__APPLE__) || TARGET_OS_IPHONE == 0
-        IceUtil::CtrlCHandler* _ctrlCHandler;
+        Ice::CtrlCHandler* _ctrlCHandler;
 #endif
     };
 
@@ -151,9 +152,14 @@ namespace Test
             T helper;
             helper.run(argc, argv);
         }
+        catch (const Ice::LocalException& ex)
+        {
+            std::cerr << "error: " << ex << std::endl;
+            status = 1;
+        }
         catch (const std::exception& ex)
         {
-            std::cerr << "error: " << ex.what() << std::endl;
+            std::cerr << "error: " << typeid(ex).name() << ' ' << ex.what() << std::endl;
             status = 1;
         }
         return status;
